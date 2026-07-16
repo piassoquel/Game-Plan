@@ -1,0 +1,17 @@
+{
+  "name": "GamePlan",
+  "short_name": "GamePlan",
+  "description": "Delivery and installation operations",
+  "start_url": "./index.html#today",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0f1316",
+  "theme_color": "#0f1316",
+  "icons": [
+    {
+      "src": "./assets/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
