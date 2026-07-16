@@ -13,7 +13,36 @@ const demoCustomers = [
   {id:"CUS-003",name:"Mike Davis",phone:"(831) 555-0103",email:"mike@example.com",jobs:2}
 ];
 
-const state = { jobs: demoJobs, customers: demoCustomers, live: false };
+const state = {
+  jobs: demoJobs,
+  customers: demoCustomers,
+  equipmentTypes: [
+    {id:"EQP-UPBIKE",name:"Upright Exercise Bike"},
+    {id:"EQP-RECBIKE",name:"Recumbent Exercise Bike"},
+    {id:"EQP-ELLIP",name:"Elliptical"},
+    {id:"EQP-TREAD",name:"Treadmill"},
+    {id:"EQP-ROW",name:"Rowing Machine"},
+    {id:"EQP-BENCH",name:"Weight Bench"},
+    {id:"EQP-WSET",name:"Weight Set"},
+    {id:"EQP-RACK",name:"Squat Rack"},
+    {id:"EQP-HGYM",name:"Home Gym"},
+    {id:"EQP-HOOP",name:"Basketball Hoop"},
+    {id:"EQP-TABLE",name:"Table Tennis Table"},
+    {id:"EQP-OTHER",name:"Other"}
+  ],
+  jobTypes: [
+    {id:"JT-DEL",name:"Delivery"},{id:"JT-PICK",name:"Pickup"},
+    {id:"JT-DELASM",name:"Delivery + Assembly"},{id:"JT-PICKDIS",name:"Pickup + Disassembly"},
+    {id:"JT-EXCH",name:"Exchange"},{id:"JT-DISP",name:"Disposal Pickup"}
+  ],
+  accessConditions: [
+    {id:"ACC-GARAGE",name:"Garage"},{id:"ACC-SINGLE",name:"Single Level"},
+    {id:"ACC-STAIR1",name:"First Flight of Stairs"},{id:"ACC-STAIRX",name:"Each Additional Flight"},
+    {id:"ACC-LONG",name:"Long Carry"},{id:"ACC-NARROW",name:"Narrow Doorway"},
+    {id:"ACC-HEAVY",name:"Heavy or Commercial Access"}
+  ],
+  live: false
+};
 const api = new GamePlanApi(window.GAMEPLAN_CONFIG);
 
 const view = document.querySelector("#view");
@@ -183,7 +212,10 @@ function bindDynamic() {
     };
   });
   document.querySelectorAll("[data-demo-action]").forEach(el => {
-    el.onclick = () => toast(`${el.dataset.demoAction} becomes active in a later milestone.`);
+    el.onclick = () => {
+      if (["New Job","New Tentative"].includes(el.dataset.demoAction)) openWizard();
+      else toast(`${el.dataset.demoAction} becomes active in a later version.`);
+    };
   });
   view.querySelectorAll("[data-route]").forEach(el => {
     el.onclick = () => go(el.dataset.route);
@@ -211,6 +243,9 @@ async function loadLiveData() {
     const data = await api.getBootstrap();
     state.jobs = Array.isArray(data.jobs) ? data.jobs : [];
     state.customers = Array.isArray(data.customers) ? data.customers : [];
+    if (Array.isArray(data.equipmentTypes) && data.equipmentTypes.length) state.equipmentTypes = data.equipmentTypes;
+    if (Array.isArray(data.jobTypes) && data.jobTypes.length) state.jobTypes = data.jobTypes;
+    if (Array.isArray(data.accessConditions) && data.accessConditions.length) state.accessConditions = data.accessConditions;
     state.live = true;
     dataStatus.textContent = "Live CMS";
     dataStatus.className = "demo live";
@@ -227,6 +262,190 @@ document.addEventListener("click", event => {
   const routeButton = event.target.closest("[data-route]");
   if (routeButton && !routeButton.closest("#view")) go(routeButton.dataset.route);
 });
+
+
+const wizard = document.querySelector("#jobWizard");
+const wizardBackdrop = document.querySelector("#wizardBackdrop");
+const wizardForm = document.querySelector("#jobWizardForm");
+const wizardStepLabel = document.querySelector("#wizardStepLabel");
+const wizardProgress = document.querySelector("#wizardProgress");
+const wizardBack = document.querySelector("#wizardBack");
+const wizardNext = document.querySelector("#wizardNext");
+const DRAFT_KEY = "gameplan-job-draft-v0.3";
+
+const blankDraft = () => ({
+  step: 0,
+  customerMode: "existing",
+  customerId: "",
+  firstName: "",
+  lastName: "",
+  phone: "",
+  email: "",
+  address: "",
+  jobTypeId: "JT-DEL",
+  equipment: [{equipmentTypeId:"EQP-TREAD",condition:"New",brand:"",model:"",quantity:1,storeAssembly:true,buildRequired:true}],
+  access: ["ACC-SINGLE"],
+  scheduledDate: "",
+  scheduledTime: "",
+  crewSize: 2,
+  internalNotes: ""
+});
+let draft = blankDraft();
+
+function esc(value) {
+  return String(value ?? "").replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;"}[char]));
+}
+function selectedCustomer() { return state.customers.find(c => c.id === draft.customerId); }
+function optionList(items, current) {
+  return items.map(item => `<option value="${esc(item.id)}" ${item.id===current?"selected":""}>${esc(item.name)}</option>`).join("");
+}
+function openWizard() {
+  const saved = localStorage.getItem(DRAFT_KEY);
+  if (saved) {
+    try { draft = {...blankDraft(), ...JSON.parse(saved)}; } catch { draft = blankDraft(); }
+  } else draft = blankDraft();
+  renderWizard();
+  wizard.classList.add("open"); wizardBackdrop.classList.add("open");
+  wizard.setAttribute("aria-hidden","false");
+}
+function closeWizard() {
+  wizard.classList.remove("open"); wizardBackdrop.classList.remove("open");
+  wizard.setAttribute("aria-hidden","true");
+}
+function saveDraft(showToast=true) {
+  syncWizardInputs();
+  localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
+  if (showToast) toast("Job draft saved on this device.");
+}
+function clearDraft() { localStorage.removeItem(DRAFT_KEY); draft = blankDraft(); }
+function stepHeading(titleText, description) {
+  return `<div class="step-wrap"><h2>${titleText}</h2><p>${description}</p>`;
+}
+function renderCustomerStep() {
+  const query = `${draft.firstName} ${draft.lastName}`.trim().toLowerCase();
+  const results = state.customers.filter(c => !query || c.name.toLowerCase().includes(query) || (c.phone||"").includes(query)).slice(0,8);
+  return `${stepHeading("Who is this job for?","Find an existing customer or add a new one.")}
+    ${localStorage.getItem(DRAFT_KEY)?`<div class="draft-banner"><span>An unfinished job draft was restored.</span><button type="button" class="text-button" id="discardDraft">Discard</button></div>`:""}
+    <div class="choice-grid" style="margin-bottom:16px">
+      <label class="choice"><input type="radio" name="customerMode" value="existing" ${draft.customerMode==="existing"?"checked":""}><strong>Existing Customer</strong><small>Search the roster</small></label>
+      <label class="choice"><input type="radio" name="customerMode" value="new" ${draft.customerMode==="new"?"checked":""}><strong>New Customer</strong><small>Create a new roster entry later</small></label>
+    </div>
+    ${draft.customerMode==="existing" ? `
+      <div class="field"><label>Search customers</label><input id="customerSearch" value="${esc(query)}" placeholder="Name or phone number" autocomplete="off"></div>
+      <div class="search-results">${results.length ? results.map(c=>`<button type="button" class="customer-result ${draft.customerId===c.id?"selected":""}" data-select-customer="${esc(c.id)}"><div><strong>${esc(c.name)}</strong><small>${esc(c.phone||"No phone")} · ${esc(c.email||"No email")}</small></div><span>${draft.customerId===c.id?"✓":"›"}</span></button>`).join("") : `<div class="notice">No matching customers. Choose New Customer to enter their information.</div>`}</div>
+    ` : `
+      <div class="form-grid"><div class="field"><label>First name</label><input name="firstName" value="${esc(draft.firstName)}" required></div><div class="field"><label>Last name</label><input name="lastName" value="${esc(draft.lastName)}" required></div></div>
+      <div class="form-grid"><div class="field"><label>Phone</label><input name="phone" type="tel" value="${esc(draft.phone)}" required></div><div class="field"><label>Email</label><input name="email" type="email" value="${esc(draft.email)}"></div></div>
+    `}
+    <div class="field"><label>Service address</label><input name="address" value="${esc(draft.address)}" placeholder="Customer delivery or pickup address" required></div>
+  </div>`;
+}
+function renderEquipmentStep() {
+  return `${stepHeading("What equipment is involved?","Add each item and choose the services it requires.")}
+    <div class="field"><label>Job type</label><select name="jobTypeId">${optionList(state.jobTypes,draft.jobTypeId)}</select></div>
+    <div id="equipmentEditors">${draft.equipment.map((item,index)=>`
+      <div class="equipment-editor">
+        <div class="equipment-editor__head"><strong>Item ${index+1}</strong>${draft.equipment.length>1?`<button type="button" class="remove-link" data-remove-equipment="${index}">Remove</button>`:""}</div>
+        <div class="form-grid">
+          <div class="field"><label>Equipment type</label><select data-equipment-field="equipmentTypeId" data-index="${index}">${optionList(state.equipmentTypes,item.equipmentTypeId)}</select></div>
+          <div class="field"><label>Condition</label><select data-equipment-field="condition" data-index="${index}"><option ${item.condition==="New"?"selected":""}>New</option><option ${item.condition==="Used"?"selected":""}>Used</option></select></div>
+          <div class="field"><label>Brand</label><input data-equipment-field="brand" data-index="${index}" value="${esc(item.brand)}" placeholder="NordicTrack"></div>
+          <div class="field"><label>Model</label><input data-equipment-field="model" data-index="${index}" value="${esc(item.model)}" placeholder="T 6.5 S"></div>
+        </div>
+        <div class="choice-grid">
+          <label class="choice"><input type="checkbox" data-equipment-field="storeAssembly" data-index="${index}" ${item.storeAssembly?"checked":""}><strong>Store Assembly</strong><small>Build before delivery</small></label>
+          <label class="choice"><input type="checkbox" data-equipment-field="buildRequired" data-index="${index}" ${item.buildRequired?"checked":""}><strong>Build Required</strong><small>Add to build alerts</small></label>
+        </div>
+      </div>`).join("")}</div>
+    <button type="button" class="add-row" id="addEquipment">＋ Add Another Item</button>
+  </div>`;
+}
+function renderAccessStep() {
+  return `${stepHeading("What is access like?","Select every condition that affects delivery time or difficulty.")}
+    <div class="choice-grid">${state.accessConditions.map(a=>`<label class="choice"><input type="checkbox" name="access" value="${esc(a.id)}" ${draft.access.includes(a.id)?"checked":""}><strong>${esc(a.name)}</strong><small>${a.id.includes("STAIR")?"Adds time and access charge":"Include when applicable"}</small></label>`).join("")}</div>
+  </div>`;
+}
+function renderScheduleStep() {
+  return `${stepHeading("When should we hold the appointment?","This creates the scheduling information for a tentative job.")}
+    <div class="form-grid">
+      <div class="field"><label>Date</label><input name="scheduledDate" type="date" value="${esc(draft.scheduledDate)}"></div>
+      <div class="field"><label>Start time</label><input name="scheduledTime" type="time" value="${esc(draft.scheduledTime)}"></div>
+    </div>
+    <div class="field"><label>Crew size</label><select name="crewSize"><option value="1" ${draft.crewSize==1?"selected":""}>1 person</option><option value="2" ${draft.crewSize==2?"selected":""}>2 people</option><option value="3" ${draft.crewSize==3?"selected":""}>3 people</option></select></div>
+    <div class="field"><label>Internal notes</label><textarea name="internalNotes" rows="4" placeholder="Parking, customer requests, timing notes…">${esc(draft.internalNotes)}</textarea></div>
+    <div class="notice">Conflict detection, Google travel time, and automatic duration will be added in the Smart Scheduling and Maps versions.</div>
+  </div>`;
+}
+function renderReviewStep() {
+  const customer = draft.customerMode==="existing" ? selectedCustomer()?.name || "Customer not selected" : `${draft.firstName} ${draft.lastName}`.trim();
+  const accessNames = state.accessConditions.filter(a=>draft.access.includes(a.id)).map(a=>a.name).join(", ") || "None selected";
+  const dateText = draft.scheduledDate || "Not scheduled";
+  return `${stepHeading("Review the GamePlan","Confirm the information before saving this working draft.")}
+    <div class="summary-grid">
+      <div class="summary-box"><span>Customer</span><strong>${esc(customer)}</strong></div>
+      <div class="summary-box"><span>Appointment</span><strong>${esc(dateText)} ${esc(draft.scheduledTime||"")}</strong></div>
+      <div class="summary-box"><span>Equipment</span><strong>${draft.equipment.length} item${draft.equipment.length===1?"":"s"}</strong></div>
+      <div class="summary-box"><span>Crew</span><strong>${draft.crewSize} person${draft.crewSize==1?"":"s"}</strong></div>
+    </div>
+    <div class="review-section"><h3>Address</h3><p>${esc(draft.address||"Not entered")}</p></div>
+    <div class="review-section"><h3>Equipment</h3>${draft.equipment.map(i=>`<p><strong>${esc(i.brand)} ${esc(i.model)}</strong> · ${esc(state.equipmentTypes.find(t=>t.id===i.equipmentTypeId)?.name||i.equipmentTypeId)} · ${esc(i.condition)}${i.buildRequired?" · Needs Build":""}</p>`).join("")}</div>
+    <div class="review-section"><h3>Access</h3><p>${esc(accessNames)}</p></div>
+    <div class="notice">Secure CMS writes are intentionally disabled until employee authentication is active. “Save Job Draft” stores this record on the current device without adding customer information to the public API.</div>
+  </div>`;
+}
+function syncWizardInputs() {
+  if (!wizardForm) return;
+  const data = new FormData(wizardForm);
+  ["customerMode","firstName","lastName","phone","email","address","jobTypeId","scheduledDate","scheduledTime","internalNotes"].forEach(key => {
+    if (data.has(key)) draft[key] = data.get(key);
+  });
+  if (data.has("crewSize")) draft.crewSize = Number(data.get("crewSize"));
+  if (draft.step===2) draft.access = data.getAll("access");
+  wizardForm.querySelectorAll("[data-equipment-field]").forEach(el=>{
+    const i=Number(el.dataset.index), key=el.dataset.equipmentField;
+    if (!draft.equipment[i]) return;
+    draft.equipment[i][key] = el.type==="checkbox" ? el.checked : el.value;
+  });
+}
+function validateWizardStep() {
+  syncWizardInputs();
+  if (draft.step===0) {
+    if (draft.customerMode==="existing" && !draft.customerId) return "Select an existing customer.";
+    if (draft.customerMode==="new" && (!draft.firstName.trim() || !draft.phone.trim())) return "Enter the new customer's name and phone.";
+    if (!draft.address.trim()) return "Enter the service address.";
+  }
+  if (draft.step===1 && !draft.equipment.length) return "Add at least one equipment item.";
+  return "";
+}
+function renderWizard() {
+  const renderers=[renderCustomerStep,renderEquipmentStep,renderAccessStep,renderScheduleStep,renderReviewStep];
+  wizardStepLabel.textContent=`Step ${draft.step+1} of 5`;
+  wizardProgress.innerHTML=Array.from({length:5},(_,i)=>`<i class="${i<=draft.step?"active":""}"></i>`).join("");
+  wizardForm.innerHTML=renderers[draft.step]();
+  wizardBack.style.visibility=draft.step===0?"hidden":"visible";
+  wizardNext.textContent=draft.step===4?"Save Job Draft":"Continue";
+  bindWizardStep();
+}
+function bindWizardStep() {
+  wizardForm.querySelectorAll('input[name="customerMode"]').forEach(el=>el.onchange=()=>{syncWizardInputs();draft.customerMode=el.value;draft.customerId="";renderWizard();});
+  wizardForm.querySelectorAll("[data-select-customer]").forEach(el=>el.onclick=()=>{draft.customerId=el.dataset.selectCustomer;renderWizard();});
+  const search=wizardForm.querySelector("#customerSearch");
+  if(search) search.oninput=()=>{draft.firstName=search.value;draft.lastName="";renderWizard();setTimeout(()=>wizardForm.querySelector("#customerSearch")?.focus(),0);};
+  wizardForm.querySelector("#discardDraft")?.addEventListener("click",()=>{clearDraft();renderWizard();});
+  wizardForm.querySelector("#addEquipment")?.addEventListener("click",()=>{syncWizardInputs();draft.equipment.push({equipmentTypeId:"EQP-OTHER",condition:"New",brand:"",model:"",quantity:1,storeAssembly:false,buildRequired:false});renderWizard();});
+  wizardForm.querySelectorAll("[data-remove-equipment]").forEach(el=>el.onclick=()=>{syncWizardInputs();draft.equipment.splice(Number(el.dataset.removeEquipment),1);renderWizard();});
+}
+wizardNext.onclick=()=>{
+  const error=validateWizardStep();
+  if(error){toast(error);return;}
+  if(draft.step<4){draft.step++;saveDraft(false);renderWizard();}
+  else {saveDraft(false);toast("Job draft saved on this device.");closeWizard();}
+};
+wizardBack.onclick=()=>{syncWizardInputs();draft.step=Math.max(0,draft.step-1);saveDraft(false);renderWizard();};
+document.querySelector("#closeWizard").onclick=()=>{saveDraft(false);closeWizard();};
+document.querySelector("#saveDraftTop").onclick=()=>saveDraft(true);
+wizardBackdrop.onclick=()=>{saveDraft(false);closeWizard();};
+
 
 document.querySelector("#closeDrawer").onclick = closeJob;
 drawerBackdrop.onclick = closeJob;

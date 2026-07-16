@@ -7,7 +7,7 @@
   <meta name="description" content="GamePlan delivery and installation operations app">
   <link rel="manifest" href="./manifest.json">
   <link rel="icon" href="./assets/icons/icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./css/app.css?v=2.0.1">
+  <link rel="stylesheet" href="./css/app.css?v=0.3.0">
   <title>GamePlan</title>
 </head>
 <body>
@@ -65,10 +65,26 @@
       <div id="drawerContent" class="drawer__content"></div>
     </aside>
 
+
+    <div class="wizard-backdrop" id="wizardBackdrop"></div>
+    <section class="wizard" id="jobWizard" aria-hidden="true">
+      <header class="wizard__header">
+        <button class="drawer__back" id="closeWizard" aria-label="Close new job">×</button>
+        <div><strong>New Job</strong><small id="wizardStepLabel">Step 1 of 5</small></div>
+        <button class="text-button" id="saveDraftTop">Save Draft</button>
+      </header>
+      <div class="wizard__progress" id="wizardProgress"></div>
+      <form id="jobWizardForm" class="wizard__body"></form>
+      <footer class="wizard__footer">
+        <button type="button" class="button neutral" id="wizardBack">Back</button>
+        <button type="button" class="button" id="wizardNext">Continue</button>
+      </footer>
+    </section>
+
     <div id="toast"></div>
   </div>
 
-  <script src="./js/config.js?v=2.0.1"></script>
-  <script type="module" src="./js/app.js?v=2.0.1"></script>
+  <script src="./js/config.js?v=0.3.0"></script>
+  <script type="module" src="./js/app.js?v=0.3.0"></script>
 </body>
 </html>
