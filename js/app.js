@@ -1,54 +1,24 @@
 import { GamePlanApi } from "./api.js";
 
-const demoJobs = [
-  {id:"JOB-2026-0187",number:"GP-2026-0187",customer:"John Smith",phone:"+18315550101",time:"10:00 AM",date:"Tomorrow",type:"Treadmill Delivery",address:"123 Main St, Soquel",status:"Scheduled",total:245,crewSize:2,duration:"2 hr 15 min",buildRequired:true,buildComplete:false,equipment:[{brand:"NordicTrack",model:"T 6.5 S",type:"Treadmill",imageUrl:""}]},
-  {id:"JOB-2026-0188",number:"GP-2026-0188",customer:"Sarah Johnson",phone:"+18315550102",time:"11:00 AM",date:"Today",type:"Pickup",address:"456 Ocean St, Santa Cruz",status:"Scheduled",total:110,crewSize:2,duration:"1 hr 20 min",buildRequired:false,buildComplete:true,equipment:[{brand:"Precor",model:"EFX",type:"Elliptical",imageUrl:""}]},
-  {id:"JOB-2026-0189",number:"GP-2026-0189",customer:"Mike Davis",phone:"+18315550103",time:"9:00 AM",date:"Tomorrow",type:"Delivery · 2 Items",address:"789 Bay Ave, Capitola",status:"Tentative",total:180,crewSize:2,duration:"2 hr",buildRequired:true,buildComplete:false,equipment:[{brand:"Schwinn",model:"190",type:"Upright Exercise Bike",imageUrl:""}]},
-  {id:"JOB-2026-0190",number:"GP-2026-0190",customer:"Emily Davis",phone:"+18315550104",time:"1:30 PM",date:"Today",type:"Home Gym Package",address:"321 Lighthouse Ave, Santa Cruz",status:"Scheduled",total:395,crewSize:2,duration:"4 hr 30 min",buildRequired:false,buildComplete:true,equipment:[{brand:"Inspire",model:"M3",type:"Home Gym",imageUrl:""}]}
-];
-
-const demoCustomers = [
-  {id:"CUS-001",name:"John Smith",phone:"(831) 555-0101",email:"john@example.com",jobs:3},
-  {id:"CUS-002",name:"Sarah Johnson",phone:"(831) 555-0102",email:"sarah@example.com",jobs:1},
-  {id:"CUS-003",name:"Mike Davis",phone:"(831) 555-0103",email:"mike@example.com",jobs:2}
-];
+const CACHE_KEY = "gameplan-live-bootstrap-v1";
+const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 const state = {
-  jobs: demoJobs,
-  customers: demoCustomers,
-  equipmentTypes: [
-    {id:"EQP-UPBIKE",name:"Upright Exercise Bike"},
-    {id:"EQP-RECBIKE",name:"Recumbent Exercise Bike"},
-    {id:"EQP-ELLIP",name:"Elliptical"},
-    {id:"EQP-TREAD",name:"Treadmill"},
-    {id:"EQP-ROW",name:"Rowing Machine"},
-    {id:"EQP-BENCH",name:"Weight Bench"},
-    {id:"EQP-WSET",name:"Weight Set"},
-    {id:"EQP-RACK",name:"Squat Rack"},
-    {id:"EQP-HGYM",name:"Home Gym"},
-    {id:"EQP-HOOP",name:"Basketball Hoop"},
-    {id:"EQP-TABLE",name:"Table Tennis Table"},
-    {id:"EQP-OTHER",name:"Other"}
-  ],
-  jobTypes: [
-    {id:"JT-DEL",name:"Delivery"},{id:"JT-PICK",name:"Pickup"},
-    {id:"JT-DELASM",name:"Delivery + Assembly"},{id:"JT-PICKDIS",name:"Pickup + Disassembly"},
-    {id:"JT-EXCH",name:"Exchange"},{id:"JT-DISP",name:"Disposal Pickup"}
-  ],
-  accessConditions: [
-    {id:"ACC-GARAGE",name:"Garage"},{id:"ACC-SINGLE",name:"Single Level"},
-    {id:"ACC-STAIR1",name:"First Flight of Stairs"},{id:"ACC-STAIRX",name:"Each Additional Flight"},
-    {id:"ACC-LONG",name:"Long Carry"},{id:"ACC-NARROW",name:"Narrow Doorway"},
-    {id:"ACC-HEAVY",name:"Heavy or Commercial Access"}
-  ],
+  jobs: [],
+  customers: [],
+  equipmentTypes: [],
+  jobTypes: [],
+  accessConditions: [],
   products: [],
   brands: [],
-  fulfillmentConditions: [
-    {id:"NIB",name:"New In Box"},
-    {id:"FLR",name:"Floor Model"},
-    {id:"IBD",name:"In-Box Delivery"}
-  ],
-  live: false
+  fulfillmentConditions: [],
+  live: false,
+  ready: false,
+  cached: false,
+  refreshing: false,
+  loadError: "",
+  lastUpdated: "",
+  loadDurationMs: 0
 };
 const api = new GamePlanApi(window.GAMEPLAN_CONFIG);
 
@@ -494,7 +464,7 @@ const views = {
 
   more: {
     title:"More", sub:"Administration and app information",
-    html:()=>`<div class="grid two"><section class="card"><div class="head"><h2>Administration</h2></div><div class="body list"><button class="row" data-demo-action="Settings"><div><b>Settings</b><span>Pricing, timing, availability, and app rules</span></div><b>⚙</b></button><button class="row" data-demo-action="Huddle Together"><div><b>Huddle Together</b><span>Group scheduled jobs into one operational route</span></div><b>↝</b></button></div></section><section class="card"><div class="head"><h2>System</h2></div><div class="body"><div class="row"><div><b>Data source</b><span>${state.live ? "Live GamePlan CMS" : "Demo fallback"}</span></div><span class="badge ${state.live ? "completed" : "tentative"}">${state.live ? "Live" : "Demo"}</span></div></div></section></div>`
+    html:()=>`<div class="grid two"><section class="card"><div class="head"><h2>Administration</h2></div><div class="body list"><button class="row" data-demo-action="Settings"><div><b>Settings</b><span>Pricing, timing, availability, and app rules</span></div><b>⚙</b></button><button class="row" data-demo-action="Huddle Together"><div><b>Huddle Together</b><span>Group scheduled jobs into one operational route</span></div><b>↝</b></button></div></section><section class="card"><div class="head"><h2>System</h2></div><div class="body"><div class="row"><div><b>Data source</b><span>${state.live ? "Live GamePlan CMS" : state.cached ? "Cached live data" : "Not connected"}</span></div><span class="badge ${state.live ? "completed" : "tentative"}">${state.live ? "Live" : state.cached ? "Cached" : "Offline"}</span></div></div></section></div>`
   }
 };
 
@@ -588,42 +558,104 @@ function bindDynamic() {
   });
 }
 
+function loadingView() {
+  if (state.loadError && !state.ready) {
+    return `<div class="app-state app-state--error"><div class="app-state__icon">!</div><h2>GamePlan could not load</h2><p>${esc(state.loadError)}</p><button class="button" data-retry-load>Retry</button></div>`;
+  }
+  return `<div class="app-state"><div class="loading-spinner" aria-hidden="true"></div><h2>Loading GamePlan…</h2><p>Fetching the latest jobs, customers, and schedule.</p></div>`;
+}
+
+function updateDataStatus() {
+  if (state.refreshing) {
+    dataStatus.textContent = state.ready ? "Refreshing…" : "Loading…";
+    dataStatus.className = "demo loading";
+  } else if (state.live) {
+    dataStatus.textContent = state.loadDurationMs ? `Live CMS · ${(state.loadDurationMs / 1000).toFixed(1)}s` : "Live CMS";
+    dataStatus.className = "demo live";
+  } else if (state.cached) {
+    const stamp = state.lastUpdated ? new Date(state.lastUpdated).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"}) : "earlier";
+    dataStatus.textContent = `Cached · ${stamp}`;
+    dataStatus.className = "demo cached";
+  } else {
+    dataStatus.textContent = "Offline";
+    dataStatus.className = "demo error";
+  }
+}
+
+function applyBootstrapData(data, {cached = false, timestamp = new Date().toISOString()} = {}) {
+  state.jobs = Array.isArray(data.jobs) ? data.jobs : [];
+  state.customers = Array.isArray(data.customers) ? data.customers : [];
+  state.equipmentTypes = Array.isArray(data.equipmentTypes) ? data.equipmentTypes : [];
+  state.jobTypes = Array.isArray(data.jobTypes) ? data.jobTypes : [];
+  state.accessConditions = Array.isArray(data.accessConditions) ? data.accessConditions : [];
+  state.products = Array.isArray(data.products) ? data.products : [];
+  state.brands = Array.isArray(data.brands) ? data.brands : [];
+  state.fulfillmentConditions = Array.isArray(data.fulfillmentConditions) ? data.fulfillmentConditions : [];
+  state.ready = true;
+  state.cached = cached;
+  state.live = !cached;
+  state.lastUpdated = timestamp;
+  state.loadError = "";
+}
+
+function loadCachedBootstrap() {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (!raw) return false;
+    const cached = JSON.parse(raw);
+    if (!cached?.data || !cached?.timestamp) return false;
+    if (Date.now() - new Date(cached.timestamp).getTime() > CACHE_MAX_AGE_MS) return false;
+    applyBootstrapData(cached.data, {cached:true, timestamp:cached.timestamp});
+    return true;
+  } catch (error) {
+    console.warn("GamePlan cache could not be read.", error);
+    return false;
+  }
+}
+
 function go(route) {
   const selected = views[route] ? route : "today";
   const v = views[selected];
   title.textContent = v.title;
-  sub.textContent = v.sub;
-  view.innerHTML = v.html();
+  sub.textContent = state.ready ? v.sub : "Preparing your live workspace";
+  view.innerHTML = state.ready ? v.html() : loadingView();
   document.querySelectorAll("[data-route]").forEach(b => b.classList.toggle("active", b.dataset.route === selected));
   bindDynamic();
+  document.querySelector("[data-retry-load]")?.addEventListener("click", () => loadLiveData({forceLoading:true}));
   history.replaceState({}, "", `#${selected}`);
 }
 
-async function loadLiveData() {
+async function loadLiveData({forceLoading = false} = {}) {
   if (!api.isConfigured) {
-    dataStatus.textContent = "Demo Data";
-    dataStatus.className = "demo error";
+    state.loadError = "The live CMS URL is not configured.";
+    state.refreshing = false;
+    updateDataStatus();
+    go(location.hash.slice(1) || "today");
     return;
   }
+  const started = performance.now();
+  state.refreshing = true;
+  state.loadError = "";
+  updateDataStatus();
+  if (forceLoading && !state.cached) state.ready = false;
+  go(location.hash.slice(1) || "today");
   try {
     const data = await api.getBootstrap();
-    state.jobs = Array.isArray(data.jobs) ? data.jobs : [];
-    state.customers = Array.isArray(data.customers) ? data.customers : [];
-    if (Array.isArray(data.equipmentTypes) && data.equipmentTypes.length) state.equipmentTypes = data.equipmentTypes;
-    if (Array.isArray(data.jobTypes) && data.jobTypes.length) state.jobTypes = data.jobTypes;
-    if (Array.isArray(data.accessConditions) && data.accessConditions.length) state.accessConditions = data.accessConditions;
-    if (Array.isArray(data.products)) state.products = data.products;
-    if (Array.isArray(data.brands)) state.brands = data.brands;
-    if (Array.isArray(data.fulfillmentConditions) && data.fulfillmentConditions.length) state.fulfillmentConditions = data.fulfillmentConditions;
-    state.live = true;
-    dataStatus.textContent = "Live CMS";
-    dataStatus.className = "demo live";
-    go(location.hash.slice(1) || "today");
+    const timestamp = new Date().toISOString();
+    applyBootstrapData(data, {cached:false, timestamp});
+    state.loadDurationMs = Math.round(performance.now() - started);
+    localStorage.setItem(CACHE_KEY, JSON.stringify({timestamp, data}));
+    localStorage.setItem("gameplan-last-bootstrap-ms", String(state.loadDurationMs));
+    console.info(`[GamePlan] Bootstrap ${state.loadDurationMs} ms`);
   } catch (error) {
     console.error(error);
-    dataStatus.textContent = "Demo Fallback";
-    dataStatus.className = "demo error";
-    toast("Live CMS connection failed. Showing demo data.");
+    state.loadError = error.message || "The live CMS did not respond.";
+    if (!state.ready) state.live = false;
+    if (state.cached) toast("Could not refresh. Showing the last successful live data.");
+  } finally {
+    state.refreshing = false;
+    updateDataStatus();
+    go(location.hash.slice(1) || "today");
   }
 }
 
@@ -727,5 +759,7 @@ if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => navigator.serviceWorker.register("./service-worker.js").catch(console.error));
 }
 
+const hasCachedBootstrap = loadCachedBootstrap();
+updateDataStatus();
 go(location.hash.slice(1) || "today");
-loadLiveData();
+loadLiveData({forceLoading: !hasCachedBootstrap});
