@@ -11,6 +11,7 @@ export class GamePlanApi {
     if (!this.isConfigured) throw new Error("API URL is not configured.");
     const url = new URL(this.config.apiBaseUrl);
     url.searchParams.set("action", "bootstrap");
+    url.searchParams.set("_", Date.now().toString());
     const response = await fetch(url.toString(), { method: "GET" });
     if (!response.ok) throw new Error(`API returned ${response.status}`);
     const payload = await response.json();

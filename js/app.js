@@ -41,6 +41,13 @@ const state = {
     {id:"ACC-LONG",name:"Long Carry"},{id:"ACC-NARROW",name:"Narrow Doorway"},
     {id:"ACC-HEAVY",name:"Heavy or Commercial Access"}
   ],
+  products: [],
+  brands: [],
+  fulfillmentConditions: [
+    {id:"NIB",name:"New In Box"},
+    {id:"FLR",name:"Floor Model"},
+    {id:"IBD",name:"In-Box Delivery"}
+  ],
   live: false
 };
 const api = new GamePlanApi(window.GAMEPLAN_CONFIG);
@@ -166,7 +173,7 @@ const views = {
           <div class="head"><h2>Quick Actions</h2></div>
           <div class="body quick">
             <button data-demo-action="New Job">＋<br>New Job</button>
-            <button data-route="roster">◎<br>Find Customer</button>
+            <button data-quick-quote>≈<br>Quick Quote</button>
             <button data-route="schedule">▣<br>Schedule</button>
           </div>
         </section>
@@ -213,10 +220,11 @@ function bindDynamic() {
   });
   document.querySelectorAll("[data-demo-action]").forEach(el => {
     el.onclick = () => {
-      if (["New Job","New Tentative"].includes(el.dataset.demoAction)) openWizard();
+      if (["New Job","New Tentative"].includes(el.dataset.demoAction)) openWizard("job");
       else toast(`${el.dataset.demoAction} becomes active in a later version.`);
     };
   });
+  document.querySelectorAll("[data-quick-quote]").forEach(el => el.onclick = () => openWizard("quote"));
   view.querySelectorAll("[data-route]").forEach(el => {
     el.onclick = () => go(el.dataset.route);
   });
@@ -246,6 +254,9 @@ async function loadLiveData() {
     if (Array.isArray(data.equipmentTypes) && data.equipmentTypes.length) state.equipmentTypes = data.equipmentTypes;
     if (Array.isArray(data.jobTypes) && data.jobTypes.length) state.jobTypes = data.jobTypes;
     if (Array.isArray(data.accessConditions) && data.accessConditions.length) state.accessConditions = data.accessConditions;
+    if (Array.isArray(data.products)) state.products = data.products;
+    if (Array.isArray(data.brands)) state.brands = data.brands;
+    if (Array.isArray(data.fulfillmentConditions) && data.fulfillmentConditions.length) state.fulfillmentConditions = data.fulfillmentConditions;
     state.live = true;
     dataStatus.textContent = "Live CMS";
     dataStatus.className = "demo live";
@@ -271,181 +282,66 @@ const wizardStepLabel = document.querySelector("#wizardStepLabel");
 const wizardProgress = document.querySelector("#wizardProgress");
 const wizardBack = document.querySelector("#wizardBack");
 const wizardNext = document.querySelector("#wizardNext");
-const DRAFT_KEY = "gameplan-job-draft-v0.3";
-
-const blankDraft = () => ({
-  step: 0,
-  customerMode: "existing",
-  customerId: "",
-  firstName: "",
-  lastName: "",
-  phone: "",
-  email: "",
-  address: "",
-  jobTypeId: "JT-DEL",
-  equipment: [{equipmentTypeId:"EQP-TREAD",condition:"New",brand:"",model:"",quantity:1,storeAssembly:true,buildRequired:true}],
-  access: ["ACC-SINGLE"],
-  scheduledDate: "",
-  scheduledTime: "",
-  crewSize: 2,
-  internalNotes: ""
-});
-let draft = blankDraft();
-
-function esc(value) {
-  return String(value ?? "").replace(/[&<>"']/g, char => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;"}[char]));
+const wizardTitle = document.querySelector("#wizardTitle");
+const DRAFT_KEY = "gameplan-job-draft-v0.3.1";
+const blankItem=()=>({condition:"New",equipmentTypeId:"EQP-TREAD",brandId:"",brand:"",productId:"",model:"",fulfillmentConditionId:"NIB",notes:""});
+const blankDraft=()=>({mode:"job",step:0,customerMode:"existing",customerId:"",customerSearch:"",firstName:"",lastName:"",phone:"",email:"",addressId:"",address:"",jobTypeId:"JT-DEL",equipment:[blankItem()],access:["ACC-SINGLE"],scheduledDate:"",scheduledTime:"",internalNotes:""});
+let draft=blankDraft();
+function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;"}[c]));}
+function selectedCustomer(){return state.customers.find(c=>c.id===draft.customerId);}
+function selectedType(item){return state.equipmentTypes.find(t=>t.id===item.equipmentTypeId)||{};}
+function crewSize(){return Math.max(1,...draft.equipment.map(i=>Number(selectedType(i).defaultCrewSize||2)));}
+function optionList(items,current,label="name"){return items.map(x=>`<option value="${esc(x.id)}" ${x.id===current?"selected":""}>${esc(x[label])}</option>`).join("");}
+function openWizard(mode="job"){
+  const saved=mode==="job"?localStorage.getItem(DRAFT_KEY):null;
+  draft=saved?{...blankDraft(),...JSON.parse(saved)}:blankDraft(); draft.mode=mode; draft.step=0;
+  wizardTitle.textContent=mode==="quote"?"Quick Quote":"New Job";
+  document.querySelector("#saveDraftTop").style.display=mode==="quote"?"none":"block";
+  renderWizard(); wizard.classList.add("open");wizardBackdrop.classList.add("open");wizard.setAttribute("aria-hidden","false");
 }
-function selectedCustomer() { return state.customers.find(c => c.id === draft.customerId); }
-function optionList(items, current) {
-  return items.map(item => `<option value="${esc(item.id)}" ${item.id===current?"selected":""}>${esc(item.name)}</option>`).join("");
+function closeWizard(){wizard.classList.remove("open");wizardBackdrop.classList.remove("open");wizard.setAttribute("aria-hidden","true");}
+function saveDraft(show=true){sync();localStorage.setItem(DRAFT_KEY,JSON.stringify(draft));if(show)toast("Saved to finish later on this device.");}
+function heading(a,b){return `<div class="step-wrap"><h2>${a}</h2><p>${b}</p>`;}
+function customerStep(){
+ const q=draft.customerSearch.toLowerCase(); const results=state.customers.filter(c=>!q||c.name.toLowerCase().includes(q)||(c.phone||"").includes(q)).slice(0,10);
+ const c=selectedCustomer(); const addresses=c?.addresses||[];
+ return `${heading("Who is this job for?","Choose a customer; their saved addresses load automatically.")}
+ <div class="choice-grid"><label class="choice"><input type="radio" name="customerMode" value="existing" ${draft.customerMode==="existing"?"checked":""}><strong>Existing Customer</strong></label><label class="choice"><input type="radio" name="customerMode" value="new" ${draft.customerMode==="new"?"checked":""}><strong>New Customer</strong></label></div>
+ ${draft.customerMode==="existing"?`<div class="field sticky-search"><label>Search customers</label><input id="customerSearch" value="${esc(draft.customerSearch)}" autocomplete="off"><div class="search-results" id="customerResults">${results.map(x=>`<button type="button" class="customer-result ${x.id===draft.customerId?"selected":""}" data-select-customer="${esc(x.id)}"><div><strong>${esc(x.name)}</strong><small>${esc(x.phone||"")}</small></div><span>${x.id===draft.customerId?"✓":"›"}</span></button>`).join("")}</div></div>`:`<div class="form-grid"><div class="field"><label>First name</label><input name="firstName" value="${esc(draft.firstName)}"></div><div class="field"><label>Last name</label><input name="lastName" value="${esc(draft.lastName)}"></div><div class="field"><label>Phone</label><input name="phone" value="${esc(draft.phone)}"></div><div class="field"><label>Email</label><input name="email" value="${esc(draft.email)}"></div></div>`}
+ ${draft.customerMode==="existing"&&c?`<div class="field"><label>Service address</label>${addresses.length?`<div class="choice-grid">${addresses.map(a=>`<label class="choice"><input type="radio" name="addressId" value="${esc(a.id)}" ${draft.addressId===a.id?"checked":""}><strong>${esc(a.label||"Saved address")}</strong><small>${esc(a.address)}</small></label>`).join("")}<label class="choice"><input type="radio" name="addressId" value="new" ${draft.addressId==="new"?"checked":""}><strong>Use another address</strong></label></div>`:`<div class="notice">No saved address for this customer.</div>`}</div>`:""}
+ ${draft.customerMode==="new"||draft.addressId==="new"||(!addresses.length&&c)?`<div class="field"><label>Service address</label><input name="address" value="${esc(draft.address)}" placeholder="Start typing an address"></div>`:""}</div>`;
 }
-function openWizard() {
-  const saved = localStorage.getItem(DRAFT_KEY);
-  if (saved) {
-    try { draft = {...blankDraft(), ...JSON.parse(saved)}; } catch { draft = blankDraft(); }
-  } else draft = blankDraft();
-  renderWizard();
-  wizard.classList.add("open"); wizardBackdrop.classList.add("open");
-  wizard.setAttribute("aria-hidden","false");
+function itemEditor(item,i){
+ const isNew=item.condition==="New"; const brands=[...new Map(state.products.filter(p=>p.equipmentTypeId===item.equipmentTypeId).map(p=>[p.brandId||p.brand,{id:p.brandId||p.brand,name:p.brand}])).values()];
+ const products=state.products.filter(p=>p.equipmentTypeId===item.equipmentTypeId&&(p.brandId===item.brandId||p.brand===item.brandId));
+ return `<div class="equipment-editor"><div class="equipment-editor__head"><strong>Item ${i+1}</strong>${draft.equipment.length>1?`<button type="button" class="remove-link" data-remove-equipment="${i}">Remove</button>`:""}</div>
+ <div class="choice-grid"><label class="choice"><input type="radio" data-item-condition="${i}" value="New" ${isNew?"checked":""}><strong>New</strong><small>Choose from product catalog</small></label><label class="choice"><input type="radio" data-item-condition="${i}" value="Used" ${!isNew?"checked":""}><strong>Used</strong><small>Enter flexible details</small></label></div>
+ <div class="field"><label>Equipment type</label><select data-equipment-field="equipmentTypeId" data-index="${i}">${optionList(state.equipmentTypes,item.equipmentTypeId)}</select></div>
+ ${isNew?`<div class="form-grid"><div class="field"><label>Brand</label><select data-equipment-field="brandId" data-index="${i}"><option value="">Choose brand</option>${optionList(brands,item.brandId)}</select></div><div class="field"><label>Model</label><select data-equipment-field="productId" data-index="${i}"><option value="">Choose model</option>${products.map(p=>`<option value="${esc(p.id)}" ${p.id===item.productId?"selected":""}>${esc(p.model)}</option>`).join("")}</select></div></div><div class="field"><label>Fulfillment condition</label><select data-equipment-field="fulfillmentCondition" data-index="${i}"><option ${item.fulfillmentConditionId==="NIB"?"selected":""}>New in Box</option><option ${item.fulfillmentCondition==="Floor Model"?"selected":""}>Floor Model</option><option ${item.fulfillmentCondition==="In-Box Delivery"?"selected":""}>In-Box Delivery</option></select><small class="field-note">Floor Model and In-Box Delivery waive the build charge. Final overrides are manager-only.</small></div>`:`<div class="form-grid"><div class="field"><label>Brand</label><input data-equipment-field="brand" data-index="${i}" value="${esc(item.brand)}"></div><div class="field"><label>Model</label><input data-equipment-field="model" data-index="${i}" value="${esc(item.model)}"></div></div><div class="field"><label>Description / notes</label><textarea data-equipment-field="notes" data-index="${i}">${esc(item.notes)}</textarea></div>`}
+ <div class="auto-rule">Crew: <strong>${esc(selectedType(item).defaultCrewSize||2)} people</strong> · Build: <strong>${isNew&&item.fulfillmentConditionId==="NIB"?"Required":"Not charged"}</strong></div></div>`;
 }
-function closeWizard() {
-  wizard.classList.remove("open"); wizardBackdrop.classList.remove("open");
-  wizard.setAttribute("aria-hidden","true");
+function equipmentStep(){return `${heading("What equipment is involved?","Choose New or Used first. New products use the catalog; used products use text fields.")}<div class="field"><label>Job type</label><select name="jobTypeId">${optionList(state.jobTypes,draft.jobTypeId)}</select></div>${draft.equipment.map(itemEditor).join("")}<button type="button" class="add-row" id="addEquipment">＋ Add Another Item</button></div>`;}
+function accessStep(){return `${heading("Delivery conditions","Select every condition that applies.")}<div class="choice-grid">${state.accessConditions.map(a=>`<label class="choice"><input type="checkbox" name="access" value="${esc(a.id)}" ${draft.access.includes(a.id)?"checked":""}><strong>${esc(a.name)}</strong><small>${Number(a.flatCharge||0)?`Adds $${a.flatCharge}`:"Select when applicable"}</small></label>`).join("")}</div></div>`;}
+function scheduleStep(){return `${heading("When should we hold the appointment?","Crew size is calculated automatically and cannot be changed by employees.")}<div class="form-grid"><div class="field"><label>Date</label><input name="scheduledDate" type="date" value="${esc(draft.scheduledDate)}"></div><div class="field"><label>Start time</label><input name="scheduledTime" type="time" value="${esc(draft.scheduledTime)}"></div></div><div class="summary-box"><span>Required crew</span><strong>${crewSize()} people</strong></div><div class="field"><label>Internal notes</label><textarea name="internalNotes">${esc(draft.internalNotes)}</textarea></div></div>`;}
+function quoteEstimate(){const item=draft.equipment[0],t=selectedType(item);let low=75+Number(t.defaultAssemblyCharge||0);if(item.condition==="Used")low+=25;if(item.fulfillmentConditionId!=="NIB")low-=Number(t.defaultAssemblyCharge||0);low+=state.accessConditions.filter(a=>draft.access.includes(a.id)).reduce((n,a)=>n+Number(a.flatCharge||0),0);low=Math.max(75,Math.round(low/5)*5);return [low,low+50];}
+function reviewStep(){const [low,high]=quoteEstimate();if(draft.mode==="quote")return `${heading("Quick Quote estimate","A range protects the store until travel, exact product, and access details are confirmed.")}<div class="quote-price"><span>Estimated price</span><strong>$${low}–$${high}</strong></div><div class="review-section"><h3>Address</h3><p>${esc(draft.address||"Address entered")}</p></div><div class="review-section"><h3>Equipment</h3><p>${esc(selectedType(draft.equipment[0]).name||"Equipment")} · ${esc(draft.equipment[0].condition)}</p></div><div class="review-section"><h3>Conditions</h3><p>${esc(state.accessConditions.filter(a=>draft.access.includes(a.id)).map(a=>a.name).join(", ")||"None")}</p></div><div class="notice">Estimate subject to final equipment, access, travel, and service details.</div></div>`;
+ const c=draft.customerMode==="existing"?selectedCustomer()?.name:`${draft.firstName} ${draft.lastName}`;return `${heading("Review the GamePlan","Confirm the working draft.")}<div class="summary-grid"><div class="summary-box"><span>Customer</span><strong>${esc(c)}</strong></div><div class="summary-box"><span>Crew</span><strong>${crewSize()} people</strong></div><div class="summary-box"><span>Equipment</span><strong>${draft.equipment.length} item(s)</strong></div><div class="summary-box"><span>Appointment</span><strong>${esc(draft.scheduledDate||"Unscheduled")}</strong></div></div><div class="review-section"><h3>Address</h3><p>${esc(draft.address)}</p></div><div class="notice">Save & Finish Later stores this on the current device. Secure CMS creation follows employee authentication.</div></div>`;}
+function quoteAddressStep(){return `${heading("Where is the delivery?","No customer name or phone number is required.")}<div class="field"><label>Service address</label><input name="address" value="${esc(draft.address)}" placeholder="Start typing an address"></div></div>`;}
+function quoteEquipmentStep(){return `${heading("What is being delivered?","Choose New or Used, then the equipment type. Exact item details are optional for an estimate.")}${itemEditor(draft.equipment[0],0)}</div>`;}
+function sync(){const fd=new FormData(wizardForm);["customerMode","firstName","lastName","phone","email","address","addressId","jobTypeId","scheduledDate","scheduledTime","internalNotes"].forEach(k=>{if(fd.has(k))draft[k]=fd.get(k)});if(draft.step===2||draft.mode==="quote"&&draft.step===2)draft.access=fd.getAll("access");wizardForm.querySelectorAll("[data-equipment-field]").forEach(el=>{const i=+el.dataset.index;if(draft.equipment[i])draft.equipment[i][el.dataset.equipmentField]=el.value;});}
+function validate(){sync();if(draft.mode==="quote"&&draft.step===0&&!draft.address.trim())return "Enter the delivery address.";if(draft.mode==="job"&&draft.step===0){if(draft.customerMode==="existing"&&!draft.customerId)return "Select a customer.";if(draft.customerMode==="new"&&(!draft.firstName||!draft.phone))return "Enter the customer name and phone.";if(!draft.address)return "Select or enter a service address.";}return "";}
+function renderWizard(){const steps=draft.mode==="quote"?[quoteAddressStep,quoteEquipmentStep,accessStep,reviewStep]:[customerStep,equipmentStep,accessStep,scheduleStep,reviewStep];wizardStepLabel.textContent=`Step ${draft.step+1} of ${steps.length}`;wizardProgress.innerHTML=steps.map((_,i)=>`<i class="${i<=draft.step?"active":""}"></i>`).join("");wizardProgress.style.gridTemplateColumns=`repeat(${steps.length},1fr)`;wizardForm.innerHTML=steps[draft.step]();wizardBack.style.visibility=draft.step?"visible":"hidden";wizardNext.textContent=draft.step===steps.length-1?(draft.mode==="quote"?"Done":"Save & Finish Later"):"Continue";bindStep();}
+function bindStep(){
+ wizardForm.querySelectorAll('input[name="customerMode"]').forEach(el=>el.onchange=()=>{sync();draft.customerMode=el.value;draft.customerId="";draft.address="";renderWizard();});
+ const search=wizardForm.querySelector("#customerSearch");if(search)search.oninput=()=>{draft.customerSearch=search.value;const q=draft.customerSearch.toLowerCase();const box=wizardForm.querySelector("#customerResults");box.innerHTML=state.customers.filter(c=>!q||c.name.toLowerCase().includes(q)||(c.phone||"").includes(q)).slice(0,10).map(x=>`<button type="button" class="customer-result" data-select-customer="${esc(x.id)}"><div><strong>${esc(x.name)}</strong><small>${esc(x.phone||"")}</small></div><span>›</span></button>`).join("");bindCustomerButtons();};
+ bindCustomerButtons();wizardForm.querySelectorAll('input[name="addressId"]').forEach(el=>el.onchange=()=>{draft.addressId=el.value;if(el.value!=="new"){const a=selectedCustomer()?.addresses?.find(x=>x.id===el.value);draft.address=a?.address||"";}renderWizard();});
+ wizardForm.querySelectorAll("[data-item-condition]").forEach(el=>el.onchange=()=>{sync();draft.equipment[+el.dataset.itemCondition]={...blankItem(),condition:el.value};renderWizard();});
+ wizardForm.querySelectorAll('select[data-equipment-field="equipmentTypeId"],select[data-equipment-field="brandId"]').forEach(el=>el.onchange=()=>{sync();const item=draft.equipment[+el.dataset.index];if(el.dataset.equipmentField==="equipmentTypeId"){item.brandId="";item.productId="";}else item.productId="";renderWizard();});
+ wizardForm.querySelector("#addEquipment")?.addEventListener("click",()=>{sync();draft.equipment.push(blankItem());renderWizard();});wizardForm.querySelectorAll("[data-remove-equipment]").forEach(el=>el.onclick=()=>{draft.equipment.splice(+el.dataset.removeEquipment,1);renderWizard();});
 }
-function saveDraft(showToast=true) {
-  syncWizardInputs();
-  localStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
-  if (showToast) toast("Job draft saved on this device.");
-}
-function clearDraft() { localStorage.removeItem(DRAFT_KEY); draft = blankDraft(); }
-function stepHeading(titleText, description) {
-  return `<div class="step-wrap"><h2>${titleText}</h2><p>${description}</p>`;
-}
-function renderCustomerStep() {
-  const query = `${draft.firstName} ${draft.lastName}`.trim().toLowerCase();
-  const results = state.customers.filter(c => !query || c.name.toLowerCase().includes(query) || (c.phone||"").includes(query)).slice(0,8);
-  return `${stepHeading("Who is this job for?","Find an existing customer or add a new one.")}
-    ${localStorage.getItem(DRAFT_KEY)?`<div class="draft-banner"><span>An unfinished job draft was restored.</span><button type="button" class="text-button" id="discardDraft">Discard</button></div>`:""}
-    <div class="choice-grid" style="margin-bottom:16px">
-      <label class="choice"><input type="radio" name="customerMode" value="existing" ${draft.customerMode==="existing"?"checked":""}><strong>Existing Customer</strong><small>Search the roster</small></label>
-      <label class="choice"><input type="radio" name="customerMode" value="new" ${draft.customerMode==="new"?"checked":""}><strong>New Customer</strong><small>Create a new roster entry later</small></label>
-    </div>
-    ${draft.customerMode==="existing" ? `
-      <div class="field"><label>Search customers</label><input id="customerSearch" value="${esc(query)}" placeholder="Name or phone number" autocomplete="off"></div>
-      <div class="search-results">${results.length ? results.map(c=>`<button type="button" class="customer-result ${draft.customerId===c.id?"selected":""}" data-select-customer="${esc(c.id)}"><div><strong>${esc(c.name)}</strong><small>${esc(c.phone||"No phone")} · ${esc(c.email||"No email")}</small></div><span>${draft.customerId===c.id?"✓":"›"}</span></button>`).join("") : `<div class="notice">No matching customers. Choose New Customer to enter their information.</div>`}</div>
-    ` : `
-      <div class="form-grid"><div class="field"><label>First name</label><input name="firstName" value="${esc(draft.firstName)}" required></div><div class="field"><label>Last name</label><input name="lastName" value="${esc(draft.lastName)}" required></div></div>
-      <div class="form-grid"><div class="field"><label>Phone</label><input name="phone" type="tel" value="${esc(draft.phone)}" required></div><div class="field"><label>Email</label><input name="email" type="email" value="${esc(draft.email)}"></div></div>
-    `}
-    <div class="field"><label>Service address</label><input name="address" value="${esc(draft.address)}" placeholder="Customer delivery or pickup address" required></div>
-  </div>`;
-}
-function renderEquipmentStep() {
-  return `${stepHeading("What equipment is involved?","Add each item and choose the services it requires.")}
-    <div class="field"><label>Job type</label><select name="jobTypeId">${optionList(state.jobTypes,draft.jobTypeId)}</select></div>
-    <div id="equipmentEditors">${draft.equipment.map((item,index)=>`
-      <div class="equipment-editor">
-        <div class="equipment-editor__head"><strong>Item ${index+1}</strong>${draft.equipment.length>1?`<button type="button" class="remove-link" data-remove-equipment="${index}">Remove</button>`:""}</div>
-        <div class="form-grid">
-          <div class="field"><label>Equipment type</label><select data-equipment-field="equipmentTypeId" data-index="${index}">${optionList(state.equipmentTypes,item.equipmentTypeId)}</select></div>
-          <div class="field"><label>Condition</label><select data-equipment-field="condition" data-index="${index}"><option ${item.condition==="New"?"selected":""}>New</option><option ${item.condition==="Used"?"selected":""}>Used</option></select></div>
-          <div class="field"><label>Brand</label><input data-equipment-field="brand" data-index="${index}" value="${esc(item.brand)}" placeholder="NordicTrack"></div>
-          <div class="field"><label>Model</label><input data-equipment-field="model" data-index="${index}" value="${esc(item.model)}" placeholder="T 6.5 S"></div>
-        </div>
-        <div class="choice-grid">
-          <label class="choice"><input type="checkbox" data-equipment-field="storeAssembly" data-index="${index}" ${item.storeAssembly?"checked":""}><strong>Store Assembly</strong><small>Build before delivery</small></label>
-          <label class="choice"><input type="checkbox" data-equipment-field="buildRequired" data-index="${index}" ${item.buildRequired?"checked":""}><strong>Build Required</strong><small>Add to build alerts</small></label>
-        </div>
-      </div>`).join("")}</div>
-    <button type="button" class="add-row" id="addEquipment">＋ Add Another Item</button>
-  </div>`;
-}
-function renderAccessStep() {
-  return `${stepHeading("What is access like?","Select every condition that affects delivery time or difficulty.")}
-    <div class="choice-grid">${state.accessConditions.map(a=>`<label class="choice"><input type="checkbox" name="access" value="${esc(a.id)}" ${draft.access.includes(a.id)?"checked":""}><strong>${esc(a.name)}</strong><small>${a.id.includes("STAIR")?"Adds time and access charge":"Include when applicable"}</small></label>`).join("")}</div>
-  </div>`;
-}
-function renderScheduleStep() {
-  return `${stepHeading("When should we hold the appointment?","This creates the scheduling information for a tentative job.")}
-    <div class="form-grid">
-      <div class="field"><label>Date</label><input name="scheduledDate" type="date" value="${esc(draft.scheduledDate)}"></div>
-      <div class="field"><label>Start time</label><input name="scheduledTime" type="time" value="${esc(draft.scheduledTime)}"></div>
-    </div>
-    <div class="field"><label>Crew size</label><select name="crewSize"><option value="1" ${draft.crewSize==1?"selected":""}>1 person</option><option value="2" ${draft.crewSize==2?"selected":""}>2 people</option><option value="3" ${draft.crewSize==3?"selected":""}>3 people</option></select></div>
-    <div class="field"><label>Internal notes</label><textarea name="internalNotes" rows="4" placeholder="Parking, customer requests, timing notes…">${esc(draft.internalNotes)}</textarea></div>
-    <div class="notice">Conflict detection, Google travel time, and automatic duration will be added in the Smart Scheduling and Maps versions.</div>
-  </div>`;
-}
-function renderReviewStep() {
-  const customer = draft.customerMode==="existing" ? selectedCustomer()?.name || "Customer not selected" : `${draft.firstName} ${draft.lastName}`.trim();
-  const accessNames = state.accessConditions.filter(a=>draft.access.includes(a.id)).map(a=>a.name).join(", ") || "None selected";
-  const dateText = draft.scheduledDate || "Not scheduled";
-  return `${stepHeading("Review the GamePlan","Confirm the information before saving this working draft.")}
-    <div class="summary-grid">
-      <div class="summary-box"><span>Customer</span><strong>${esc(customer)}</strong></div>
-      <div class="summary-box"><span>Appointment</span><strong>${esc(dateText)} ${esc(draft.scheduledTime||"")}</strong></div>
-      <div class="summary-box"><span>Equipment</span><strong>${draft.equipment.length} item${draft.equipment.length===1?"":"s"}</strong></div>
-      <div class="summary-box"><span>Crew</span><strong>${draft.crewSize} person${draft.crewSize==1?"":"s"}</strong></div>
-    </div>
-    <div class="review-section"><h3>Address</h3><p>${esc(draft.address||"Not entered")}</p></div>
-    <div class="review-section"><h3>Equipment</h3>${draft.equipment.map(i=>`<p><strong>${esc(i.brand)} ${esc(i.model)}</strong> · ${esc(state.equipmentTypes.find(t=>t.id===i.equipmentTypeId)?.name||i.equipmentTypeId)} · ${esc(i.condition)}${i.buildRequired?" · Needs Build":""}</p>`).join("")}</div>
-    <div class="review-section"><h3>Access</h3><p>${esc(accessNames)}</p></div>
-    <div class="notice">Secure CMS writes are intentionally disabled until employee authentication is active. “Save Job Draft” stores this record on the current device without adding customer information to the public API.</div>
-  </div>`;
-}
-function syncWizardInputs() {
-  if (!wizardForm) return;
-  const data = new FormData(wizardForm);
-  ["customerMode","firstName","lastName","phone","email","address","jobTypeId","scheduledDate","scheduledTime","internalNotes"].forEach(key => {
-    if (data.has(key)) draft[key] = data.get(key);
-  });
-  if (data.has("crewSize")) draft.crewSize = Number(data.get("crewSize"));
-  if (draft.step===2) draft.access = data.getAll("access");
-  wizardForm.querySelectorAll("[data-equipment-field]").forEach(el=>{
-    const i=Number(el.dataset.index), key=el.dataset.equipmentField;
-    if (!draft.equipment[i]) return;
-    draft.equipment[i][key] = el.type==="checkbox" ? el.checked : el.value;
-  });
-}
-function validateWizardStep() {
-  syncWizardInputs();
-  if (draft.step===0) {
-    if (draft.customerMode==="existing" && !draft.customerId) return "Select an existing customer.";
-    if (draft.customerMode==="new" && (!draft.firstName.trim() || !draft.phone.trim())) return "Enter the new customer's name and phone.";
-    if (!draft.address.trim()) return "Enter the service address.";
-  }
-  if (draft.step===1 && !draft.equipment.length) return "Add at least one equipment item.";
-  return "";
-}
-function renderWizard() {
-  const renderers=[renderCustomerStep,renderEquipmentStep,renderAccessStep,renderScheduleStep,renderReviewStep];
-  wizardStepLabel.textContent=`Step ${draft.step+1} of 5`;
-  wizardProgress.innerHTML=Array.from({length:5},(_,i)=>`<i class="${i<=draft.step?"active":""}"></i>`).join("");
-  wizardForm.innerHTML=renderers[draft.step]();
-  wizardBack.style.visibility=draft.step===0?"hidden":"visible";
-  wizardNext.textContent=draft.step===4?"Save Job Draft":"Continue";
-  bindWizardStep();
-}
-function bindWizardStep() {
-  wizardForm.querySelectorAll('input[name="customerMode"]').forEach(el=>el.onchange=()=>{syncWizardInputs();draft.customerMode=el.value;draft.customerId="";renderWizard();});
-  wizardForm.querySelectorAll("[data-select-customer]").forEach(el=>el.onclick=()=>{draft.customerId=el.dataset.selectCustomer;renderWizard();});
-  const search=wizardForm.querySelector("#customerSearch");
-  if(search) search.oninput=()=>{draft.firstName=search.value;draft.lastName="";renderWizard();setTimeout(()=>wizardForm.querySelector("#customerSearch")?.focus(),0);};
-  wizardForm.querySelector("#discardDraft")?.addEventListener("click",()=>{clearDraft();renderWizard();});
-  wizardForm.querySelector("#addEquipment")?.addEventListener("click",()=>{syncWizardInputs();draft.equipment.push({equipmentTypeId:"EQP-OTHER",condition:"New",brand:"",model:"",quantity:1,storeAssembly:false,buildRequired:false});renderWizard();});
-  wizardForm.querySelectorAll("[data-remove-equipment]").forEach(el=>el.onclick=()=>{syncWizardInputs();draft.equipment.splice(Number(el.dataset.removeEquipment),1);renderWizard();});
-}
-wizardNext.onclick=()=>{
-  const error=validateWizardStep();
-  if(error){toast(error);return;}
-  if(draft.step<4){draft.step++;saveDraft(false);renderWizard();}
-  else {saveDraft(false);toast("Job draft saved on this device.");closeWizard();}
-};
-wizardBack.onclick=()=>{syncWizardInputs();draft.step=Math.max(0,draft.step-1);saveDraft(false);renderWizard();};
-document.querySelector("#closeWizard").onclick=()=>{saveDraft(false);closeWizard();};
-document.querySelector("#saveDraftTop").onclick=()=>saveDraft(true);
-wizardBackdrop.onclick=()=>{saveDraft(false);closeWizard();};
-
+function bindCustomerButtons(){wizardForm.querySelectorAll("[data-select-customer]").forEach(el=>el.onclick=()=>{draft.customerId=el.dataset.selectCustomer;const c=selectedCustomer();const a=c?.addresses?.find(x=>x.default)||c?.addresses?.[0];draft.addressId=a?.id||"new";draft.address=a?.address||"";renderWizard();});}
+wizardNext.onclick=()=>{const err=validate();if(err)return toast(err);const count=draft.mode==="quote"?4:5;if(draft.step<count-1){draft.step++;if(draft.mode==="job")saveDraft(false);renderWizard();}else{if(draft.mode==="job")saveDraft(false);closeWizard();toast(draft.mode==="quote"?"Quick Quote complete.":"Saved to finish later on this device.");}};
+wizardBack.onclick=()=>{sync();draft.step=Math.max(0,draft.step-1);renderWizard();};document.querySelector("#closeWizard").onclick=closeWizard;document.querySelector("#saveDraftTop").onclick=()=>saveDraft(true);wizardBackdrop.onclick=closeWizard;
 
 document.querySelector("#closeDrawer").onclick = closeJob;
 drawerBackdrop.onclick = closeJob;

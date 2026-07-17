@@ -7,7 +7,7 @@
   <meta name="description" content="GamePlan delivery and installation operations app">
   <link rel="manifest" href="./manifest.json">
   <link rel="icon" href="./assets/icons/icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./css/app.css?v=0.3.0">
+  <link rel="stylesheet" href="./css/app.css?v=0.4.0">
   <title>GamePlan</title>
 </head>
 <body>
@@ -70,8 +70,8 @@
     <section class="wizard" id="jobWizard" aria-hidden="true">
       <header class="wizard__header">
         <button class="drawer__back" id="closeWizard" aria-label="Close new job">×</button>
-        <div><strong>New Job</strong><small id="wizardStepLabel">Step 1 of 5</small></div>
-        <button class="text-button" id="saveDraftTop">Save Draft</button>
+        <div><strong id="wizardTitle">New Job</strong><small id="wizardStepLabel">Step 1 of 5</small></div>
+        <button class="text-button" id="saveDraftTop">Save & Finish Later</button>
       </header>
       <div class="wizard__progress" id="wizardProgress"></div>
       <form id="jobWizardForm" class="wizard__body"></form>
@@ -84,7 +84,7 @@
     <div id="toast"></div>
   </div>
 
-  <script src="./js/config.js?v=0.3.0"></script>
-  <script type="module" src="./js/app.js?v=0.3.0"></script>
+  <script src="./js/config.js?v=0.4.0"></script>
+  <script type="module" src="./js/app.js?v=0.4.0"></script>
 </body>
 </html>
