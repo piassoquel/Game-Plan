@@ -52,6 +52,11 @@ const state = {
 };
 const api = new GamePlanApi(window.GAMEPLAN_CONFIG);
 
+const scheduleState = {
+  weekStart: startOfWeek(new Date()),
+  selectedDay: toDateKey(new Date())
+};
+
 const view = document.querySelector("#view");
 const title = document.querySelector("#title");
 const sub = document.querySelector("#subtitle");
@@ -62,6 +67,144 @@ const drawerBackdrop = document.querySelector("#drawerBackdrop");
 const drawerContent = document.querySelector("#drawerContent");
 
 const todayDate = new Intl.DateTimeFormat("en-US",{weekday:"long",month:"long",day:"numeric"}).format(new Date());
+
+function startOfWeek(value) {
+  const date = new Date(value);
+  date.setHours(0, 0, 0, 0);
+  const day = date.getDay();
+  date.setDate(date.getDate() - ((day + 6) % 7));
+  return date;
+}
+
+function addDays(value, amount) {
+  const date = new Date(value);
+  date.setDate(date.getDate() + amount);
+  return date;
+}
+
+function toDateKey(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function parseJobDate(job) {
+  const raw = job.scheduledDate || job.dateISO || job.appointmentDate || job.date || "";
+  if (!raw) return null;
+  const normalized = String(raw).trim().toLowerCase();
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  if (normalized === "today") return now;
+  if (normalized === "tomorrow") return addDays(now, 1);
+  if (normalized === "yesterday") return addDays(now, -1);
+  const isoOnly = /^\d{4}-\d{2}-\d{2}$/.test(String(raw));
+  const parsed = isoOnly ? new Date(`${raw}T12:00:00`) : new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function parseDurationHours(job) {
+  const numeric = Number(job.durationHours || job.estimatedHours || 0);
+  if (numeric > 0) return numeric;
+  const text = String(job.duration || "").toLowerCase();
+  const hours = Number((text.match(/([\d.]+)\s*h/) || [])[1] || 0);
+  const minutes = Number((text.match(/([\d.]+)\s*m/) || [])[1] || 0);
+  return hours + minutes / 60 || 1;
+}
+
+function timeSortValue(job) {
+  const raw = job.scheduledTime || job.time || "";
+  const match = String(raw).trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
+  if (!match) return 9999;
+  let hour = Number(match[1]);
+  const minute = Number(match[2]);
+  const suffix = (match[3] || "").toUpperCase();
+  if (suffix === "PM" && hour !== 12) hour += 12;
+  if (suffix === "AM" && hour === 12) hour = 0;
+  return hour * 60 + minute;
+}
+
+function jobsForDate(date) {
+  const key = toDateKey(date);
+  return state.jobs
+    .filter(job => toDateKey(parseJobDate(job)) === key)
+    .sort((a, b) => timeSortValue(a) - timeSortValue(b));
+}
+
+function scheduleLoadInfo(jobs) {
+  const hours = jobs.reduce((sum, job) => sum + parseDurationHours(job), 0);
+  const capacity = 8;
+  const percent = Math.round((hours / capacity) * 100);
+  const level = percent > 100 ? "over" : percent >= 80 ? "heavy" : percent >= 45 ? "steady" : "open";
+  const label = level === "over" ? "Over capacity" : level === "heavy" ? "Nearly full" : level === "steady" ? "Steady" : "Open";
+  return { hours, percent, level, label };
+}
+
+function weekLabel(start) {
+  const end = addDays(start, 6);
+  const sameMonth = start.getMonth() === end.getMonth();
+  const first = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(start);
+  const last = new Intl.DateTimeFormat("en-US", sameMonth ? { day: "numeric", year: "numeric" } : { month: "short", day: "numeric", year: "numeric" }).format(end);
+  return `${first}–${last}`;
+}
+
+function renderSchedule() {
+  const days = Array.from({ length: 7 }, (_, index) => addDays(scheduleState.weekStart, index));
+  const selectedDate = days.find(day => toDateKey(day) === scheduleState.selectedDay) || days[0];
+  scheduleState.selectedDay = toDateKey(selectedDate);
+  const selectedJobs = jobsForDate(selectedDate);
+  const weekJobs = days.flatMap(jobsForDate);
+  const unscheduled = state.jobs.filter(job => !parseJobDate(job));
+  const totalHours = weekJobs.reduce((sum, job) => sum + parseDurationHours(job), 0);
+  const selectedTitle = new Intl.DateTimeFormat("en-US", { weekday: "long", month: "long", day: "numeric" }).format(selectedDate);
+
+  return `<div class="schedule-planner">
+    <section class="schedule-toolbar">
+      <button class="button neutral schedule-nav" data-week-nav="-1" aria-label="Previous week">←</button>
+      <div class="schedule-range"><span>Weekly operations plan</span><strong>${weekLabel(scheduleState.weekStart)}</strong></div>
+      <button class="button neutral schedule-nav" data-week-nav="1" aria-label="Next week">→</button>
+      <button class="button schedule-today" data-week-today>This Week</button>
+    </section>
+
+    <section class="schedule-summary">
+      <div class="stat"><b>${weekJobs.length}</b><span>Scheduled jobs</span></div>
+      <div class="stat"><b>${Math.round(totalHours * 10) / 10}</b><span>Estimated hours</span></div>
+      <div class="stat"><b>${weekJobs.filter(job => job.status === "Tentative").length}</b><span>Tentative</span></div>
+      <div class="stat"><b>${unscheduled.length}</b><span>Unscheduled</span></div>
+    </section>
+
+    <section class="week-grid" aria-label="Weekly schedule">
+      ${days.map(day => {
+        const jobs = jobsForDate(day);
+        const load = scheduleLoadInfo(jobs);
+        const selected = toDateKey(day) === scheduleState.selectedDay;
+        const today = toDateKey(day) === toDateKey(new Date());
+        return `<button class="week-day ${selected ? "selected" : ""} ${today ? "today" : ""}" data-select-day="${toDateKey(day)}">
+          <div class="week-day__top"><span>${new Intl.DateTimeFormat("en-US", { weekday: "short" }).format(day)}</span><b>${day.getDate()}</b></div>
+          <div class="capacity-track"><i class="${load.level}" style="width:${Math.min(load.percent, 100)}%"></i></div>
+          <div class="week-day__meta"><strong>${jobs.length} ${jobs.length === 1 ? "job" : "jobs"}</strong><span>${load.label}</span></div>
+          <div class="status-dots">${jobs.slice(0, 6).map(job => `<i class="${badgeClass(job.status)}" title="${esc(job.status)}"></i>`).join("")}</div>
+        </button>`;
+      }).join("")}
+    </section>
+
+    <section class="card schedule-agenda">
+      <div class="head"><div><h2>${selectedTitle}</h2><span class="agenda-subtitle">${selectedJobs.length ? `${selectedJobs.length} scheduled ${selectedJobs.length === 1 ? "job" : "jobs"}` : "No jobs scheduled"}</span></div><button class="button" data-demo-action="New Job">＋ New Job</button></div>
+      <div class="body agenda-list">
+        ${selectedJobs.length ? selectedJobs.map(job => `<article class="agenda-job" data-open-job="${esc(job.id)}">
+          <div class="agenda-time"><strong>${esc(job.time || job.scheduledTime || "Time TBD")}</strong><span>${esc(job.duration || "")}</span></div>
+          <div class="agenda-line"></div>
+          <div class="agenda-main"><div class="agenda-main__top"><h3>${esc(job.customer)}</h3><span class="badge ${badgeClass(job.status)}">${esc(job.status)}</span></div><p>${esc(job.type)} · ${esc(job.address)}</p><div class="agenda-tags"><span>${esc(job.crewSize || "—")} crew</span>${job.buildRequired && !job.buildComplete ? `<span class="build-warning">Needs Build</span>` : ""}</div></div>
+          <button class="button neutral" data-open-job="${esc(job.id)}">Open</button>
+        </article>`).join("") : `<div class="empty-agenda"><b>Open day</b><span>This day currently has no scheduled work.</span><button class="button" data-demo-action="New Job">Schedule a Job</button></div>`}
+      </div>
+    </section>
+
+    ${unscheduled.length ? `<section class="card unscheduled-card"><div class="head"><h2>Unscheduled Jobs</h2><span class="badge tentative">${unscheduled.length}</span></div><div class="body list">${unscheduled.slice(0, 8).map(job => `<div class="row" data-open-job="${esc(job.id)}"><div><b>${esc(job.customer)}</b><span>${esc(job.type)} · ${esc(job.address)}</span></div><span class="badge ${badgeClass(job.status)}">${esc(job.status)}</span></div>`).join("")}</div></section>` : ""}
+  </div>`;
+}
 
 function toast(message) {
   toastBox.innerHTML = `<div class="toast">${message}</div>`;
@@ -191,8 +334,8 @@ const views = {
   },
 
   schedule: {
-    title:"Schedule", sub:"Internal GamePlan schedule",
-    html:()=>`<section class="card"><div class="head"><h2>Upcoming Jobs</h2><button class="button" data-demo-action="New Tentative">New Tentative</button></div><div class="body list">${state.jobs.map(j=>`<div class="row" data-open-job="${j.id}"><div><b>${j.date}, ${j.time} · ${j.customer}</b><span>${j.type} · ${j.address}</span></div><span class="badge ${badgeClass(j.status)}">${j.status}</span></div>`).join("")}</div></section>`
+    title:"Schedule", sub:"Weekly operations planner",
+    html:()=>renderSchedule()
   },
 
   jobs: {
@@ -227,6 +370,26 @@ function bindDynamic() {
   document.querySelectorAll("[data-quick-quote]").forEach(el => el.onclick = () => openWizard("quote"));
   view.querySelectorAll("[data-route]").forEach(el => {
     el.onclick = () => go(el.dataset.route);
+  });
+  view.querySelectorAll("[data-week-nav]").forEach(el => {
+    el.onclick = () => {
+      scheduleState.weekStart = addDays(scheduleState.weekStart, Number(el.dataset.weekNav) * 7);
+      scheduleState.selectedDay = toDateKey(scheduleState.weekStart);
+      go("schedule");
+    };
+  });
+  view.querySelectorAll("[data-select-day]").forEach(el => {
+    el.onclick = () => {
+      scheduleState.selectedDay = el.dataset.selectDay;
+      go("schedule");
+    };
+  });
+  view.querySelectorAll("[data-week-today]").forEach(el => {
+    el.onclick = () => {
+      scheduleState.weekStart = startOfWeek(new Date());
+      scheduleState.selectedDay = toDateKey(new Date());
+      go("schedule");
+    };
   });
 }
 
