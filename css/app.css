@@ -37,3 +37,20 @@
 .stat-action{appearance:none;width:100%;text-align:left;color:inherit;font:inherit;cursor:pointer;transition:border-color .18s,transform .18s,background .18s}
 .stat-action:hover,.stat-action:focus-visible{border-color:#ff8a2a;background:#232a30;transform:translateY(-1px);outline:none}
 .stat-action:active{transform:translateY(0)}
+
+
+/* Weekly Planner v2.2 final filters and tentative day markers */
+.pending-marker{box-shadow:0 0 0 3px rgba(245,158,11,.14);animation:pendingPulse 2.2s ease-in-out infinite}
+@keyframes pendingPulse{0%,100%{opacity:.72}50%{opacity:1}}
+.job-filter-bar{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
+.job-filter-chip{min-height:34px;padding:0 11px;border:1px solid #303840;border-radius:999px;background:transparent;color:#9ca3af;font:inherit;font-size:12px;font-weight:700;cursor:pointer;opacity:.55}
+.job-filter-chip:hover{opacity:.9;border-color:#66707a}
+.job-filter-chip.active{opacity:1}
+.job-filter-chip.active.quote{color:#60a5fa;border-color:rgba(59,130,246,.45);background:rgba(59,130,246,.1)}
+.job-filter-chip.active.tentative{color:#fbbf24;border-color:rgba(245,158,11,.45);background:rgba(245,158,11,.1)}
+.job-filter-chip.active.scheduled{color:#60a5fa;border-color:rgba(59,130,246,.45);background:rgba(59,130,246,.1)}
+.job-filter-chip.active.completed{color:#4ade80;border-color:rgba(34,197,94,.45);background:rgba(34,197,94,.1)}
+.job-filter-chip.active.cancelled{color:#f87171;border-color:rgba(239,68,68,.45);background:rgba(239,68,68,.1)}
+.jobs-head{align-items:flex-start;gap:16px}
+@media(max-width:900px){.jobs-head{flex-direction:column}.jobs-head .head-actions{width:100%;justify-content:space-between}.job-filter-bar{flex:1}}
+@media(max-width:600px){.jobs-head .head-actions{display:grid;grid-template-columns:1fr}.job-filter-bar{width:100%}.job-filter-chip{flex:1;min-width:calc(33.333% - 7px)}.jobs-head .head-actions>.button{width:100%}}

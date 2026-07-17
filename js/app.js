@@ -59,7 +59,7 @@ const scheduleState = {
 
 let jobsViewFilter = "all";
 let jobsViewWeekStart = "";
-let showTentativeJobs = true;
+let jobStatusFilters = new Set(["Quote", "Tentative", "Scheduled"]);
 
 const view = document.querySelector("#view");
 const title = document.querySelector("#title");
@@ -197,14 +197,15 @@ function renderSchedule() {
     <section class="week-grid" aria-label="Weekly schedule">
       ${days.map(day => {
         const jobs = jobsForDate(day);
+        const tentativeJobs = state.jobs.filter(job => job.status === "Tentative" && toDateKey(parseJobDate(job)) === toDateKey(day));
         const load = scheduleLoadInfo(jobs);
         const selected = toDateKey(day) === scheduleState.selectedDay;
         const today = toDateKey(day) === toDateKey(new Date());
         return `<button class="week-day ${selected ? "selected" : ""} ${today ? "today" : ""}" data-select-day="${toDateKey(day)}">
           <div class="week-day__top"><span>${new Intl.DateTimeFormat("en-US", { weekday: "short" }).format(day)}</span><b>${day.getDate()}</b></div>
           <div class="capacity-track"><i class="${load.level}" style="width:${Math.min(load.percent, 100)}%"></i></div>
-          <div class="week-day__meta"><strong>${jobs.length} ${jobs.length === 1 ? "job" : "jobs"}</strong><span>${jobs.filter(isScheduledBuildAlert).length ? `${jobs.filter(isScheduledBuildAlert).length} Needs Build` : load.label}</span></div>
-          <div class="status-dots">${jobs.slice(0, 6).map(job => `<i class="${badgeClass(job.status)}" title="${esc(job.status)}"></i>`).join("")}</div>
+          <div class="week-day__meta"><strong>${jobs.length} ${jobs.length === 1 ? "job" : "jobs"}</strong><span>${tentativeJobs.length ? `${tentativeJobs.length} Pending` : jobs.filter(isScheduledBuildAlert).length ? `${jobs.filter(isScheduledBuildAlert).length} Needs Build` : load.label}</span></div>
+          <div class="status-dots">${jobs.slice(0, 5).map(job => `<i class="${badgeClass(job.status)}" title="${esc(job.status)}"></i>`).join("")}${tentativeJobs.length ? `<i class="tentative pending-marker" title="${tentativeJobs.length} awaiting confirmation"></i>` : ""}</div>
         </button>`;
       }).join("")}
     </section>
@@ -463,8 +464,8 @@ const views = {
         filteredJobs = state.jobs.filter(isScheduledBuildAlert);
         heading = "Build Alerts";
         subtitle = "Scheduled jobs with unfinished equipment builds";
-      } else if (!showTentativeJobs) {
-        filteredJobs = state.jobs.filter(job => job.status !== "Tentative");
+      } else {
+        filteredJobs = state.jobs.filter(job => jobStatusFilters.has(job.status));
       }
 
       filteredJobs = [...filteredJobs].sort((a,b) => {
@@ -479,7 +480,10 @@ const views = {
       const emptyTitle = jobsViewFilter.includes("builds") ? "No build alerts" : jobsViewFilter === "tentative-week" ? "No jobs awaiting confirmation" : jobsViewFilter === "scheduled-week" ? "No scheduled jobs" : jobsViewFilter === "unscheduled" ? "No unscheduled jobs" : "No jobs found";
       const emptyText = jobsViewFilter.includes("builds") ? "All scheduled equipment builds are complete." : "There are no jobs in this view.";
 
-      return `<section class="card"><div class="head"><div><h2>${heading}</h2>${subtitle ? `<span class="agenda-subtitle">${subtitle}</span>` : ""}</div><div class="head-actions">${filteredMode ? `<button class="button neutral" data-clear-job-filter>Show All Jobs</button>` : `<button class="button neutral" data-toggle-tentative>${showTentativeJobs ? "Hide Tentative Jobs" : "Show Tentative Jobs"}</button>`}<button class="button" data-demo-action="New Job">New Job</button></div></div><div class="body list">${filteredJobs.length ? filteredJobs.map(j=>`<div class="row" data-open-job="${j.id}"><div><b>${j.customer}</b><span>${j.number} · ${j.type} · ${j.date} ${j.time}</span></div><span class="badge ${badgeClass(j.status)}">${j.status}</span></div>`).join("") : `<div class="empty-agenda"><b>${emptyTitle}</b><span>${emptyText}</span></div>`}</div></section>`;
+      const statusOptions = ["Quote", "Tentative", "Scheduled", "Completed", "Cancelled"];
+      const filterControls = filteredMode ? `<button class="button neutral" data-clear-job-filter>Show All Jobs</button>` : `<div class="job-filter-bar" aria-label="Filter jobs by status">${statusOptions.map(status => `<button class="job-filter-chip ${jobStatusFilters.has(status) ? "active" : ""} ${badgeClass(status)}" data-toggle-job-status="${status}" aria-pressed="${jobStatusFilters.has(status)}">${status}</button>`).join("")}</div>`;
+
+      return `<section class="card"><div class="head jobs-head"><div><h2>${heading}</h2>${subtitle ? `<span class="agenda-subtitle">${subtitle}</span>` : ""}</div><div class="head-actions">${filterControls}<button class="button" data-demo-action="New Job">New Job</button></div></div><div class="body list">${filteredJobs.length ? filteredJobs.map(j=>`<div class="row" data-open-job="${j.id}"><div><b>${j.customer}</b><span>${j.number} · ${j.type} · ${j.date} ${j.time}</span></div><span class="badge ${badgeClass(j.status)}">${j.status}</span></div>`).join("") : `<div class="empty-agenda"><b>${emptyTitle}</b><span>${emptyText}</span></div>`}</div></section>`;
     }
   },
 
@@ -526,9 +530,11 @@ function bindDynamic() {
       go("jobs");
     };
   });
-  document.querySelectorAll("[data-toggle-tentative]").forEach(el => {
+  document.querySelectorAll("[data-toggle-job-status]").forEach(el => {
     el.onclick = () => {
-      showTentativeJobs = !showTentativeJobs;
+      const status = el.dataset.toggleJobStatus;
+      if (jobStatusFilters.has(status)) jobStatusFilters.delete(status);
+      else jobStatusFilters.add(status);
       go("jobs");
     };
   });
