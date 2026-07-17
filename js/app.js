@@ -57,6 +57,8 @@ const scheduleState = {
   selectedDay: toDateKey(new Date())
 };
 
+let jobsViewFilter = "all";
+
 const view = document.querySelector("#view");
 const title = document.querySelector("#title");
 const sub = document.querySelector("#subtitle");
@@ -194,7 +196,7 @@ function renderSchedule() {
         return `<button class="week-day ${selected ? "selected" : ""} ${today ? "today" : ""}" data-select-day="${toDateKey(day)}">
           <div class="week-day__top"><span>${new Intl.DateTimeFormat("en-US", { weekday: "short" }).format(day)}</span><b>${day.getDate()}</b></div>
           <div class="capacity-track"><i class="${load.level}" style="width:${Math.min(load.percent, 100)}%"></i></div>
-          <div class="week-day__meta"><strong>${jobs.length} ${jobs.length === 1 ? "job" : "jobs"}</strong><span>${load.label}</span></div>
+          <div class="week-day__meta"><strong>${jobs.length} ${jobs.length === 1 ? "job" : "jobs"}</strong><span>${jobs.filter(isScheduledBuildAlert).length ? `${jobs.filter(isScheduledBuildAlert).length} Needs Build` : load.label}</span></div>
           <div class="status-dots">${jobs.slice(0, 6).map(job => `<i class="${badgeClass(job.status)}" title="${esc(job.status)}"></i>`).join("")}</div>
         </button>`;
       }).join("")}
@@ -267,16 +269,27 @@ function equipmentImage(item) {
 }
 
 function workflowActions(job) {
+  const today = isTodayJob(job) && job.status === "Scheduled";
   if (job.status === "Tentative") return `
     <button class="button primary-action" data-status-action="Scheduled" data-job-id="${esc(job.id)}">✓ Confirm Appointment</button>
     <button class="button neutral" data-demo-action="Edit / Reschedule">Edit / Reschedule</button>
     <button class="button red" data-status-action="Cancelled" data-job-id="${esc(job.id)}">Cancel Job</button>`;
+  if (job.status === "Scheduled" && today) return `
+    <a class="button call-action" href="tel:${esc(job.phone)}">Call Customer</a>
+    <a class="button neutral map-action" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(job.address || "")}" target="_blank" rel="noopener">View on Map</a>
+    <button class="button green primary-action" data-status-action="Completed" data-job-id="${esc(job.id)}">✓ Complete Job</button>`;
   if (job.status === "Scheduled") return `
-    <button class="button green primary-action" data-status-action="Completed" data-job-id="${esc(job.id)}">✓ Mark Complete</button>
     <button class="button neutral" data-demo-action="Edit / Reschedule">Edit / Reschedule</button>
     <button class="button red" data-status-action="Cancelled" data-job-id="${esc(job.id)}">Cancel Job</button>`;
-  if (job.status === "Quote") return `<button class="button primary-action" data-status-action="Tentative" data-job-id="${esc(job.id)}">Hold Tentative Appointment</button>`;
+  if (job.status === "Quote") return `<button class="button primary-action" data-status-action="Tentative" data-job-id="${esc(job.id)}">Schedule Appointment</button>`;
   return "";
+}
+
+function equipmentBuildControl(job, item) {
+  if (!item.buildRequired) return `<span class="badge completed">No Build Needed</span>`;
+  if (item.buildComplete) return `<span class="badge completed">Build Complete ✓</span>`;
+  if (job.status !== "Scheduled") return `<span class="build-warning">Needs Build</span>`;
+  return `<button class="button build-complete-button" data-build-complete="${esc(item.id)}" data-job-id="${esc(job.id)}">Mark Build Complete</button>`;
 }
 
 function openJob(jobId) {
@@ -296,10 +309,9 @@ function openJob(jobId) {
       <h3>Equipment (${job.equipment?.length || 0})</h3>
       ${(job.equipment || []).map(item => `<div class="equipment-card">
         ${equipmentImage(item)}
-        <div><strong>${esc(item.brand || "")} ${esc(item.model || "")}</strong><small>${esc(item.type || "")}</small></div>
-        ${job.buildRequired && !job.buildComplete ? `<span class="build-warning">Needs Build</span>` : `<span class="badge completed">Ready</span>`}
+        <div class="equipment-copy"><strong>${esc(item.brand || "")} ${esc(item.model || "")}</strong><small>${esc(item.type || "")}</small></div>
+        <div class="equipment-build-action">${equipmentBuildControl(job, item)}</div>
       </div>`).join("")}
-      ${job.buildRequired ? `<div class="detail-line"><span>Build status</span><strong class="${job.buildComplete ? "" : "danger-text"}">${job.buildComplete ? "Built" : "Not Built"}</strong></div>` : ""}
     </section>
 
     <section class="detail-card">
@@ -310,9 +322,6 @@ function openJob(jobId) {
 
     <div class="drawer-actions">
       ${workflowActions(job)}
-      <a class="button call-action" href="tel:${esc(job.phone)}">Call Customer</a>
-      <button class="button neutral" data-demo-action="Send Confirmation">Send Confirmation</button>
-      <button class="button neutral" data-demo-action="View on Map">View on Map</button>
     </div>
   `;
   drawer.classList.add("open");
@@ -346,6 +355,30 @@ async function changeJobStatus(jobId, newStatus) {
   }
 }
 
+async function markBuildComplete(jobId, jobEquipmentId) {
+  const job = state.jobs.find(item => item.id === jobId);
+  if (!job) return;
+  if (!window.confirm("Mark this equipment build complete?")) return;
+  const button = drawerContent.querySelector(`[data-build-complete="${CSS.escape(jobEquipmentId)}"]`);
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Saving…";
+  }
+  try {
+    await api.updateEquipmentBuildStatus(jobId, jobEquipmentId, true);
+    toast("Equipment build marked complete.");
+    await loadLiveData();
+    openJob(jobId);
+  } catch (error) {
+    console.error(error);
+    toast(error.message || "The build status could not be updated.");
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Mark Build Complete";
+    }
+  }
+}
+
 function closeJob() {
   drawer.classList.remove("open");
   drawerBackdrop.classList.remove("open");
@@ -360,7 +393,7 @@ const views = {
         <section class="alert">
           <b>🔧</b>
           <div class="copy"><strong>Build Alerts</strong><span>${state.jobs.filter(isScheduledBuildAlert).length} scheduled jobs still need equipment assembled.</span></div>
-          <button class="button" data-route="jobs">View Items</button>
+          <button class="button" data-job-filter="builds">View Items</button>
         </section>
         <section class="card">
           <div class="head"><h2>Today's Queue</h2></div>
@@ -396,7 +429,11 @@ const views = {
 
   jobs: {
     title:"Jobs", sub:"Quotes, tentative appointments, scheduled work, and history",
-    html:()=>`<section class="card"><div class="head"><h2>All Jobs</h2><button class="button" data-demo-action="New Job">New Job</button></div><div class="body list">${state.jobs.map(j=>`<div class="row" data-open-job="${j.id}"><div><b>${j.customer}</b><span>${j.number} · ${j.type} · ${j.date} ${j.time}</span></div><span class="badge ${badgeClass(j.status)}">${j.status}</span></div>`).join("")}</div></section>`
+    html:()=>{
+      const filteredJobs = jobsViewFilter === "builds" ? state.jobs.filter(isScheduledBuildAlert) : state.jobs;
+      const heading = jobsViewFilter === "builds" ? "Build Alerts" : "All Jobs";
+      return `<section class="card"><div class="head"><div><h2>${heading}</h2>${jobsViewFilter === "builds" ? `<span class="agenda-subtitle">Scheduled jobs with unfinished equipment builds</span>` : ""}</div><div class="head-actions">${jobsViewFilter === "builds" ? `<button class="button neutral" data-clear-job-filter>Show All Jobs</button>` : ""}<button class="button" data-demo-action="New Job">New Job</button></div></div><div class="body list">${filteredJobs.length ? filteredJobs.map(j=>`<div class="row" data-open-job="${j.id}"><div><b>${j.customer}</b><span>${j.number} · ${j.type} · ${j.date} ${j.time}</span></div><span class="badge ${badgeClass(j.status)}">${j.status}</span></div>`).join("") : `<div class="empty-agenda"><b>No build alerts</b><span>All scheduled equipment builds are complete.</span></div>`}</div></section>`;
+    }
   },
 
   roster: {
@@ -425,6 +462,21 @@ function bindDynamic() {
   });
   document.querySelectorAll("[data-status-action]").forEach(el => {
     el.onclick = () => changeJobStatus(el.dataset.jobId, el.dataset.statusAction);
+  });
+  document.querySelectorAll("[data-build-complete]").forEach(el => {
+    el.onclick = () => markBuildComplete(el.dataset.jobId, el.dataset.buildComplete);
+  });
+  document.querySelectorAll("[data-job-filter]").forEach(el => {
+    el.onclick = () => {
+      jobsViewFilter = el.dataset.jobFilter;
+      go("jobs");
+    };
+  });
+  document.querySelectorAll("[data-clear-job-filter]").forEach(el => {
+    el.onclick = () => {
+      jobsViewFilter = "all";
+      go("jobs");
+    };
   });
   document.querySelectorAll("[data-quick-quote]").forEach(el => el.onclick = () => openWizard("quote"));
   view.querySelectorAll("[data-route]").forEach(el => {

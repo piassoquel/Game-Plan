@@ -48,6 +48,22 @@ export class GamePlanApi {
     return payload.data;
   }
 
+  async updateEquipmentBuildStatus(jobId, jobEquipmentId, buildComplete = true) {
+    if (!this.isConfigured) throw new Error("API URL is not configured.");
+    const response = await fetch(this.config.apiBaseUrl, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({
+        action: "updateEquipmentBuildStatus",
+        data: { jobId, jobEquipmentId, buildComplete }
+      })
+    });
+    if (!response.ok) throw new Error(`API returned ${response.status}`);
+    const payload = await response.json();
+    if (!payload.ok) throw new Error(payload.error || "API error");
+    return payload.data;
+  }
+
   async getJob(jobId) {
     if (!this.isConfigured) throw new Error("API URL is not configured.");
     const url = new URL(this.config.apiBaseUrl);

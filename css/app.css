@@ -21,3 +21,14 @@
 
 /* v1.3.1 lifecycle color correction */
 .life-step.done .life-icon,.life-step.current .life-icon{color:currentColor;border-color:currentColor}
+
+/* Job Details v2 workflow polish */
+.equipment-card{grid-template-columns:72px minmax(0,1fr);align-items:start;margin-top:10px}
+.equipment-card:first-of-type{margin-top:0}
+.equipment-copy{min-width:0;padding-top:4px}
+.equipment-build-action{grid-column:2;display:flex;align-items:center;justify-content:flex-start;margin-top:2px}
+.build-complete-button{min-height:40px;padding:9px 14px;background:rgba(245,158,11,.12);border-color:rgba(245,158,11,.48);color:#fbbf24}
+.build-complete-button:hover{background:rgba(245,158,11,.2);border-color:#f59e0b}
+.map-action{display:grid;place-items:center;text-decoration:none}
+.head-actions{display:flex;gap:9px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
+@media(max-width:600px){.head-actions{width:100%;justify-content:stretch}.head-actions .button{flex:1}.equipment-card{grid-template-columns:62px minmax(0,1fr)}.equipment-photo{width:62px;height:62px}.equipment-build-action{grid-column:1/-1}.build-complete-button{width:100%}}
