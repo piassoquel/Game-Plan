@@ -92,7 +92,7 @@ function toDateKey(value) {
 }
 
 function parseJobDate(job) {
-  const raw = job.scheduledDate || job.dateISO || job.appointmentDate || job.date || "";
+  const raw = job.scheduledDate || job.dateISO || job.appointmentDate || job.dateTime || job.date || "";
   if (!raw) return null;
   const normalized = String(raw).trim().toLowerCase();
   const now = new Date();
@@ -132,6 +132,15 @@ function jobsForDate(date) {
     .filter(job => ["Scheduled", "Completed"].includes(job.status))
     .filter(job => toDateKey(parseJobDate(job)) === key)
     .sort((a, b) => timeSortValue(a) - timeSortValue(b));
+}
+
+function isTodayJob(job) {
+  const date = parseJobDate(job);
+  return Boolean(date) && toDateKey(date) === toDateKey(new Date()) && ["Scheduled", "Completed"].includes(job.status);
+}
+
+function isScheduledBuildAlert(job) {
+  return job.status === "Scheduled" && job.buildRequired && !job.buildComplete && Boolean(parseJobDate(job));
 }
 
 function scheduleLoadInfo(jobs) {
@@ -350,12 +359,12 @@ const views = {
       <div class="grid">
         <section class="alert">
           <b>🔧</b>
-          <div class="copy"><strong>Build Alerts</strong><span>${state.jobs.filter(j=>j.buildRequired&&!j.buildComplete).length} upcoming jobs still need equipment assembled.</span></div>
+          <div class="copy"><strong>Build Alerts</strong><span>${state.jobs.filter(isScheduledBuildAlert).length} scheduled jobs still need equipment assembled.</span></div>
           <button class="button" data-route="jobs">View Items</button>
         </section>
         <section class="card">
           <div class="head"><h2>Today's Queue</h2></div>
-          <div class="body queue">${state.jobs.map(queueItem).join("")}</div>
+          <div class="body queue">${state.jobs.filter(isTodayJob).length ? state.jobs.filter(isTodayJob).map(queueItem).join("") : `<div class="empty-agenda"><b>No scheduled jobs today</b><span>Confirmed work scheduled for today will appear here.</span></div>`}</div>
         </section>
       </div>
       <div class="grid">
@@ -370,9 +379,9 @@ const views = {
         <section class="card">
           <div class="head"><h2>Today</h2></div>
           <div class="body stats">
-            <div class="stat"><b>${state.jobs.filter(j=>j.status==="Scheduled").length}</b><span>Scheduled</span></div>
-            <div class="stat"><b>${state.jobs.filter(j=>j.status==="Tentative").length}</b><span>Tentative</span></div>
-            <div class="stat"><b>${state.jobs.filter(j=>j.buildRequired&&!j.buildComplete).length}</b><span>Need Build</span></div>
+            <div class="stat"><b>${state.jobs.filter(j=>j.status==="Scheduled" && isTodayJob(j)).length}</b><span>Scheduled</span></div>
+            <div class="stat"><b>${state.jobs.filter(j=>j.status==="Tentative" && parseJobDate(j) && toDateKey(parseJobDate(j))===toDateKey(new Date())).length}</b><span>Tentative</span></div>
+            <div class="stat"><b>${state.jobs.filter(j=>isScheduledBuildAlert(j) && isTodayJob(j)).length}</b><span>Need Build</span></div>
             <div class="stat"><b>0</b><span>Conflicts</span></div>
           </div>
         </section>
