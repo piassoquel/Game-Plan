@@ -1,5 +1,5 @@
 window.GAMEPLAN_CONFIG = {
   environment: "production",
-  apiBaseUrl: "PASTE_YOUR_EXISTING_APPS_SCRIPT_EXEC_URL_HERE",
+  apiBaseUrl: "https://script.google.com/macros/s/AKfycbx-u67jjytr86lvixlqQzX9Xpit7fcOHb3Z0_ahjHyqXu_lPY3wXnzsj4-16kA4T0Tl/execE",
   placesApiKey: ""
 };
