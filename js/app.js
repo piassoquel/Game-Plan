@@ -129,6 +129,7 @@ function timeSortValue(job) {
 function jobsForDate(date) {
   const key = toDateKey(date);
   return state.jobs
+    .filter(job => ["Scheduled", "Completed"].includes(job.status))
     .filter(job => toDateKey(parseJobDate(job)) === key)
     .sort((a, b) => timeSortValue(a) - timeSortValue(b));
 }
@@ -156,7 +157,7 @@ function renderSchedule() {
   scheduleState.selectedDay = toDateKey(selectedDate);
   const selectedJobs = jobsForDate(selectedDate);
   const weekJobs = days.flatMap(jobsForDate);
-  const unscheduled = state.jobs.filter(job => !parseJobDate(job));
+  const unscheduled = state.jobs.filter(job => !parseJobDate(job) && job.status !== "Cancelled");
   const totalHours = weekJobs.reduce((sum, job) => sum + parseDurationHours(job), 0);
   const selectedTitle = new Intl.DateTimeFormat("en-US", { weekday: "long", month: "long", day: "numeric" }).format(selectedDate);
 
@@ -171,7 +172,7 @@ function renderSchedule() {
     <section class="schedule-summary">
       <div class="stat"><b>${weekJobs.length}</b><span>Scheduled jobs</span></div>
       <div class="stat"><b>${Math.round(totalHours * 10) / 10}</b><span>Estimated hours</span></div>
-      <div class="stat"><b>${weekJobs.filter(job => job.status === "Tentative").length}</b><span>Tentative</span></div>
+      <div class="stat"><b>${state.jobs.filter(job => job.status === "Tentative" && parseJobDate(job)).length}</b><span>Awaiting confirmation</span></div>
       <div class="stat"><b>${unscheduled.length}</b><span>Unscheduled</span></div>
     </section>
 
@@ -216,6 +217,7 @@ function badgeClass(status) {
     Scheduled:"scheduled",
     Tentative:"tentative",
     Completed:"completed",
+    Cancelled:"cancelled",
     "Needs Attention":"attention"
   })[status] || "";
 }
@@ -234,14 +236,19 @@ function queueItem(job) {
   </article>`;
 }
 
+function lifecycleIcon(step) {
+  if (step === "Completed") return `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="m8 12 2.6 2.6L16.5 9"></path></svg>`;
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5.5" width="16" height="14" rx="2"></rect><path d="M8 3v5M16 3v5M4 9.5h16"></path>${step === "Quote" ? '<path d="M8 13h3M8 16h6"></path>' : step === "Tentative" ? '<path d="M8 13h3M14.5 13h1.5M8 16h8"></path>' : '<path d="m8 14 2 2 5-5"></path>'}</svg>`;
+}
+
 function renderLifecycle(status) {
   const order = ["Quote","Tentative","Scheduled","Completed"];
-  const currentIndex = Math.max(0, order.indexOf(status));
-  return `<div class="lifecycle">${order.map((step,index)=>{
-    const cls = index < currentIndex ? "done" : index === currentIndex ? "current" : "";
-    const icon = step === "Quote" ? "▤" : step === "Tentative" ? "▣" : step === "Scheduled" ? "▦" : "✓";
-    return `<div class="life-step ${cls}"><div class="life-icon">${icon}</div>${step}</div>`;
-  }).join("")}</div>`;
+  const cancelled = status === "Cancelled";
+  const currentIndex = cancelled ? 1 : Math.max(0, order.indexOf(status));
+  return `<div class="lifecycle-wrap"><div class="lifecycle">${order.map((step,index)=>{
+    const cls = index < currentIndex ? "done" : index === currentIndex && !cancelled ? "current" : "";
+    return `<div class="life-step ${cls} life-${step.toLowerCase()}"><div class="life-icon">${lifecycleIcon(step)}</div><span>${step}</span>${index < order.length - 1 ? '<i class="life-arrow">→</i>' : ''}</div>`;
+  }).join("")}</div>${cancelled ? `<div class="cancel-branch"><span>↘</span><strong>Cancelled</strong></div>` : ""}</div>`;
 }
 
 function equipmentImage(item) {
@@ -250,37 +257,52 @@ function equipmentImage(item) {
     : `<div class="equipment-photo">Equipment</div>`;
 }
 
+function workflowActions(job) {
+  if (job.status === "Tentative") return `
+    <button class="button primary-action" data-status-action="Scheduled" data-job-id="${esc(job.id)}">✓ Confirm Appointment</button>
+    <button class="button neutral" data-demo-action="Edit / Reschedule">Edit / Reschedule</button>
+    <button class="button red" data-status-action="Cancelled" data-job-id="${esc(job.id)}">Cancel Job</button>`;
+  if (job.status === "Scheduled") return `
+    <button class="button green primary-action" data-status-action="Completed" data-job-id="${esc(job.id)}">✓ Mark Complete</button>
+    <button class="button neutral" data-demo-action="Edit / Reschedule">Edit / Reschedule</button>
+    <button class="button red" data-status-action="Cancelled" data-job-id="${esc(job.id)}">Cancel Job</button>`;
+  if (job.status === "Quote") return `<button class="button primary-action" data-status-action="Tentative" data-job-id="${esc(job.id)}">Hold Tentative Appointment</button>`;
+  return "";
+}
+
 function openJob(jobId) {
   const job = state.jobs.find(j => j.id === jobId);
   if (!job) return;
   drawerContent.innerHTML = `
     ${renderLifecycle(job.status)}
-    <section class="detail-card">
-      <span class="badge ${badgeClass(job.status)}">${job.status}</span>
-      <h3>${job.customer}</h3>
-      <div>${job.address}</div>
-      <div class="detail-line"><span>Appointment</span><strong>${job.date}, ${job.time}</strong></div>
-      <div class="detail-line"><span>Estimated duration</span><strong>${job.duration || "—"}</strong></div>
+    <section class="detail-card job-summary-card">
+      <div class="job-summary-top"><span>Job #${esc(job.number || job.id)}</span><span class="badge ${badgeClass(job.status)}">${esc(job.status)}</span></div>
+      <h3>${esc(job.customer)}</h3>
+      <div class="customer-address">${esc(job.address)}</div>
+      <div class="detail-line"><span>Appointment</span><strong>${esc(job.date)}, ${esc(job.time)}</strong></div>
+      <div class="detail-line"><span>Estimated duration</span><strong>${esc(job.duration || "—")}</strong></div>
     </section>
 
     <section class="detail-card">
       <h3>Equipment (${job.equipment?.length || 0})</h3>
       ${(job.equipment || []).map(item => `<div class="equipment-card">
         ${equipmentImage(item)}
-        <div><strong>${item.brand || ""} ${item.model || ""}</strong><small>${item.type || ""}</small></div>
+        <div><strong>${esc(item.brand || "")} ${esc(item.model || "")}</strong><small>${esc(item.type || "")}</small></div>
         ${job.buildRequired && !job.buildComplete ? `<span class="build-warning">Needs Build</span>` : `<span class="badge completed">Ready</span>`}
       </div>`).join("")}
-      ${job.buildRequired ? `<div class="detail-line"><span>Build status</span><strong>${job.buildComplete ? "Built" : "Not Built"}</strong></div>` : ""}
+      ${job.buildRequired ? `<div class="detail-line"><span>Build status</span><strong class="${job.buildComplete ? "" : "danger-text"}">${job.buildComplete ? "Built" : "Not Built"}</strong></div>` : ""}
     </section>
 
     <section class="detail-card">
-      <div class="detail-line"><span>Crew size</span><strong>${job.crewSize || "—"}</strong></div>
-      <div class="detail-line"><span>Total price</span><strong>$${Number(job.total || 0).toFixed(2)}</strong></div>
+      <div class="detail-line"><span>Crew</span><strong>${esc(job.crewSize || "—")} Person Crew</strong></div>
+      <div class="detail-line"><span>Estimated duration</span><strong>${esc(job.duration || "—")}</strong></div>
+      <div class="detail-line"><span>Total price</span><strong class="detail-total">$${Number(job.total || 0).toFixed(2)}</strong></div>
     </section>
 
     <div class="drawer-actions">
-      <a class="button" href="tel:${job.phone}">Call Customer</a>
-      ${job.buildRequired && !job.buildComplete ? `<button class="button green" data-demo-action="Mark as Built">Mark as Built</button>` : ""}
+      ${workflowActions(job)}
+      <a class="button call-action" href="tel:${esc(job.phone)}">Call Customer</a>
+      <button class="button neutral" data-demo-action="Send Confirmation">Send Confirmation</button>
       <button class="button neutral" data-demo-action="View on Map">View on Map</button>
     </div>
   `;
@@ -288,6 +310,31 @@ function openJob(jobId) {
   drawerBackdrop.classList.add("open");
   drawer.setAttribute("aria-hidden","false");
   bindDynamic();
+}
+
+async function changeJobStatus(jobId, newStatus) {
+  const job = state.jobs.find(item => item.id === jobId);
+  if (!job) return;
+  const messages = {
+    Scheduled: `Confirm ${job.customer}'s appointment and add it to the Weekly Planner?`,
+    Completed: `Mark ${job.customer}'s job complete?`,
+    Cancelled: `Cancel ${job.customer}'s job? It will remain in job history.` ,
+    Tentative: `Move this quote to Tentative?`
+  };
+  if (!window.confirm(messages[newStatus] || `Change status to ${newStatus}?`)) return;
+  const buttons = drawerContent.querySelectorAll("[data-status-action]");
+  buttons.forEach(button => button.disabled = true);
+  try {
+    await api.updateJobStatus(jobId, newStatus, "Updated from Job Details");
+    toast(newStatus === "Scheduled" ? "Appointment confirmed and added to the Weekly Planner." : `Job marked ${newStatus}.`);
+    closeJob();
+    await loadLiveData();
+    go(newStatus === "Scheduled" ? "schedule" : "jobs");
+  } catch (error) {
+    console.error(error);
+    toast(error.message || "The job status could not be updated.");
+    buttons.forEach(button => button.disabled = false);
+  }
 }
 
 function closeJob() {
@@ -366,6 +413,9 @@ function bindDynamic() {
       if (["New Job","New Tentative"].includes(el.dataset.demoAction)) openWizard("job");
       else toast(`${el.dataset.demoAction} becomes active in a later version.`);
     };
+  });
+  document.querySelectorAll("[data-status-action]").forEach(el => {
+    el.onclick = () => changeJobStatus(el.dataset.jobId, el.dataset.statusAction);
   });
   document.querySelectorAll("[data-quick-quote]").forEach(el => el.onclick = () => openWizard("quote"));
   view.querySelectorAll("[data-route]").forEach(el => {
