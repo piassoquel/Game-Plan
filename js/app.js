@@ -58,6 +58,8 @@ const scheduleState = {
 };
 
 let jobsViewFilter = "all";
+let jobsViewWeekStart = "";
+let showTentativeJobs = true;
 
 const view = document.querySelector("#view");
 const title = document.querySelector("#title");
@@ -168,8 +170,13 @@ function renderSchedule() {
   scheduleState.selectedDay = toDateKey(selectedDate);
   const selectedJobs = jobsForDate(selectedDate);
   const weekJobs = days.flatMap(jobsForDate);
+  const weekKeys = new Set(days.map(toDateKey));
+  const tentativeWeekJobs = state.jobs
+    .filter(job => job.status === "Tentative")
+    .filter(job => weekKeys.has(toDateKey(parseJobDate(job))))
+    .sort((a, b) => parseJobDate(a) - parseJobDate(b) || timeSortValue(a) - timeSortValue(b));
+  const weekBuildJobs = weekJobs.filter(isScheduledBuildAlert);
   const unscheduled = state.jobs.filter(job => !parseJobDate(job) && job.status !== "Cancelled");
-  const totalHours = weekJobs.reduce((sum, job) => sum + parseDurationHours(job), 0);
   const selectedTitle = new Intl.DateTimeFormat("en-US", { weekday: "long", month: "long", day: "numeric" }).format(selectedDate);
 
   return `<div class="schedule-planner">
@@ -181,10 +188,10 @@ function renderSchedule() {
     </section>
 
     <section class="schedule-summary">
-      <div class="stat"><b>${weekJobs.length}</b><span>Scheduled jobs</span></div>
-      <div class="stat"><b>${Math.round(totalHours * 10) / 10}</b><span>Estimated hours</span></div>
-      <div class="stat"><b>${state.jobs.filter(job => job.status === "Tentative" && parseJobDate(job)).length}</b><span>Awaiting confirmation</span></div>
-      <div class="stat"><b>${unscheduled.length}</b><span>Unscheduled</span></div>
+      <button class="stat stat-action" data-summary-filter="scheduled"><b>${weekJobs.length}</b><span>Scheduled jobs</span></button>
+      <button class="stat stat-action" data-summary-filter="tentative"><b>${tentativeWeekJobs.length}</b><span>Awaiting confirmation</span></button>
+      <button class="stat stat-action" data-summary-filter="builds"><b>${weekBuildJobs.length}</b><span>Needs Build</span></button>
+      <button class="stat stat-action" data-summary-filter="unscheduled"><b>${unscheduled.length}</b><span>Unscheduled</span></button>
     </section>
 
     <section class="week-grid" aria-label="Weekly schedule">
@@ -430,9 +437,49 @@ const views = {
   jobs: {
     title:"Jobs", sub:"Quotes, tentative appointments, scheduled work, and history",
     html:()=>{
-      const filteredJobs = jobsViewFilter === "builds" ? state.jobs.filter(isScheduledBuildAlert) : state.jobs;
-      const heading = jobsViewFilter === "builds" ? "Build Alerts" : "All Jobs";
-      return `<section class="card"><div class="head"><div><h2>${heading}</h2>${jobsViewFilter === "builds" ? `<span class="agenda-subtitle">Scheduled jobs with unfinished equipment builds</span>` : ""}</div><div class="head-actions">${jobsViewFilter === "builds" ? `<button class="button neutral" data-clear-job-filter>Show All Jobs</button>` : ""}<button class="button" data-demo-action="New Job">New Job</button></div></div><div class="body list">${filteredJobs.length ? filteredJobs.map(j=>`<div class="row" data-open-job="${j.id}"><div><b>${j.customer}</b><span>${j.number} · ${j.type} · ${j.date} ${j.time}</span></div><span class="badge ${badgeClass(j.status)}">${j.status}</span></div>`).join("") : `<div class="empty-agenda"><b>No build alerts</b><span>All scheduled equipment builds are complete.</span></div>`}</div></section>`;
+      const weekStart = jobsViewWeekStart ? new Date(`${jobsViewWeekStart}T12:00:00`) : null;
+      const weekKeys = weekStart ? new Set(Array.from({length:7}, (_,i)=>toDateKey(addDays(weekStart,i)))) : null;
+      let filteredJobs = state.jobs;
+      let heading = "All Jobs";
+      let subtitle = "";
+
+      if (jobsViewFilter === "scheduled-week") {
+        filteredJobs = state.jobs.filter(job => ["Scheduled","Completed"].includes(job.status) && weekKeys?.has(toDateKey(parseJobDate(job))));
+        heading = "Scheduled Jobs";
+        subtitle = `Jobs scheduled for ${weekLabel(weekStart)}`;
+      } else if (jobsViewFilter === "tentative-week") {
+        filteredJobs = state.jobs.filter(job => job.status === "Tentative" && weekKeys?.has(toDateKey(parseJobDate(job))));
+        heading = "Awaiting Confirmation";
+        subtitle = `Tentative jobs for ${weekLabel(weekStart)}`;
+      } else if (jobsViewFilter === "builds-week") {
+        filteredJobs = state.jobs.filter(job => isScheduledBuildAlert(job) && weekKeys?.has(toDateKey(parseJobDate(job))));
+        heading = "Needs Build";
+        subtitle = `Unfinished scheduled builds for ${weekLabel(weekStart)}`;
+      } else if (jobsViewFilter === "unscheduled") {
+        filteredJobs = state.jobs.filter(job => !parseJobDate(job) && job.status !== "Cancelled");
+        heading = "Unscheduled Jobs";
+        subtitle = "Jobs that still need an appointment date";
+      } else if (jobsViewFilter === "builds") {
+        filteredJobs = state.jobs.filter(isScheduledBuildAlert);
+        heading = "Build Alerts";
+        subtitle = "Scheduled jobs with unfinished equipment builds";
+      } else if (!showTentativeJobs) {
+        filteredJobs = state.jobs.filter(job => job.status !== "Tentative");
+      }
+
+      filteredJobs = [...filteredJobs].sort((a,b) => {
+        const ad=parseJobDate(a), bd=parseJobDate(b);
+        if (ad && bd) return ad-bd || timeSortValue(a)-timeSortValue(b);
+        if (ad) return -1;
+        if (bd) return 1;
+        return String(a.customer||"").localeCompare(String(b.customer||""));
+      });
+
+      const filteredMode = jobsViewFilter !== "all";
+      const emptyTitle = jobsViewFilter.includes("builds") ? "No build alerts" : jobsViewFilter === "tentative-week" ? "No jobs awaiting confirmation" : jobsViewFilter === "scheduled-week" ? "No scheduled jobs" : jobsViewFilter === "unscheduled" ? "No unscheduled jobs" : "No jobs found";
+      const emptyText = jobsViewFilter.includes("builds") ? "All scheduled equipment builds are complete." : "There are no jobs in this view.";
+
+      return `<section class="card"><div class="head"><div><h2>${heading}</h2>${subtitle ? `<span class="agenda-subtitle">${subtitle}</span>` : ""}</div><div class="head-actions">${filteredMode ? `<button class="button neutral" data-clear-job-filter>Show All Jobs</button>` : `<button class="button neutral" data-toggle-tentative>${showTentativeJobs ? "Hide Tentative Jobs" : "Show Tentative Jobs"}</button>`}<button class="button" data-demo-action="New Job">New Job</button></div></div><div class="body list">${filteredJobs.length ? filteredJobs.map(j=>`<div class="row" data-open-job="${j.id}"><div><b>${j.customer}</b><span>${j.number} · ${j.type} · ${j.date} ${j.time}</span></div><span class="badge ${badgeClass(j.status)}">${j.status}</span></div>`).join("") : `<div class="empty-agenda"><b>${emptyTitle}</b><span>${emptyText}</span></div>`}</div></section>`;
     }
   },
 
@@ -475,6 +522,37 @@ function bindDynamic() {
   document.querySelectorAll("[data-clear-job-filter]").forEach(el => {
     el.onclick = () => {
       jobsViewFilter = "all";
+      jobsViewWeekStart = "";
+      go("jobs");
+    };
+  });
+  document.querySelectorAll("[data-toggle-tentative]").forEach(el => {
+    el.onclick = () => {
+      showTentativeJobs = !showTentativeJobs;
+      go("jobs");
+    };
+  });
+  view.querySelectorAll("[data-summary-filter]").forEach(el => {
+    el.onclick = () => {
+      const filter = el.dataset.summaryFilter;
+      const weekStartKey = toDateKey(scheduleState.weekStart);
+      if (filter === "tentative") {
+        const days = Array.from({length:7}, (_,i)=>addDays(scheduleState.weekStart,i));
+        const weekKeys = new Set(days.map(toDateKey));
+        const matches = state.jobs.filter(job => job.status === "Tentative" && weekKeys.has(toDateKey(parseJobDate(job))));
+        if (matches.length === 1) {
+          openJob(matches[0].id);
+          return;
+        }
+        jobsViewFilter = "tentative-week";
+      } else if (filter === "scheduled") {
+        jobsViewFilter = "scheduled-week";
+      } else if (filter === "builds") {
+        jobsViewFilter = "builds-week";
+      } else {
+        jobsViewFilter = "unscheduled";
+      }
+      jobsViewWeekStart = weekStartKey;
       go("jobs");
     };
   });

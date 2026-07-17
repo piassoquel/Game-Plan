@@ -32,3 +32,8 @@
 .map-action{display:grid;place-items:center;text-decoration:none}
 .head-actions{display:flex;gap:9px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
 @media(max-width:600px){.head-actions{width:100%;justify-content:stretch}.head-actions .button{flex:1}.equipment-card{grid-template-columns:62px minmax(0,1fr)}.equipment-photo{width:62px;height:62px}.equipment-build-action{grid-column:1/-1}.build-complete-button{width:100%}}
+
+/* Weekly planner actionable summary cards */
+.stat-action{appearance:none;width:100%;text-align:left;color:inherit;font:inherit;cursor:pointer;transition:border-color .18s,transform .18s,background .18s}
+.stat-action:hover,.stat-action:focus-visible{border-color:#ff8a2a;background:#232a30;transform:translateY(-1px);outline:none}
+.stat-action:active{transform:translateY(0)}
