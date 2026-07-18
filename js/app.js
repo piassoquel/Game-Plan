@@ -740,12 +740,12 @@ function employeeEditorHtml(profile = null) {
         <label class="field employee-shared-field"><span>Shared account</span><select name="loginAccountId">${sharedAccounts.map(account => `<option value="${esc(account.id)}" ${account.id === selectedAccount ? "selected" : ""}>${esc(account.email)}</option>`).join("")}</select></label>
         <label class="field employee-personal-field"><span>Google email</span><input name="googleEmail" type="email" value="${esc(shared ? "" : (profile?.googleEmail || ""))}" placeholder="name@playitagainsoquel.com" autocomplete="email"></label>
         <div class="employee-pin-fields">
-          <label class="check-row"><input type="checkbox" name="pinEnabled" ${pinEnabled ? "checked" : ""}> Require a PIN on the shared account</label>
+          <label class="check-row"><input type="checkbox" name="pinEnabled" ${pinEnabled ? "checked" : ""}> Enable this employee's GamePlan PIN</label>
           <div class="form-grid">
             <label class="field"><span>${profile?.pinConfigured ? "New PIN (leave blank to keep current)" : "PIN"}</span><input name="pin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="new-password" placeholder="4–8 digits"></label>
             <label class="field"><span>Confirm PIN</span><input name="confirmPin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="new-password" placeholder="Repeat PIN"></label>
           </div>
-          <small class="form-help">PINs are salted and hashed on the server. The original PIN is never stored.</small>
+          <small class="form-help">For shared-account employees, this PIN identifies the employee. For Managers and Admins with personal Google logins, it can also approve restricted actions on the shared store device. PINs are salted and hashed on the server.</small>
         </div>
         <label class="check-row"><input type="checkbox" name="active" ${active ? "checked" : ""}> Active</label>
         <div class="employee-form-error" id="employeeFormError"></div>
@@ -767,7 +767,7 @@ function openEmployeeEditor(profileId = "") {
     const shared = form.elements.loginMode.value === "shared";
     form.querySelector(".employee-shared-field").hidden = !shared;
     form.querySelector(".employee-personal-field").hidden = shared;
-    form.querySelector(".employee-pin-fields").hidden = !shared;
+    form.querySelector(".employee-pin-fields").hidden = false;
   };
   form.querySelectorAll('[name="loginMode"]').forEach(input => input.onchange = syncMode);
   syncMode();
@@ -812,7 +812,7 @@ function renderEmployees() {
   const profiles = [...state.staffManagement.profiles].sort((a,b) => Number(b.active)-Number(a.active) || a.displayName.localeCompare(b.displayName));
   return `<section class="card employees-card"><div class="head employees-head"><div><h2>Employees</h2><span class="agenda-subtitle">${profiles.filter(item=>item.active).length} active · ${profiles.length} total</span></div><button class="button" data-add-employee>＋ Add Employee</button></div><div class="body employee-list">${profiles.map(profile => `<article class="employee-row ${profile.active ? "" : "inactive"}">
     <div class="employee-avatar">${esc(profile.displayName.charAt(0).toUpperCase())}</div>
-    <div class="employee-copy"><b>${esc(profile.displayName)}</b><span>${esc(staffRoleName(profile.roleId))} · ${profile.sharedAccount ? `Shared login: ${esc(sharedLoginName(profile.loginAccountId))}` : esc(profile.googleEmail)}</span><small>${profile.sharedAccount ? (profile.pinConfigured ? "PIN configured" : "PIN not configured") : "Personal Google sign-in"}</small></div>
+    <div class="employee-copy"><b>${esc(profile.displayName)}</b><span>${esc(staffRoleName(profile.roleId))} · ${profile.sharedAccount ? `Shared login: ${esc(sharedLoginName(profile.loginAccountId))}` : esc(profile.googleEmail)}</span><small>${profile.pinConfigured ? (profile.sharedAccount ? "Employee PIN configured" : "Approval PIN configured") : (profile.sharedAccount ? "PIN not configured" : "Personal Google sign-in · no approval PIN")}</small></div>
     <div class="employee-status"><span class="badge ${profile.active ? "completed" : "attention"}">${profile.active ? "Active" : "Inactive"}</span><button class="button neutral" data-edit-employee="${esc(profile.id)}">Edit</button></div>
   </article>`).join("") || `<div class="empty-agenda"><b>No employees yet</b><span>Add the first staff profile to begin.</span></div>`}</div></section>`;
 }
