@@ -19,7 +19,9 @@ const state = {
   loadError: "",
   lastUpdated: "",
   loadDurationMs: 0,
-  currentUser: { displayName: "", email: "", roleName: "Employee", permissions: {} }
+  currentUser: { displayName: "", email: "", roleName: "Employee", permissions: {} },
+  staffChoices: [],
+  pinSession: null
 };
 const api = new GamePlanApi(window.GAMEPLAN_CONFIG);
 
@@ -43,14 +45,119 @@ const drawerContent = document.querySelector("#drawerContent");
 
 const todayDate = new Intl.DateTimeFormat("en-US",{weekday:"long",month:"long",day:"numeric"}).format(new Date());
 
+const PIN_SESSION_KEY = "gameplan-pin-session-v1";
+
+function loadPinSession() {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(PIN_SESSION_KEY) || "null");
+    if (saved && saved.token && saved.expiresAt > Date.now()) state.pinSession = saved;
+  } catch (_) {
+    sessionStorage.removeItem(PIN_SESSION_KEY);
+  }
+}
+
+function effectiveUser() {
+  if (state.currentUser?.sharedAccount && state.pinSession?.employee && state.pinSession.expiresAt > Date.now()) {
+    return state.pinSession.employee;
+  }
+  return state.currentUser || {};
+}
+
+function clearPinSession(showMessage = false) {
+  state.pinSession = null;
+  sessionStorage.removeItem(PIN_SESSION_KEY);
+  renderCurrentUser();
+  if (showMessage) toast("GamePlan locked. The next accountable action will require a PIN.");
+}
+
+function pinModalHtml(requiredPermission, purpose) {
+  const choices = state.staffChoices || [];
+  return `<div class="pin-backdrop open" id="pinBackdrop">
+    <section class="pin-modal" role="dialog" aria-modal="true" aria-labelledby="pinTitle">
+      <button class="pin-close" id="pinClose" aria-label="Cancel">×</button>
+      <div class="pin-icon">●●●●</div>
+      <h2 id="pinTitle">Employee verification</h2>
+      <p>${esc(purpose || "Enter your PIN to continue.")}</p>
+      <label class="field"><span>Employee</span>
+        <select id="pinEmployee">
+          <option value="">Choose employee</option>
+          ${choices.map(person => `<option value="${esc(person.id)}">${esc(person.displayName)} · ${esc(person.roleName)}</option>`).join("")}
+        </select>
+      </label>
+      <label class="field"><span>PIN</span><input id="pinInput" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="off" placeholder="4–8 digits"></label>
+      <div class="pin-error" id="pinError"></div>
+      <button class="button primary-action" id="pinSubmit">Verify & Continue</button>
+    </section>
+  </div>`;
+}
+
+function requestPin(requiredPermission = "", purpose = "") {
+  if (!state.currentUser?.sharedAccount) return Promise.resolve("");
+  const active = state.pinSession;
+  if (active?.token && active.expiresAt > Date.now()) {
+    const allowed = !requiredPermission || Boolean(active.employee?.permissions?.[requiredPermission]);
+    if (allowed) return Promise.resolve(active.token);
+  }
+
+  return new Promise((resolve, reject) => {
+    document.body.insertAdjacentHTML("beforeend", pinModalHtml(requiredPermission, purpose));
+    const backdrop = document.querySelector("#pinBackdrop");
+    const select = document.querySelector("#pinEmployee");
+    const input = document.querySelector("#pinInput");
+    const submit = document.querySelector("#pinSubmit");
+    const errorBox = document.querySelector("#pinError");
+    const close = () => { backdrop?.remove(); reject(new Error("Verification cancelled.")); };
+    document.querySelector("#pinClose").onclick = close;
+    backdrop.onclick = event => { if (event.target === backdrop) close(); };
+    input.addEventListener("keydown", event => { if (event.key === "Enter") submit.click(); });
+    submit.onclick = async () => {
+      const staffProfileId = select.value;
+      const pin = input.value.trim();
+      if (!staffProfileId || !pin) {
+        errorBox.textContent = "Choose your name and enter your PIN.";
+        return;
+      }
+      submit.disabled = true;
+      submit.textContent = "Verifying…";
+      errorBox.textContent = "";
+      try {
+        const result = await api.verifyPin(staffProfileId, pin);
+        if (requiredPermission && !result.employee?.permissions?.[requiredPermission]) {
+          throw new Error("Manager authorization is required for this action.");
+        }
+        const expiresAt = Date.now() + Number(result.expiresInSeconds || 900) * 1000;
+        state.pinSession = { token: result.token, employee: result.employee, expiresAt };
+        sessionStorage.setItem(PIN_SESSION_KEY, JSON.stringify(state.pinSession));
+        backdrop.remove();
+        renderCurrentUser();
+        resolve(result.token);
+      } catch (error) {
+        errorBox.textContent = error.message || "PIN verification failed.";
+        submit.disabled = false;
+        submit.textContent = "Verify & Continue";
+        input.value = "";
+        input.focus();
+      }
+    };
+    setTimeout(() => select.focus(), 0);
+  });
+}
+
 function renderCurrentUser() {
   const name = document.querySelector("#profileName");
   const role = document.querySelector("#profileRole");
   const avatar = document.querySelector("#profileAvatar");
-  const user = state.currentUser || {};
-  if (name) name.textContent = user.displayName || user.email || "GamePlan User";
-  if (role) role.textContent = user.roleName || "Employee";
+  const user = effectiveUser();
+  const shared = Boolean(state.currentUser?.sharedAccount);
+  if (name) name.textContent = shared && !state.pinSession ? "Shared Employee Account" : (user.displayName || user.email || "GamePlan User");
+  if (role) role.textContent = shared && !state.pinSession ? "PIN required for accountable actions" : `${user.roleName || "Employee"}${shared ? " · Switch Employee" : ""}`;
   if (avatar) avatar.textContent = (user.displayName || user.email || "G").trim().charAt(0).toUpperCase();
+  const profile = document.querySelector(".profile");
+  if (profile) {
+    profile.classList.toggle("profile-action", shared);
+    profile.onclick = shared ? () => clearPinSession(true) : null;
+    profile.title = shared ? "Lock GamePlan / Switch Employee" : "";
+  }
 }
 
 
@@ -259,7 +366,7 @@ function equipmentImage(item) {
 }
 
 function can(permission) {
-  return Boolean(state.currentUser?.permissions?.[permission]);
+  return Boolean(effectiveUser()?.permissions?.[permission]);
 }
 
 function isManager() {
@@ -273,7 +380,7 @@ function permissionNotice(text) {
 function workflowActions(job) {
   const today = isTodayJob(job) && job.status === "Scheduled";
   if (job.status === "Tentative") {
-    const confirm = isManager()
+    const confirm = (isManager() || state.currentUser?.sharedAccount)
       ? `<button class="button primary-action" data-status-action="Scheduled" data-job-id="${esc(job.id)}">✓ Confirm Appointment</button>`
       : permissionNotice("This appointment is awaiting manager confirmation before it is added to the finalized schedule.");
     return `${confirm}
@@ -285,7 +392,7 @@ function workflowActions(job) {
     <a class="button neutral map-action" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(job.address || "")}" target="_blank" rel="noopener">View on Map</a>
     <button class="button green primary-action" data-status-action="Completed" data-job-id="${esc(job.id)}">✓ Complete Job</button>`;
   if (job.status === "Scheduled") {
-    if (!isManager()) return permissionNotice("This appointment is finalized. A manager must reschedule or cancel it.");
+    if (!isManager() && !state.currentUser?.sharedAccount) return permissionNotice("This appointment is finalized. A manager must reschedule or cancel it.");
     return `
       <button class="button neutral" data-demo-action="Edit / Reschedule">Edit / Reschedule</button>
       <button class="button red" data-status-action="Cancelled" data-job-id="${esc(job.id)}">Cancel Job</button>`;
@@ -343,10 +450,7 @@ async function changeJobStatus(jobId, newStatus) {
   const job = state.jobs.find(item => item.id === jobId);
   if (!job) return;
   const managerOnly = newStatus === "Scheduled" || (job.status === "Scheduled" && ["Tentative", "Cancelled"].includes(newStatus));
-  if (managerOnly && !isManager()) {
-    toast("Manager approval is required for finalized schedule changes.");
-    return;
-  }
+
   const messages = {
     Scheduled: `Confirm ${job.customer}'s appointment and add it to the Weekly Planner?`,
     Completed: `Mark ${job.customer}'s job complete?`,
@@ -357,7 +461,9 @@ async function changeJobStatus(jobId, newStatus) {
   const buttons = drawerContent.querySelectorAll("[data-status-action]");
   buttons.forEach(button => button.disabled = true);
   try {
-    await api.updateJobStatus(jobId, newStatus, "Updated from Job Details");
+    const requiredPermission = managerOnly ? "canApproveSchedule" : "canCreateQuote";
+    const pinToken = await requestPin(requiredPermission, managerOnly ? "Manager PIN required to finalize or change the schedule." : "Enter your employee PIN to record this action.");
+    await api.updateJobStatus(jobId, newStatus, "Updated from Job Details", pinToken);
     toast(newStatus === "Scheduled" ? "Appointment confirmed and added to the Weekly Planner." : `Job marked ${newStatus}.`);
     closeJob();
     await loadLiveData();
@@ -379,7 +485,8 @@ async function markBuildComplete(jobId, jobEquipmentId) {
     button.textContent = "Saving…";
   }
   try {
-    await api.updateEquipmentBuildStatus(jobId, jobEquipmentId, true);
+    const pinToken = await requestPin("canCreateQuote", "Enter your employee PIN to certify this equipment build.");
+    await api.updateEquipmentBuildStatus(jobId, jobEquipmentId, true, pinToken);
     toast("Equipment build marked complete.");
     await loadLiveData();
     openJob(jobId);
@@ -628,8 +735,9 @@ function applyBootstrapData(data, {cached = false, timestamp = new Date().toISOS
   state.brands = Array.isArray(data.brands) ? data.brands : [];
   state.fulfillmentConditions = Array.isArray(data.fulfillmentConditions) ? data.fulfillmentConditions : [];
   state.currentUser = cached
-    ? { displayName: "", email: "", roleName: "Employee", permissions: {} }
+    ? (state.currentUser || { displayName: "", email: "", roleName: "Employee", permissions: {} })
     : (data.currentUser || { displayName: "", email: "", roleName: "Employee", permissions: {} });
+  state.staffChoices = cached ? (state.staffChoices || []) : (data.staffChoices || []);
   state.ready = true;
   state.cached = cached;
   state.live = !cached;
@@ -778,7 +886,8 @@ wizardNext.onclick=async()=>{
  sync();
  wizardNext.disabled=true;wizardBack.disabled=true;wizardNext.textContent="Creating…";
  try{
-   const result=await api.createJob(draft);
+   const pinToken = await requestPin("canCreateQuote", "Enter your employee PIN to create this job and stamp your name into its history.");
+   const result=await api.createJob(draft, pinToken);
    localStorage.removeItem(DRAFT_KEY);
    closeWizard();
    toast(`${result.jobNumber || "Job"} created in the live CMS.`);
@@ -799,6 +908,7 @@ if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => navigator.serviceWorker.register("./service-worker.js").catch(console.error));
 }
 
+loadPinSession();
 const hasCachedBootstrap = loadCachedBootstrap();
 updateDataStatus();
 go(location.hash.slice(1) || "today");

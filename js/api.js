@@ -19,12 +19,26 @@ export class GamePlanApi {
     return payload.data;
   }
 
-  async createJob(jobData) {
+
+  async verifyPin(staffProfileId, pin) {
     if (!this.isConfigured) throw new Error("API URL is not configured.");
     const response = await fetch(this.config.apiBaseUrl, {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify({ action: "createJob", data: jobData })
+      body: JSON.stringify({ action: "verifyPin", data: { staffProfileId, pin } })
+    });
+    if (!response.ok) throw new Error(`API returned ${response.status}`);
+    const payload = await response.json();
+    if (!payload.ok) throw new Error(payload.error || "PIN verification failed");
+    return payload.data;
+  }
+
+  async createJob(jobData, pinToken = "") {
+    if (!this.isConfigured) throw new Error("API URL is not configured.");
+    const response = await fetch(this.config.apiBaseUrl, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ action: "createJob", data: { ...jobData, pinToken } })
     });
     if (!response.ok) throw new Error(`API returned ${response.status}`);
     const payload = await response.json();
@@ -32,14 +46,14 @@ export class GamePlanApi {
     return payload.data;
   }
 
-  async updateJobStatus(jobId, newStatus, statusNote = "") {
+  async updateJobStatus(jobId, newStatus, statusNote = "", pinToken = "") {
     if (!this.isConfigured) throw new Error("API URL is not configured.");
     const response = await fetch(this.config.apiBaseUrl, {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
       body: JSON.stringify({
         action: "updateJobStatus",
-        data: { jobId, newStatus, statusNote }
+        data: { jobId, newStatus, statusNote, pinToken }
       })
     });
     if (!response.ok) throw new Error(`API returned ${response.status}`);
@@ -48,14 +62,14 @@ export class GamePlanApi {
     return payload.data;
   }
 
-  async updateEquipmentBuildStatus(jobId, jobEquipmentId, buildComplete = true) {
+  async updateEquipmentBuildStatus(jobId, jobEquipmentId, buildComplete = true, pinToken = "") {
     if (!this.isConfigured) throw new Error("API URL is not configured.");
     const response = await fetch(this.config.apiBaseUrl, {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
       body: JSON.stringify({
         action: "updateEquipmentBuildStatus",
-        data: { jobId, jobEquipmentId, buildComplete }
+        data: { jobId, jobEquipmentId, buildComplete, pinToken }
       })
     });
     if (!response.ok) throw new Error(`API returned ${response.status}`);
