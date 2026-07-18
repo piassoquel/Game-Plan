@@ -1,4 +1,4 @@
-import { GamePlanApi } from "./api.js?v=2.7.0";
+import { GamePlanApi } from "./api.js?v=2.8.0";
 
 const CACHE_KEY = "gameplan-live-bootstrap-v2";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -24,7 +24,8 @@ const state = {
   staffChoices: [],
   pinSession: null,
   googleIdentity: null,
-  authenticated: false
+  authenticated: false,
+  staffManagement: { loaded: false, loading: false, profiles: [], roles: [], loginAccounts: [] }
 };
 const api = new GamePlanApi(window.GAMEPLAN_CONFIG);
 
@@ -682,6 +683,140 @@ function closeJob() {
   drawer.setAttribute("aria-hidden","true");
 }
 
+
+function staffRoleName(roleId) {
+  return state.staffManagement.roles.find(role => role.id === roleId)?.name || roleId || "Unassigned";
+}
+
+function sharedLoginName(loginAccountId) {
+  const account = state.staffManagement.loginAccounts.find(item => item.id === loginAccountId);
+  return account?.email || loginAccountId || "Shared account";
+}
+
+async function loadStaffManagement(force = false) {
+  if (!can("canEditCMS")) throw new Error("Administrator access is required.");
+  if (state.staffManagement.loading) return;
+  if (state.staffManagement.loaded && !force) return;
+  state.staffManagement.loading = true;
+  go("employees");
+  try {
+    const pinToken = await requestPin("canEditCMS", "Enter an administrator PIN to manage employees.");
+    const data = await api.getStaffManagement(pinToken);
+    state.staffManagement = {
+      loaded: true,
+      loading: false,
+      profiles: Array.isArray(data.profiles) ? data.profiles : [],
+      roles: Array.isArray(data.roles) ? data.roles : [],
+      loginAccounts: Array.isArray(data.loginAccounts) ? data.loginAccounts : []
+    };
+    touchPinSession();
+  } catch (error) {
+    state.staffManagement.loading = false;
+    if (error.message !== "Verification cancelled.") toast(error.message || "Employees could not be loaded.");
+  }
+  go("employees");
+}
+
+function employeeEditorHtml(profile = null) {
+  const isNew = !profile;
+  const shared = profile ? Boolean(profile.sharedAccount) : true;
+  const active = profile ? Boolean(profile.active) : true;
+  const pinEnabled = profile ? Boolean(profile.pinEnabled) : shared;
+  const sharedAccounts = state.staffManagement.loginAccounts.filter(account => account.sharedAccount && account.active);
+  const selectedAccount = profile?.loginAccountId || sharedAccounts[0]?.id || "";
+  return `<div class="employee-modal-backdrop" id="employeeModalBackdrop">
+    <section class="employee-modal" role="dialog" aria-modal="true" aria-labelledby="employeeModalTitle">
+      <button class="pin-close" data-close-employee aria-label="Close">×</button>
+      <h2 id="employeeModalTitle">${isNew ? "Add Employee" : "Edit Employee"}</h2>
+      <p>${isNew ? "Create a secure GamePlan staff profile." : `Update ${esc(profile.displayName)}'s access, role, or PIN.`}</p>
+      <form id="employeeForm">
+        <input type="hidden" name="staffProfileId" value="${esc(profile?.id || "")}">
+        <label class="field"><span>Display name</span><input name="displayName" required maxlength="80" value="${esc(profile?.displayName || "")}" autocomplete="off"></label>
+        <label class="field"><span>Role</span><select name="roleId" required>${state.staffManagement.roles.map(role => `<option value="${esc(role.id)}" ${role.id === profile?.roleId ? "selected" : ""}>${esc(role.name)}</option>`).join("")}</select></label>
+        <fieldset class="employee-login-choice"><legend>Google login</legend>
+          <label><input type="radio" name="loginMode" value="shared" ${shared ? "checked" : ""}> Shared store account</label>
+          <label><input type="radio" name="loginMode" value="personal" ${!shared ? "checked" : ""}> Personal Google account</label>
+        </fieldset>
+        <label class="field employee-shared-field"><span>Shared account</span><select name="loginAccountId">${sharedAccounts.map(account => `<option value="${esc(account.id)}" ${account.id === selectedAccount ? "selected" : ""}>${esc(account.email)}</option>`).join("")}</select></label>
+        <label class="field employee-personal-field"><span>Google email</span><input name="googleEmail" type="email" value="${esc(shared ? "" : (profile?.googleEmail || ""))}" placeholder="name@playitagainsoquel.com" autocomplete="email"></label>
+        <div class="employee-pin-fields">
+          <label class="check-row"><input type="checkbox" name="pinEnabled" ${pinEnabled ? "checked" : ""}> Require a PIN on the shared account</label>
+          <div class="form-grid">
+            <label class="field"><span>${profile?.pinConfigured ? "New PIN (leave blank to keep current)" : "PIN"}</span><input name="pin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="new-password" placeholder="4–8 digits"></label>
+            <label class="field"><span>Confirm PIN</span><input name="confirmPin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="new-password" placeholder="Repeat PIN"></label>
+          </div>
+          <small class="form-help">PINs are salted and hashed on the server. The original PIN is never stored.</small>
+        </div>
+        <label class="check-row"><input type="checkbox" name="active" ${active ? "checked" : ""}> Active</label>
+        <div class="employee-form-error" id="employeeFormError"></div>
+        <div class="employee-modal-actions"><button type="button" class="button neutral" data-close-employee>Cancel</button><button type="submit" class="button primary-action">${isNew ? "Add Employee" : "Save Changes"}</button></div>
+      </form>
+    </section>
+  </div>`;
+}
+
+function openEmployeeEditor(profileId = "") {
+  const profile = state.staffManagement.profiles.find(item => item.id === profileId) || null;
+  document.body.insertAdjacentHTML("beforeend", employeeEditorHtml(profile));
+  const backdrop = document.querySelector("#employeeModalBackdrop");
+  const form = document.querySelector("#employeeForm");
+  const close = () => backdrop?.remove();
+  backdrop.querySelectorAll("[data-close-employee]").forEach(button => button.onclick = close);
+  backdrop.onclick = event => { if (event.target === backdrop) close(); };
+  const syncMode = () => {
+    const shared = form.elements.loginMode.value === "shared";
+    form.querySelector(".employee-shared-field").hidden = !shared;
+    form.querySelector(".employee-personal-field").hidden = shared;
+    form.querySelector(".employee-pin-fields").hidden = !shared;
+  };
+  form.querySelectorAll('[name="loginMode"]').forEach(input => input.onchange = syncMode);
+  syncMode();
+  form.onsubmit = async event => {
+    event.preventDefault();
+    const errorBox = form.querySelector("#employeeFormError");
+    const submit = form.querySelector('[type="submit"]');
+    const data = Object.fromEntries(new FormData(form).entries());
+    data.active = form.elements.active.checked;
+    data.pinEnabled = form.elements.pinEnabled.checked;
+    const shared = data.loginMode === "shared";
+    if (!data.displayName.trim()) return errorBox.textContent = "Enter the employee's display name.";
+    if (!data.roleId) return errorBox.textContent = "Choose a role.";
+    if (shared && !data.loginAccountId) return errorBox.textContent = "Choose the shared Google account.";
+    if (!shared && !data.googleEmail.trim()) return errorBox.textContent = "Enter the personal Google email.";
+    if (data.pin || data.confirmPin) {
+      if (!/^\d{4,8}$/.test(data.pin)) return errorBox.textContent = "PINs must contain 4–8 digits.";
+      if (data.pin !== data.confirmPin) return errorBox.textContent = "The PIN entries do not match.";
+    }
+    submit.disabled = true;
+    submit.textContent = "Saving…";
+    errorBox.textContent = "";
+    try {
+      const pinToken = await requestPin("canEditCMS", "Administrator verification is required to save employee changes.");
+      await api.saveStaffProfile(data, pinToken);
+      touchPinSession();
+      close();
+      await loadStaffManagement(true);
+      toast(`${data.displayName.trim()} was saved.`);
+    } catch (error) {
+      errorBox.textContent = error.message || "The employee could not be saved.";
+      submit.disabled = false;
+      submit.textContent = profile ? "Save Changes" : "Add Employee";
+    }
+  };
+}
+
+function renderEmployees() {
+  if (!can("canEditCMS")) return `<div class="app-state app-state--error"><div class="app-state__icon">!</div><h2>Administrator access required</h2><p>Your GamePlan role does not allow employee management.</p><button class="button neutral" data-route="more">Back to More</button></div>`;
+  if (state.staffManagement.loading) return `<div class="app-state"><div class="loading-spinner"></div><h2>Loading employees…</h2></div>`;
+  if (!state.staffManagement.loaded) return `<div class="app-state"><div class="employee-admin-icon">♙</div><h2>Employee Management</h2><p>Manage employee and manager roles, shared-account PINs, personal Google logins, and active status.</p><button class="button" data-load-staff>Open Employee Management</button></div>`;
+  const profiles = [...state.staffManagement.profiles].sort((a,b) => Number(b.active)-Number(a.active) || a.displayName.localeCompare(b.displayName));
+  return `<section class="card employees-card"><div class="head employees-head"><div><h2>Employees</h2><span class="agenda-subtitle">${profiles.filter(item=>item.active).length} active · ${profiles.length} total</span></div><button class="button" data-add-employee>＋ Add Employee</button></div><div class="body employee-list">${profiles.map(profile => `<article class="employee-row ${profile.active ? "" : "inactive"}">
+    <div class="employee-avatar">${esc(profile.displayName.charAt(0).toUpperCase())}</div>
+    <div class="employee-copy"><b>${esc(profile.displayName)}</b><span>${esc(staffRoleName(profile.roleId))} · ${profile.sharedAccount ? `Shared login: ${esc(sharedLoginName(profile.loginAccountId))}` : esc(profile.googleEmail)}</span><small>${profile.sharedAccount ? (profile.pinConfigured ? "PIN configured" : "PIN not configured") : "Personal Google sign-in"}</small></div>
+    <div class="employee-status"><span class="badge ${profile.active ? "completed" : "attention"}">${profile.active ? "Active" : "Inactive"}</span><button class="button neutral" data-edit-employee="${esc(profile.id)}">Edit</button></div>
+  </article>`).join("") || `<div class="empty-agenda"><b>No employees yet</b><span>Add the first staff profile to begin.</span></div>`}</div></section>`;
+}
+
 const views = {
   today: {
     title:"Today's GamePlan", sub:todayDate,
@@ -783,7 +918,12 @@ const views = {
 
   more: {
     title:"More", sub:"Administration and app information",
-    html:()=>`<div class="grid two"><section class="card"><div class="head"><h2>Administration</h2></div><div class="body list"><button class="row" data-demo-action="Settings"><div><b>Settings</b><span>Pricing, timing, availability, and app rules</span></div><b>⚙</b></button><button class="row" data-demo-action="Huddle Together"><div><b>Huddle Together</b><span>Group scheduled jobs into one operational route</span></div><b>↝</b></button></div></section><section class="card"><div class="head"><h2>System</h2></div><div class="body"><div class="row"><div><b>Data source</b><span>${state.live ? "Live GamePlan CMS" : state.cached ? "Cached live data" : "Not connected"}</span></div><span class="badge ${state.live ? "completed" : "tentative"}">${state.live ? "Live" : state.cached ? "Cached" : "Offline"}</span></div></div></section></div>`
+    html:()=>`<div class="grid two"><section class="card"><div class="head"><h2>Administration</h2></div><div class="body list">${can("canEditCMS") ? `<button class="row" data-route="employees"><div><b>Employee Management</b><span>Add staff, assign roles, manage PINs, and deactivate access</span></div><b>›</b></button>` : ""}<button class="row" data-demo-action="Settings"><div><b>Settings</b><span>Pricing, timing, availability, and app rules</span></div><b>⚙</b></button><button class="row" data-demo-action="Huddle Together"><div><b>Huddle Together</b><span>Group scheduled jobs into one operational route</span></div><b>↝</b></button></div></section><section class="card"><div class="head"><h2>System</h2></div><div class="body"><div class="row"><div><b>Data source</b><span>${state.live ? "Live GamePlan CMS" : state.cached ? "Cached live data" : "Not connected"}</span></div><span class="badge ${state.live ? "completed" : "tentative"}">${state.live ? "Live" : state.cached ? "Cached" : "Offline"}</span></div></div></section></div>`
+  },
+
+  employees: {
+    title:"Employee Management", sub:"Roles, PINs, login accounts, and access",
+    html:()=>renderEmployees()
   }
 };
 
@@ -875,6 +1015,9 @@ function bindDynamic() {
       go("schedule");
     };
   });
+  view.querySelector("[data-load-staff]")?.addEventListener("click", () => loadStaffManagement());
+  view.querySelector("[data-add-employee]")?.addEventListener("click", () => openEmployeeEditor());
+  view.querySelectorAll("[data-edit-employee]").forEach(el => el.onclick = () => openEmployeeEditor(el.dataset.editEmployee));
 }
 
 function loadingView() {

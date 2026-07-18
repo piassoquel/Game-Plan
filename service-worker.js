@@ -1,8 +1,8 @@
-const CACHE_NAME = "gameplan-v0-3-1";
+const CACHE_NAME = "gameplan-v2-8-0";
 const APP_SHELL = [
   "./","./index.html","./manifest.json",
-  "./css/app.css?v=0.3.1","./js/config.js?v=0.3.1",
-  "./js/app.js?v=0.3.1","./js/api.js",
+  "./css/app.css?v=2.8.0","./js/config.js?v=2.8.0",
+  "./js/app.js?v=2.8.0","./js/api.js?v=2.8.0",
   "./assets/logo/gameplan-logo.svg","./assets/icons/icon.svg"
 ];
 self.addEventListener("install",event=>{
