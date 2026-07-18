@@ -88,3 +88,20 @@
 .pin-modal .primary-action{width:100%;margin-top:10px}
 .pin-error{min-height:20px;color:#f87171;font-size:13px;text-align:center}
 @media(max-width:600px){.pin-modal{padding:23px 18px}.pin-backdrop{align-items:end}.pin-modal{border-radius:20px 20px 0 0;margin:-18px;width:calc(100% + 36px);padding-bottom:calc(24px + env(safe-area-inset-bottom))}}
+
+
+/* Explicit Google authentication v2.6 */
+.auth-gate{position:fixed;inset:0;z-index:200;display:none;place-items:center;padding:20px;background:radial-gradient(circle at 50% 10%,rgba(255,138,42,.12),transparent 34%),#0b0f12}
+.auth-gate.open{display:grid}
+.auth-card{width:min(460px,100%);padding:34px 28px;text-align:center;background:#171c21;border:1px solid #303840;border-radius:22px;box-shadow:0 30px 100px rgba(0,0,0,.6)}
+.auth-logo{width:72px;height:72px;margin:0 auto 18px;border-radius:20px;display:grid;place-items:center;background:linear-gradient(145deg,#ff8a2a,#c85d00);color:#fff;font-size:25px;font-weight:900;letter-spacing:-1px}
+.auth-card h2{margin:0 0 9px;font-size:25px}
+.auth-card p{margin:0 auto 23px;max-width:360px;color:#9ca3af;line-height:1.55}
+.google-signin-slot{min-height:44px;display:flex;justify-content:center}
+.auth-status{min-height:20px;margin-top:16px;color:#9ca3af;font-size:13px}
+.auth-status.error{color:#f87171}
+.profile-copy{min-width:0;flex:1}
+.profile-signout{border:0;background:transparent;color:#9ca3af;font:inherit;font-size:11px;cursor:pointer;padding:7px;border-radius:7px}
+.profile-signout:hover{color:#f5f7fa;background:rgba(255,255,255,.06)}
+.profile-signout[hidden]{display:none}
+@media(max-width:900px){.profile-signout{display:none}.auth-card{padding:28px 20px}}

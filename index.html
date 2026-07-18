@@ -7,7 +7,7 @@
   <meta name="description" content="GamePlan delivery and installation operations app">
   <link rel="manifest" href="./manifest.json">
   <link rel="icon" href="./assets/icons/icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./css/app.css?v=2.5.0">
+  <link rel="stylesheet" href="./css/app.css?v=2.6.0">
   <title>GamePlan</title>
 </head>
 <body>
@@ -30,8 +30,9 @@
       </nav>
 
       <div class="profile">
-        <i>J</i>
-        <div><b id="profileName">Loading…</b><small id="profileRole">Checking access</small></div>
+        <i id="profileAvatar">J</i>
+        <div class="profile-copy"><b id="profileName">Not signed in</b><small id="profileRole">Google verification required</small></div>
+        <button class="profile-signout" id="googleSignOut" type="button">Sign out</button>
       </div>
     </aside>
 
@@ -82,9 +83,18 @@
     </section>
 
     <div id="toast"></div>
+    <div class="auth-gate open" id="authGate" aria-hidden="false">
+      <section class="auth-card" role="dialog" aria-modal="true" aria-labelledby="authTitle">
+        <div class="auth-logo">GP</div>
+        <h2 id="authTitle">Sign in to GamePlan</h2>
+        <p>Use an approved Play It Again Sports Google account. Employee identity and manager approval are handled by PIN after sign-in.</p>
+        <div id="googleSignInButton" class="google-signin-slot"></div>
+        <div class="auth-status" id="authStatus">Preparing secure sign-in…</div>
+      </section>
+    </div>
   </div>
 
-  <script src="./js/config.js?v=2.5.0"></script>
-  <script type="module" src="./js/app.js?v=2.5.0"></script>
+  <script src="./js/config.js?v=2.6.0"></script>
+  <script type="module" src="./js/app.js?v=2.6.0"></script>
 </body>
 </html>

@@ -2,6 +2,7 @@ import { GamePlanApi } from "./api.js";
 
 const CACHE_KEY = "gameplan-live-bootstrap-v1";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const GOOGLE_TOKEN_KEY = "gameplan-google-id-token-v1";
 
 const state = {
   jobs: [],
@@ -21,9 +22,153 @@ const state = {
   loadDurationMs: 0,
   currentUser: { displayName: "", email: "", roleName: "Employee", permissions: {} },
   staffChoices: [],
-  pinSession: null
+  pinSession: null,
+  googleIdentity: null,
+  authenticated: false
 };
 const api = new GamePlanApi(window.GAMEPLAN_CONFIG);
+
+const authGate = document.querySelector("#authGate");
+const authStatus = document.querySelector("#authStatus");
+const googleSignInButton = document.querySelector("#googleSignInButton");
+const googleSignOutButton = document.querySelector("#googleSignOut");
+
+function decodeJwtPayload(token) {
+  try {
+    const payload = token.split(".")[1];
+    const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
+    return JSON.parse(decodeURIComponent(atob(normalized).split("").map(c => "%" + c.charCodeAt(0).toString(16).padStart(2, "0")).join("")));
+  } catch (_) {
+    return null;
+  }
+}
+
+function tokenIsUsable(token) {
+  const payload = decodeJwtPayload(token);
+  return Boolean(payload && payload.exp && payload.exp * 1000 > Date.now() + 60_000);
+}
+
+function setAuthStatus(message, error = false) {
+  if (!authStatus) return;
+  authStatus.textContent = message;
+  authStatus.classList.toggle("error", error);
+}
+
+function showAuthGate(message = "Sign in with an approved Google account.", error = false) {
+  state.authenticated = false;
+  state.googleIdentity = null;
+  api.clearGoogleIdToken();
+  authGate?.classList.add("open");
+  authGate?.setAttribute("aria-hidden", "false");
+  setAuthStatus(message, error);
+}
+
+function hideAuthGate() {
+  authGate?.classList.remove("open");
+  authGate?.setAttribute("aria-hidden", "true");
+}
+
+function acceptGoogleCredential(token) {
+  const payload = decodeJwtPayload(token);
+  if (!payload || !tokenIsUsable(token)) throw new Error("Google returned an expired or invalid sign-in token.");
+  sessionStorage.setItem(GOOGLE_TOKEN_KEY, token);
+  api.setGoogleIdToken(token);
+  state.googleIdentity = { email: payload.email || "", name: payload.name || payload.email || "" };
+}
+
+async function authorizeGoogleCredential(token) {
+  acceptGoogleCredential(token);
+  const authorization = await api.authenticate();
+  state.currentUser = authorization.currentUser || state.currentUser;
+  state.staffChoices = authorization.staffChoices || [];
+  state.authenticated = true;
+  hideAuthGate();
+  renderCurrentUser();
+}
+
+function loadGoogleIdentityLibrary() {
+  return new Promise((resolve, reject) => {
+    if (window.google?.accounts?.id) return resolve();
+    const existing = document.querySelector('script[data-gameplan-google-identity]');
+    if (existing) {
+      existing.addEventListener("load", resolve, { once: true });
+      existing.addEventListener("error", () => reject(new Error("Google sign-in could not load.")), { once: true });
+      return;
+    }
+    const script = document.createElement("script");
+    script.src = "https://accounts.google.com/gsi/client";
+    script.async = true;
+    script.defer = true;
+    script.dataset.gameplanGoogleIdentity = "true";
+    script.onload = resolve;
+    script.onerror = () => reject(new Error("Google sign-in could not load."));
+    document.head.appendChild(script);
+  });
+}
+
+async function initializeGoogleAuthentication() {
+  const clientId = String(window.GAMEPLAN_CONFIG?.googleClientId || "").trim();
+  if (!clientId) {
+    showAuthGate("Google Client ID is missing from js/config.js.", true);
+    return;
+  }
+  try {
+    await loadGoogleIdentityLibrary();
+    window.google.accounts.id.initialize({
+      client_id: clientId,
+      callback: async response => {
+        try {
+          setAuthStatus("Verifying your account…");
+          await authorizeGoogleCredential(response.credential);
+          const hasCachedBootstrap = loadCachedBootstrap();
+          updateDataStatus();
+          go(location.hash.slice(1) || "today");
+          await loadLiveData({ forceLoading: !hasCachedBootstrap });
+        } catch (error) {
+          console.error(error);
+          showAuthGate(error.message || "Google sign-in failed.", true);
+        }
+      },
+      auto_select: false,
+      cancel_on_tap_outside: false
+    });
+    googleSignInButton.innerHTML = "";
+    window.google.accounts.id.renderButton(googleSignInButton, {
+      theme: "filled_black", size: "large", shape: "pill", text: "signin_with", width: 300
+    });
+
+    const saved = sessionStorage.getItem(GOOGLE_TOKEN_KEY) || "";
+    if (tokenIsUsable(saved)) {
+      await authorizeGoogleCredential(saved);
+      const hasCachedBootstrap = loadCachedBootstrap();
+      updateDataStatus();
+      go(location.hash.slice(1) || "today");
+      await loadLiveData({ forceLoading: !hasCachedBootstrap });
+    } else {
+      sessionStorage.removeItem(GOOGLE_TOKEN_KEY);
+      showAuthGate("Sign in with an approved Google account.");
+    }
+  } catch (error) {
+    console.error(error);
+    showAuthGate(error.message || "Google sign-in could not start.", true);
+  }
+}
+
+function signOutOfGamePlan() {
+  clearPinSession(false);
+  sessionStorage.removeItem(GOOGLE_TOKEN_KEY);
+  api.clearGoogleIdToken();
+  state.authenticated = false;
+  state.currentUser = { displayName: "", email: "", roleName: "Employee", permissions: {} };
+  state.staffChoices = [];
+  state.ready = false;
+  state.live = false;
+  state.cached = false;
+  window.google?.accounts?.id?.disableAutoSelect();
+  showAuthGate("Signed out. Use an approved Google account to continue.");
+  go(location.hash.slice(1) || "today");
+}
+
 
 const scheduleState = {
   weekStart: startOfWeek(new Date()),
@@ -153,6 +298,7 @@ function renderCurrentUser() {
   if (role) role.textContent = shared && !state.pinSession ? "PIN required for accountable actions" : `${user.roleName || "Employee"}${shared ? " · Switch Employee" : ""}`;
   if (avatar) avatar.textContent = (user.displayName || user.email || "G").trim().charAt(0).toUpperCase();
   const profile = document.querySelector(".profile");
+  if (googleSignOutButton) googleSignOutButton.hidden = !state.authenticated;
   if (profile) {
     profile.classList.toggle("profile-action", shared);
     profile.onclick = shared ? () => clearPinSession(true) : null;
@@ -774,6 +920,10 @@ function go(route) {
 }
 
 async function loadLiveData({forceLoading = false} = {}) {
+  if (!state.authenticated) {
+    showAuthGate("Sign in with an approved Google account.");
+    return;
+  }
   if (!api.isConfigured) {
     state.loadError = "The live CMS URL is not configured.";
     state.refreshing = false;
@@ -798,6 +948,10 @@ async function loadLiveData({forceLoading = false} = {}) {
   } catch (error) {
     console.error(error);
     state.loadError = error.message || "The live CMS did not respond.";
+    if (/sign-in|Google account|authorized|token/i.test(state.loadError)) {
+      sessionStorage.removeItem(GOOGLE_TOKEN_KEY);
+      showAuthGate(state.loadError, true);
+    }
     if (!state.ready) state.live = false;
     if (state.cached) toast("Could not refresh. Showing the last successful live data.");
   } finally {
@@ -909,7 +1063,12 @@ if ("serviceWorker" in navigator) {
 }
 
 loadPinSession();
-const hasCachedBootstrap = loadCachedBootstrap();
 updateDataStatus();
 go(location.hash.slice(1) || "today");
-loadLiveData({forceLoading: !hasCachedBootstrap});
+if (googleSignOutButton) {
+  googleSignOutButton.addEventListener("click", event => {
+    event.stopPropagation();
+    signOutOfGamePlan();
+  });
+}
+initializeGoogleAuthentication();

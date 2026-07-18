@@ -1,59 +1,31 @@
 export class GamePlanApi {
   constructor(config) {
     this.config = config || {};
+    this.googleIdToken = "";
   }
 
   get isConfigured() {
     return Boolean(this.config.apiBaseUrl);
   }
 
-  async getBootstrap() {
-    if (!this.isConfigured) throw new Error("API URL is not configured.");
-    const url = new URL(this.config.apiBaseUrl);
-    url.searchParams.set("action", "bootstrap");
-    url.searchParams.set("_", Date.now().toString());
-    const response = await fetch(url.toString(), { method: "GET" });
-    if (!response.ok) throw new Error(`API returned ${response.status}`);
-    const payload = await response.json();
-    if (!payload.ok) throw new Error(payload.error || "API error");
-    return payload.data;
+  setGoogleIdToken(token) {
+    this.googleIdToken = String(token || "");
   }
 
-
-  async verifyPin(staffProfileId, pin) {
-    if (!this.isConfigured) throw new Error("API URL is not configured.");
-    const response = await fetch(this.config.apiBaseUrl, {
-      method: "POST",
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify({ action: "verifyPin", data: { staffProfileId, pin } })
-    });
-    if (!response.ok) throw new Error(`API returned ${response.status}`);
-    const payload = await response.json();
-    if (!payload.ok) throw new Error(payload.error || "PIN verification failed");
-    return payload.data;
+  clearGoogleIdToken() {
+    this.googleIdToken = "";
   }
 
-  async createJob(jobData, pinToken = "") {
+  async post(action, data = {}) {
     if (!this.isConfigured) throw new Error("API URL is not configured.");
-    const response = await fetch(this.config.apiBaseUrl, {
-      method: "POST",
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify({ action: "createJob", data: { ...jobData, pinToken } })
-    });
-    if (!response.ok) throw new Error(`API returned ${response.status}`);
-    const payload = await response.json();
-    if (!payload.ok) throw new Error(payload.error || "API error");
-    return payload.data;
-  }
-
-  async updateJobStatus(jobId, newStatus, statusNote = "", pinToken = "") {
-    if (!this.isConfigured) throw new Error("API URL is not configured.");
+    if (!this.googleIdToken) throw new Error("Google sign-in is required.");
     const response = await fetch(this.config.apiBaseUrl, {
       method: "POST",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
       body: JSON.stringify({
-        action: "updateJobStatus",
-        data: { jobId, newStatus, statusNote, pinToken }
+        action,
+        googleIdToken: this.googleIdToken,
+        data: { ...data, googleIdToken: this.googleIdToken }
       })
     });
     if (!response.ok) throw new Error(`API returned ${response.status}`);
@@ -62,31 +34,15 @@ export class GamePlanApi {
     return payload.data;
   }
 
-  async updateEquipmentBuildStatus(jobId, jobEquipmentId, buildComplete = true, pinToken = "") {
-    if (!this.isConfigured) throw new Error("API URL is not configured.");
-    const response = await fetch(this.config.apiBaseUrl, {
-      method: "POST",
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify({
-        action: "updateEquipmentBuildStatus",
-        data: { jobId, jobEquipmentId, buildComplete, pinToken }
-      })
-    });
-    if (!response.ok) throw new Error(`API returned ${response.status}`);
-    const payload = await response.json();
-    if (!payload.ok) throw new Error(payload.error || "API error");
-    return payload.data;
+  authenticate() { return this.post("authCheck"); }
+  getBootstrap() { return this.post("bootstrap"); }
+  verifyPin(staffProfileId, pin) { return this.post("verifyPin", { staffProfileId, pin }); }
+  createJob(jobData, pinToken = "") { return this.post("createJob", { ...jobData, pinToken }); }
+  updateJobStatus(jobId, newStatus, statusNote = "", pinToken = "") {
+    return this.post("updateJobStatus", { jobId, newStatus, statusNote, pinToken });
   }
-
-  async getJob(jobId) {
-    if (!this.isConfigured) throw new Error("API URL is not configured.");
-    const url = new URL(this.config.apiBaseUrl);
-    url.searchParams.set("action", "job");
-    url.searchParams.set("jobId", jobId);
-    const response = await fetch(url.toString(), { method: "GET" });
-    if (!response.ok) throw new Error(`API returned ${response.status}`);
-    const payload = await response.json();
-    if (!payload.ok) throw new Error(payload.error || "API error");
-    return payload.data;
+  updateEquipmentBuildStatus(jobId, jobEquipmentId, buildComplete = true, pinToken = "") {
+    return this.post("updateEquipmentBuildStatus", { jobId, jobEquipmentId, buildComplete, pinToken });
   }
+  getJob(jobId) { return this.post("job", { jobId }); }
 }
