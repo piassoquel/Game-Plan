@@ -105,3 +105,8 @@
 .profile-signout:hover{color:#f5f7fa;background:rgba(255,255,255,.06)}
 .profile-signout[hidden]{display:none}
 @media(max-width:900px){.profile-signout{display:none}.auth-card{padding:28px 20px}}
+
+/* Employee PIN authentication v2.7.0 */
+.pin-modal.manager-approval{border-color:rgba(245,158,11,.5)}
+.pin-modal.manager-approval .pin-icon{color:#f59e0b;border-color:rgba(245,158,11,.4);background:rgba(245,158,11,.1)}
+.profile-action{cursor:pointer}.profile-signout{margin-left:auto;border:0;background:none;color:#9ca3af;cursor:pointer;font-size:12px}.profile-signout:hover{color:#ff8a2a}

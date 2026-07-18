@@ -36,13 +36,17 @@ export class GamePlanApi {
 
   authenticate() { return this.post("authCheck"); }
   getBootstrap() { return this.post("bootstrap"); }
-  verifyPin(staffProfileId, pin) { return this.post("verifyPin", { staffProfileId, pin }); }
-  createJob(jobData, pinToken = "") { return this.post("createJob", { ...jobData, pinToken }); }
-  updateJobStatus(jobId, newStatus, statusNote = "", pinToken = "") {
-    return this.post("updateJobStatus", { jobId, newStatus, statusNote, pinToken });
+  verifyPin(pin, requiredPermission = "") {
+    return this.post("verifyPin", { pin, requiredPermission });
   }
-  updateEquipmentBuildStatus(jobId, jobEquipmentId, buildComplete = true, pinToken = "") {
-    return this.post("updateEquipmentBuildStatus", { jobId, jobEquipmentId, buildComplete, pinToken });
+  createJob(jobData, pinToken = "", approvalToken = "") {
+    return this.post("createJob", { ...jobData, pinToken, approvalToken });
+  }
+  updateJobStatus(jobId, newStatus, statusNote = "", pinToken = "", approvalToken = "") {
+    return this.post("updateJobStatus", { jobId, newStatus, statusNote, pinToken, approvalToken });
+  }
+  updateEquipmentBuildStatus(jobId, jobEquipmentId, buildComplete = true, pinToken = "", approvalToken = "") {
+    return this.post("updateEquipmentBuildStatus", { jobId, jobEquipmentId, buildComplete, pinToken, approvalToken });
   }
   getJob(jobId) { return this.post("job", { jobId }); }
 }
