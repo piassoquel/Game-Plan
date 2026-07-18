@@ -1,0 +1,1 @@
+window.GAMEPLAN_CONFIG = { environment: "production", apiBaseUrl: "https://script.google.com/macros/s/AKfycbztbAzEgpSOA9b3pqXoyVIxL0exQ3sw_7IYTryAHPxAmhzQJPxi_ZmKFTVV_6Ji3JqV/exec", googleClientId: "419637356080-4gmb51tukosn1vtgqo01h0ja72ha98ag.apps.googleusercontent.com", placesApiKey: "" };
