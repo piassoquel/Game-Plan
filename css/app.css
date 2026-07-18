@@ -57,3 +57,16 @@
 
 /* Launch Readiness v2.3 */
 .app-state{min-height:58vh;display:grid;place-items:center;align-content:center;gap:12px;text-align:center;padding:36px;color:#9ca3af}.app-state h2{margin:4px 0 0;color:#f5f7fa;font-size:22px}.app-state p{max-width:440px;margin:0;line-height:1.55}.app-state__icon{width:54px;height:54px;border-radius:50%;display:grid;place-items:center;background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.35);color:#f87171;font-size:26px;font-weight:800}.app-state--error .button{margin-top:8px}.loading-spinner{width:42px;height:42px;border-radius:50%;border:4px solid rgba(255,255,255,.12);border-top-color:#ff8a2a;animation:gameplan-spin .8s linear infinite}@keyframes gameplan-spin{to{transform:rotate(360deg)}}.demo.loading{color:#cbd5e1;border-color:rgba(148,163,184,.3);background:rgba(148,163,184,.08)}.demo.cached{color:#fbbf24;border-color:rgba(245,158,11,.35);background:rgba(245,158,11,.09)}
+
+/* Role-aware workflow */
+.permission-notice {
+  display: grid;
+  gap: 4px;
+  padding: 13px 14px;
+  border: 1px solid rgba(245, 158, 11, .35);
+  border-radius: 12px;
+  background: rgba(245, 158, 11, .09);
+  color: var(--text, #f4f7fb);
+}
+.permission-notice strong { color: #fbbf24; }
+.permission-notice span { color: var(--muted, #aab3c2); font-size: .9rem; line-height: 1.35; }

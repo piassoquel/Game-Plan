@@ -18,7 +18,8 @@ const state = {
   refreshing: false,
   loadError: "",
   lastUpdated: "",
-  loadDurationMs: 0
+  loadDurationMs: 0,
+  currentUser: { displayName: "", email: "", roleName: "Employee", permissions: {} }
 };
 const api = new GamePlanApi(window.GAMEPLAN_CONFIG);
 
@@ -41,6 +42,17 @@ const drawerBackdrop = document.querySelector("#drawerBackdrop");
 const drawerContent = document.querySelector("#drawerContent");
 
 const todayDate = new Intl.DateTimeFormat("en-US",{weekday:"long",month:"long",day:"numeric"}).format(new Date());
+
+function renderCurrentUser() {
+  const name = document.querySelector("#profileName");
+  const role = document.querySelector("#profileRole");
+  const avatar = document.querySelector("#profileAvatar");
+  const user = state.currentUser || {};
+  if (name) name.textContent = user.displayName || user.email || "GamePlan User";
+  if (role) role.textContent = user.roleName || "Employee";
+  if (avatar) avatar.textContent = (user.displayName || user.email || "G").trim().charAt(0).toUpperCase();
+}
+
 
 function startOfWeek(value) {
   const date = new Date(value);
@@ -246,19 +258,38 @@ function equipmentImage(item) {
     : `<div class="equipment-photo">Equipment</div>`;
 }
 
+function can(permission) {
+  return Boolean(state.currentUser?.permissions?.[permission]);
+}
+
+function isManager() {
+  return can("canApproveSchedule");
+}
+
+function permissionNotice(text) {
+  return `<div class="permission-notice"><strong>Manager approval required</strong><span>${esc(text)}</span></div>`;
+}
+
 function workflowActions(job) {
   const today = isTodayJob(job) && job.status === "Scheduled";
-  if (job.status === "Tentative") return `
-    <button class="button primary-action" data-status-action="Scheduled" data-job-id="${esc(job.id)}">✓ Confirm Appointment</button>
-    <button class="button neutral" data-demo-action="Edit / Reschedule">Edit / Reschedule</button>
-    <button class="button red" data-status-action="Cancelled" data-job-id="${esc(job.id)}">Cancel Job</button>`;
+  if (job.status === "Tentative") {
+    const confirm = isManager()
+      ? `<button class="button primary-action" data-status-action="Scheduled" data-job-id="${esc(job.id)}">✓ Confirm Appointment</button>`
+      : permissionNotice("This appointment is awaiting manager confirmation before it is added to the finalized schedule.");
+    return `${confirm}
+      <button class="button neutral" data-demo-action="Edit / Reschedule">Edit / Reschedule</button>
+      <button class="button red" data-status-action="Cancelled" data-job-id="${esc(job.id)}">Cancel Job</button>`;
+  }
   if (job.status === "Scheduled" && today) return `
     <a class="button call-action" href="tel:${esc(job.phone)}">Call Customer</a>
     <a class="button neutral map-action" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(job.address || "")}" target="_blank" rel="noopener">View on Map</a>
     <button class="button green primary-action" data-status-action="Completed" data-job-id="${esc(job.id)}">✓ Complete Job</button>`;
-  if (job.status === "Scheduled") return `
-    <button class="button neutral" data-demo-action="Edit / Reschedule">Edit / Reschedule</button>
-    <button class="button red" data-status-action="Cancelled" data-job-id="${esc(job.id)}">Cancel Job</button>`;
+  if (job.status === "Scheduled") {
+    if (!isManager()) return permissionNotice("This appointment is finalized. A manager must reschedule or cancel it.");
+    return `
+      <button class="button neutral" data-demo-action="Edit / Reschedule">Edit / Reschedule</button>
+      <button class="button red" data-status-action="Cancelled" data-job-id="${esc(job.id)}">Cancel Job</button>`;
+  }
   if (job.status === "Quote") return `<button class="button primary-action" data-status-action="Tentative" data-job-id="${esc(job.id)}">Schedule Appointment</button>`;
   return "";
 }
@@ -311,6 +342,11 @@ function openJob(jobId) {
 async function changeJobStatus(jobId, newStatus) {
   const job = state.jobs.find(item => item.id === jobId);
   if (!job) return;
+  const managerOnly = newStatus === "Scheduled" || (job.status === "Scheduled" && ["Tentative", "Cancelled"].includes(newStatus));
+  if (managerOnly && !isManager()) {
+    toast("Manager approval is required for finalized schedule changes.");
+    return;
+  }
   const messages = {
     Scheduled: `Confirm ${job.customer}'s appointment and add it to the Weekly Planner?`,
     Completed: `Mark ${job.customer}'s job complete?`,
@@ -591,6 +627,9 @@ function applyBootstrapData(data, {cached = false, timestamp = new Date().toISOS
   state.products = Array.isArray(data.products) ? data.products : [];
   state.brands = Array.isArray(data.brands) ? data.brands : [];
   state.fulfillmentConditions = Array.isArray(data.fulfillmentConditions) ? data.fulfillmentConditions : [];
+  state.currentUser = cached
+    ? { displayName: "", email: "", roleName: "Employee", permissions: {} }
+    : (data.currentUser || { displayName: "", email: "", roleName: "Employee", permissions: {} });
   state.ready = true;
   state.cached = cached;
   state.live = !cached;
@@ -614,6 +653,7 @@ function loadCachedBootstrap() {
 }
 
 function go(route) {
+  renderCurrentUser();
   const selected = views[route] ? route : "today";
   const v = views[selected];
   title.textContent = v.title;
