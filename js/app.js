@@ -1274,12 +1274,13 @@ function quoteEstimate(){
 }
 function crewSize(){return Math.max(1,...draft.equipment.map(i=>Number(selectedType(i).defaultCrewSize||2)));}
 function openWizard(){
-  const saved=localStorage.getItem(DRAFT_KEY);
-  draft=saved?{...blankDraft(),...JSON.parse(saved)}:blankDraft();
-  draft.mode="job";draft.step=0;
-  if(!Array.isArray(draft.equipment))draft.equipment=[];
+  // A tap on New Job always begins a new workflow. Draft data is preserved only
+  // while moving between screens in the currently open wizard.
+  localStorage.removeItem(DRAFT_KEY);
+  draft=blankDraft();
+  draft.mode="job";
+  draft.step=0;
   wizardTitle.textContent="New Job";
-
   renderWizard();wizard.classList.add("open");wizardBackdrop.classList.add("open");wizard.setAttribute("aria-hidden","false");
 }
 function closeWizard(){wizard.classList.remove("open");wizardBackdrop.classList.remove("open");wizard.setAttribute("aria-hidden","true");}
@@ -1328,42 +1329,52 @@ function rankCustomerMatches(){
   const phone=customerPhoneDigits(draft.phone);
   const address=customerText(draft.address);
   const dismissed=new Set((Array.isArray(draft.dismissedCustomerIds)?draft.dismissedCustomerIds:[]).map(String));
-  const hasUsableName=first.length>=2&&last.length>=2;
-  const hasUsablePhone=phone.length>=7;
-  const hasUsableAddress=address.length>=6;
-  if(!hasUsableName&&!hasUsablePhone&&!hasUsableAddress)return [];
+  const hasName=first.length>=2&&last.length>=2;
+  const hasFullPhone=phone.length===10;
+  const hasFullAddress=address.length>=10&&address.split(" ").length>=3;
+  if(!hasName&&!hasFullPhone&&!hasFullAddress)return [];
+
   return state.customers.map(customer=>{
     if(dismissed.has(String(customer.id)))return null;
-    const parts=customerText(customer.name).split(" ").filter(Boolean);
-    const cFirst=parts[0]||"";
-    const cLast=parts.slice(1).join(" ");
-    const cPhone=customerPhoneDigits(customer.phone);
-    const addresses=customerAddresses(customer).map(a=>customerText(a.address)).filter(Boolean);
+    const values=customerAutofillValues(customer);
+    const cFirst=customerText(values.firstName);
+    const cLast=customerText(values.lastName);
+    const cPhone=customerPhoneDigits(values.phone);
+    const addresses=[...customerAddresses(customer).map(a=>customerText(a.address||a.formattedAddress)),customerText(values.address)].filter(Boolean);
+
+    const exactFirst=hasName&&cFirst===first;
+    const exactLast=hasName&&cLast===last;
+    const closeFirst=hasName&&first.length>=3&&cFirst.length>=3&&(cFirst.startsWith(first)||first.startsWith(cFirst));
+    const closeLast=hasName&&last.length>=3&&cLast.length>=3&&(cLast===last||cLast.endsWith(` ${last}`)||last.endsWith(` ${cLast}`));
+    const strongName=hasName&&((exactFirst&&exactLast)||((exactFirst||closeFirst)&&(exactLast||closeLast)));
+    const exactPhone=hasFullPhone&&cPhone.length===10&&cPhone===phone;
+    const exactAddress=hasFullAddress&&addresses.some(a=>a===address);
+
+    // Once a full phone or a complete name has been entered, conflicting data
+    // should disqualify a weak address-only result.
+    const phoneConflict=hasFullPhone&&cPhone.length===10&&!exactPhone;
+    const nameConflict=hasName&&!strongName;
+
     let score=0;const reasons=[];
-    if(hasUsablePhone&&cPhone){
-      if(phone.length===10&&cPhone===phone){score+=120;reasons.push("Exact phone match");}
-      else if(cPhone.endsWith(phone)||phone.endsWith(cPhone)){score+=75;reasons.push("Phone match");}
-    }
-    if(hasUsableName){
-      const firstExact=cFirst===first;
-      const lastExact=cLast===last||cLast.endsWith(` ${last}`)||last.endsWith(` ${cLast}`);
-      const firstClose=first.length>=3&&(cFirst.startsWith(first)||first.startsWith(cFirst));
-      const lastClose=last.length>=3&&(cLast.includes(last)||last.includes(cLast));
-      if(firstExact&&lastExact){score+=70;reasons.push("Exact name match");}
-      else if((firstExact||firstClose)&&(lastExact||lastClose)){score+=48;reasons.push("Similar name");}
-    }
-    if(hasUsableAddress&&addresses.length){
-      const exact=addresses.find(a=>a===address);
-      const close=addresses.find(a=>a.includes(address)||address.includes(a));
-      const addressTokens=address.split(" ").filter(t=>t.length>2);
-      const tokenMatch=addresses.some(a=>addressTokens.length>=2&&addressTokens.filter(t=>a.includes(t)).length>=Math.min(3,addressTokens.length));
-      if(exact){score+=100;reasons.push("Exact address match");}
-      else if(close){score+=65;reasons.push("Address match");}
-      else if(tokenMatch){score+=38;reasons.push("Similar address");}
-    }
-    if(score<45)return null;
+    if(exactPhone){score+=140;reasons.push("Exact phone match");}
+    if(strongName){score+=90;reasons.push(exactFirst&&exactLast?"Exact name match":"Strong name match");}
+    if(exactAddress){score+=70;reasons.push("Exact address match");}
+
+    const qualifies=exactPhone||strongName||(exactAddress&&!phoneConflict&&!nameConflict)||(strongName&&exactAddress);
+    if(!qualifies)return null;
+    if(phoneConflict&&!strongName)return null;
+    if(nameConflict&&!exactPhone)return null;
+
     return {customer,score,reasons:[...new Set(reasons)]};
-  }).filter(Boolean).sort((a,b)=>b.score-a.score||String(a.customer.name||"").localeCompare(String(b.customer.name||""))).slice(0,3);
+  }).filter(Boolean)
+    .sort((a,b)=>b.score-a.score||String(a.customer.name||"").localeCompare(String(b.customer.name||"")))
+    .slice(0,5);
+}
+function customerCandidateMarkup(match, secondary=false){
+  const {customer,reasons,score}=match;
+  const values=customerAutofillValues(customer);
+  const confidence=score>=130?"Strong match":"Possible match";
+  return `<article class="ux-match__candidate${secondary?" ux-match__candidate--secondary":""}"><div><span class="ux-match__confidence">${confidence} · ${esc(reasons[0]||"Customer details match")}</span><b>${esc(customer.name||`${values.firstName} ${values.lastName}`.trim())}</b><small>${esc(values.phone||"")}${values.address?`<br>${esc(values.address)}`:""}</small></div><div class="ux-match__actions"><button type="button" class="ux-match__use" data-select-customer="${esc(customer.id)}">Use Customer</button><button type="button" class="ux-match__dismiss" data-dismiss-customer="${esc(customer.id)}">Not This One</button></div></article>`;
 }
 function customerMatchMarkup(){
   if(draft.customerId){
@@ -1372,11 +1383,8 @@ function customerMatchMarkup(){
   }
   const matches=rankCustomerMatches();
   if(!matches.length)return "";
-  return `<section class="ux-match ux-match--attention" role="status" aria-live="polite"><div class="ux-match__title"><span><b>${matches.length===1?"Possible existing customer":"Possible existing customers"}</b><small>Review before creating a duplicate record.</small></span><strong>!</strong></div><div class="ux-match__list">${matches.map(({customer,reasons,score})=>{
-    const address=customerAddresses(customer).find(a=>a.default)?.address||customerAddresses(customer)[0]?.address||"";
-    const confidence=score>=100?"Strong match":"Possible match";
-    return `<article class="ux-match__candidate"><div><span class="ux-match__confidence">${confidence} · ${esc(reasons[0]||"Customer details match")}</span><b>${esc(customer.name)}</b><small>${esc(customer.phone||"")}${address?`<br>${esc(address)}`:""}</small></div><div class="ux-match__actions"><button type="button" class="ux-match__use" data-select-customer="${esc(customer.id)}">Use Customer</button><button type="button" class="ux-match__dismiss" data-dismiss-customer="${esc(customer.id)}">Not This One</button></div></article>`;
-  }).join("")}</div></section>`;
+  const [primary,...others]=matches;
+  return `<section class="ux-match ux-match--attention" role="status" aria-live="polite"><div class="ux-match__title"><span><b>Possible customer match</b><small>Review before creating a duplicate record.</small></span><strong>!</strong></div><div class="ux-match__list">${customerCandidateMarkup(primary)}${others.length?`<details class="ux-match__others"><summary>${others.length} other possible match${others.length===1?"":"es"}</summary><div class="ux-match__other-list">${others.map(match=>customerCandidateMarkup(match,true)).join("")}</div></details>`:""}</div></section>`;
 }
 function customerStep(){
   const phone=normalizePhone(draft.phone);

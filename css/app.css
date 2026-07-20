@@ -195,3 +195,12 @@
 .ux-match__dismiss,.ux-match__change{border:1px solid var(--tm-line)!important;background:transparent!important;color:var(--tm-muted)!important;padding:0 12px!important}
 .ux-match__change{width:auto!important;margin-top:10px}
 @media(max-width:540px){.ux-match{margin-left:-2px;margin-right:-2px}.ux-match__actions{grid-template-columns:1fr}.ux-match__dismiss{min-height:38px}}
+
+/* v3.0 Alpha 2.3: compact secondary customer matches */
+.ux-match__others{border-top:1px solid rgba(255,255,255,.08);padding-top:8px}
+.ux-match__others summary{cursor:pointer;color:#93c5fd;font-size:13px;font-weight:800;list-style:none;padding:8px 2px}
+.ux-match__others summary::-webkit-details-marker{display:none}
+.ux-match__others summary::after{content:" ▾"}
+.ux-match__others[open] summary::after{content:" ▴"}
+.ux-match__other-list{display:grid;gap:10px;margin-top:8px}
+.ux-match__candidate--secondary{background:rgba(8,11,14,.28)}
