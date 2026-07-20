@@ -1,4 +1,4 @@
-import { GamePlanApi } from "./api.js?v=3.0.0";
+import { GamePlanApi } from "./api.js?v=3.0.2-alpha1";
 
 const CACHE_KEY = "gameplan-live-bootstrap-v2";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -834,11 +834,10 @@ const views = {
       </div>
       <div class="grid">
         <section class="card mobile-workflow-card">
-          <div class="head"><div><h2>Start Here</h2><span class="agenda-subtitle">Mobile Workflow v3.0</span></div></div>
+          <div class="head"><div><h2>Start Here</h2><span class="agenda-subtitle">New Job Workflow</span></div></div>
           <div class="body v3-actions">
-            <button class="v3-primary-action" data-quick-quote><span class="v3-action-icon">＋</span><span><b>New Quick Quote</b><small>Customer → Equipment → Details → Appointment</small></span><em>›</em></button>
-            <div class="v3-secondary-actions">
-              <button data-demo-action="New Job"><b>Create Job</b><small>Use the same guided workflow</small></button>
+            <button class="v3-primary-action" data-demo-action="New Job"><span class="v3-action-icon">＋</span><span><b>New Job</b><small>Choose Delivery, Pickup, or Delivery &amp; Pickup</small></span><em>›</em></button>
+            <div class="v3-secondary-actions single-action">
               <button data-route="schedule"><b>Schedule</b><small>View the weekly plan</small></button>
             </div>
           </div>
@@ -993,7 +992,7 @@ function bindDynamic() {
       go("jobs");
     };
   });
-  document.querySelectorAll("[data-quick-quote]").forEach(el => el.onclick = () => openWizard("quote"));
+
   view.querySelectorAll("[data-route]").forEach(el => {
     el.onclick = () => go(el.dataset.route);
   });
@@ -1150,8 +1149,8 @@ const wizardProgress = document.querySelector("#wizardProgress");
 const wizardBack = document.querySelector("#wizardBack");
 const wizardNext = document.querySelector("#wizardNext");
 const wizardTitle = document.querySelector("#wizardTitle");
-const DRAFT_KEY = "gameplan-job-draft-v3";
-const UX_STEPS = ["Customer", "Equipment", "Details", "Appointment", "Summary"];
+const DRAFT_KEY = "gameplan-job-draft-v3-alpha1";
+const UX_STEPS = ["Job Type", "Customer", "Equipment", "Details", "Appointment", "Summary"];
 const blankItem = () => ({
   condition: "",
   equipmentTypeId: "",
@@ -1175,7 +1174,7 @@ const blankDraft = () => ({
   email: "",
   addressId: "",
   address: "",
-  jobTypeId: "JT-DEL",
+  jobTypeId: "",
   equipment: [],
   access: [],
   destinationId: "",
@@ -1233,6 +1232,9 @@ function gpIcon(name){
     "hallway":`<path d="M5 4h14v16H5zM9 4v16M15 4v16"/>`,
     "walkway":`<path d="M5 20c2-8 5-8 7-16M13 20c1-6 3-8 6-12"/>`,
     "gate":`<path d="M5 20V6M19 20V6M5 9h14M8 9v11M12 9v11M16 9v11"/>`,
+    "delivery-truck":`<path d="M3 7h11v10H3zM14 10h4l3 3v4h-7z"/><circle cx="7" cy="18" r="2"/><circle cx="18" cy="18" r="2"/>`,
+    "pickup-box":`<path d="M5 8h14v11H5zM5 8l3-4h8l3 4M9 12h6"/><path d="M12 16V10M9.5 12.5 12 10l2.5 2.5"/>`,
+    "delivery-swap":`<path d="M3 7h10v9H3zM13 10h4l3 3v3h-7z"/><circle cx="6" cy="18" r="2"/><circle cx="17" cy="18" r="2"/><path d="M6 4h11M14 2l3 2-3 2"/>`,
     "equipment":`<path d="M5 8h14v11H5zM8 8V5h8v3M9 13h6"/>`
   };
   return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name]||paths.equipment}</svg>`;
@@ -1270,18 +1272,39 @@ function quoteEstimate(){
   return Math.max(30,Math.round(total/5)*5);
 }
 function crewSize(){return Math.max(1,...draft.equipment.map(i=>Number(selectedType(i).defaultCrewSize||2)));}
-function openWizard(mode="job"){
+function openWizard(){
   const saved=localStorage.getItem(DRAFT_KEY);
   draft=saved?{...blankDraft(),...JSON.parse(saved)}:blankDraft();
-  draft.mode=mode;draft.step=0;
+  draft.mode="job";draft.step=0;
   if(!Array.isArray(draft.equipment))draft.equipment=[];
-  wizardTitle.textContent=mode==="quote"?"Quick Quote":"New Job";
+  wizardTitle.textContent="New Job";
   document.querySelector("#saveDraftTop").style.display="block";
   renderWizard();wizard.classList.add("open");wizardBackdrop.classList.add("open");wizard.setAttribute("aria-hidden","false");
 }
 function closeWizard(){wizard.classList.remove("open");wizardBackdrop.classList.remove("open");wizard.setAttribute("aria-hidden","true");}
 function saveDraft(show=true){sync();localStorage.setItem(DRAFT_KEY,JSON.stringify(draft));if(show)toast("Saved to finish later on this device.");}
 function stepHeading(title,subtitle){return `<div class="ux-step"><div class="ux-step__heading"><h2>${title}</h2><p>${subtitle}</p></div>`;}
+function resolveJobType(kind){
+  const types=state.jobTypes||[];
+  const normalized=types.map(item=>({...item,search:`${item.id||""} ${item.name||""}`.toLowerCase()}));
+  if(kind==="delivery-pickup") return normalized.find(item=>/delivery/.test(item.search)&&/pickup|pick up/.test(item.search));
+  if(kind==="pickup") return normalized.find(item=>/pickup|pick up/.test(item.search)&&!/delivery/.test(item.search));
+  return normalized.find(item=>/delivery/.test(item.search)&&!/pickup|pick up/.test(item.search));
+}
+function jobTypeCard(kind,label,description,icon){
+  const type=resolveJobType(kind);
+  return `<button type="button" class="job-type-card" data-job-type-choice="${kind}" ${type?"":"disabled"}><i>${gpIcon(icon)}</i><span><b>${label}</b><small>${type?description:"This job type is not active in the CMS."}</small></span><em>›</em></button>`;
+}
+function jobTypeStep(){
+  return `${stepHeading("What type of job is this?","Choose one to continue.")}
+    <div class="job-type-card-list" role="radiogroup" aria-label="Job type">
+      ${jobTypeCard("delivery","Delivery","Deliver equipment to the customer.","delivery-truck")}
+      ${jobTypeCard("pickup","Pickup","Pick up equipment from the customer.","pickup-box")}
+      ${jobTypeCard("delivery-pickup","Delivery & Pickup","Deliver equipment and bring another item back.","delivery-swap")}
+    </div>
+    <p class="ux-helper job-type-helper">One tap moves directly to Customer Information.</p>
+  </div>`;
+}
 function customerStep(){
   const phone=normalizePhone(draft.phone);
   const q=[draft.firstName,draft.lastName,phone,draft.address].join(" ").trim().toLowerCase();
@@ -1290,7 +1313,6 @@ function customerStep(){
     return q.split(/\s+/).filter(Boolean).some(token=>token.length>2&&hay.includes(token));
   }).slice(0,3);
   return `${stepHeading("Customer Information","Who is this job for?")}
-    <div class="ux-job-type" role="radiogroup" aria-label="Job type">${state.jobTypes.slice(0,3).map(j=>`<button type="button" class="ux-segment ${draft.jobTypeId===j.id?"selected":""}" data-job-type="${esc(j.id)}">${esc(j.name)}</button>`).join("")}</div>
     <div class="ux-form-stack">
       <label class="ux-field"><span>Customer Name</span><div class="ux-name-grid"><input name="firstName" autocomplete="given-name" placeholder="First name" value="${esc(draft.firstName)}"><input name="lastName" autocomplete="family-name" placeholder="Last name" value="${esc(draft.lastName)}"></div></label>
       <label class="ux-field"><span>Phone Number</span><input name="phone" inputmode="tel" autocomplete="tel" placeholder="(831) 555-1234" value="${esc(phone)}"></label>
@@ -1355,10 +1377,10 @@ function summaryStep(){
   return `${stepHeading("Job Summary","Does everything look correct?")}
     <div class="ux-status-banner"><i>✓</i><span><b>Tentative Appointment Ready</b><small>Manager approval is required before Scheduled.</small></span></div>
     <div class="ux-summary-list">
-      ${summaryCard(0,"Customer",`${esc(customerName())}<br><small>${esc(draft.phone)} · ${esc(draft.address)}</small>`,"single-level")}
-      ${summaryCard(1,"Equipment",esc(items),iconNameFor(selectedType(draft.equipment[0])))}
-      ${summaryCard(2,"Delivery Details",`${esc(access)}<br><small>Estimated $${quoteEstimate()}</small>`,"stairs")}
-      ${summaryCard(3,"Appointment",`${esc(date)} at ${esc(time)}`,"equipment")}
+      ${summaryCard(1,"Customer",`${esc(customerName())}<br><small>${esc(draft.phone)} · ${esc(draft.address)}</small>`,"single-level")}
+      ${summaryCard(2,"Equipment",esc(items),iconNameFor(selectedType(draft.equipment[0])))}
+      ${summaryCard(3,"Delivery Details",`${esc(access)}<br><small>Estimated $${quoteEstimate()}</small>`,"stairs")}
+      ${summaryCard(4,"Appointment",`${esc(date)} at ${esc(time)}`,"equipment")}
       <button type="button" class="ux-summary-card optional" id="equipmentDetailsLater"><i>${gpIcon("assembly")}</i><span><small>Equipment Details</small><b>Add make, model, notes, and photos later</b></span><em>›</em></button>
     </div>
   </div>`;
@@ -1370,25 +1392,31 @@ function sync(){
 }
 function validate(){
   sync();
-  if(draft.step===0){if(!draft.jobTypeId)return "Choose a job type.";if(!draft.firstName.trim())return "Enter the customer's first name.";if(draft.phone.replace(/\D/g,"").length!==10)return "Enter a valid 10-digit phone number.";if(!draft.address.trim())return "Enter the delivery address.";}
-  if(draft.step===1&&draft.equipment.length<1)return "Add at least one equipment item.";
-  if(draft.step===2&&draft.access.length<1)return "Select at least one delivery condition.";
-  if(draft.step===3&&(!draft.scheduledDate||!draft.scheduledTime))return "Choose an available date and time.";
+  if(draft.step===0&&!draft.jobTypeId)return "Choose a job type.";
+  if(draft.step===1){if(!draft.firstName.trim())return "Enter the customer's first name.";if(draft.phone.replace(/\D/g,"").length!==10)return "Enter a valid 10-digit phone number.";if(!draft.address.trim())return "Enter the customer address.";}
+  if(draft.step===2&&draft.equipment.length<1)return "Add at least one equipment item.";
+  if(draft.step===3&&draft.access.length<1)return "Select at least one delivery condition.";
+  if(draft.step===4&&(!draft.scheduledDate||!draft.scheduledTime))return "Choose an available date and time.";
   return "";
 }
 function renderWizard(){
-  const steps=[customerStep,equipmentStep,deliveryDetailsStep,appointmentStep,summaryStep];
+  const steps=[jobTypeStep,customerStep,equipmentStep,deliveryDetailsStep,appointmentStep,summaryStep];
   wizardStepLabel.textContent=`Step ${draft.step+1} of ${steps.length}`;
   wizardProgress.innerHTML=UX_STEPS.map((label,i)=>`<i class="${i<=draft.step?"active":""}" title="${label}"></i>`).join("");
   wizardProgress.style.gridTemplateColumns=`repeat(${steps.length},1fr)`;
   wizardForm.innerHTML=steps[draft.step]();
   wizardBack.style.visibility=draft.step?"visible":"hidden";
-  wizardNext.textContent=draft.step===steps.length-1?"Save & Return":draft.step===3?"Reserve Appointment":"Continue";
+  wizardNext.style.visibility=draft.step===0?"hidden":"visible";
+  wizardNext.textContent=draft.step===steps.length-1?"Save & Return":draft.step===4?"Reserve Appointment":"Continue";
   wizardNext.classList.add("primary-action");
   bindStep();
 }
 function bindStep(){
-  wizardForm.querySelectorAll("[data-job-type]").forEach(el=>el.onclick=()=>{draft.jobTypeId=el.dataset.jobType;renderWizard();});
+  wizardForm.querySelectorAll("[data-job-type-choice]").forEach(el=>el.onclick=()=>{
+    const type=resolveJobType(el.dataset.jobTypeChoice);
+    if(!type)return toast("That job type is not active in the CMS.");
+    draft.jobTypeId=type.id;draft.step=1;saveDraft(false);renderWizard();
+  });
   const phone=wizardForm.querySelector('input[name="phone"]');if(phone)phone.oninput=()=>{phone.value=normalizePhone(phone.value);draft.phone=phone.value;};
   wizardForm.querySelectorAll("[data-select-customer]").forEach(el=>el.onclick=()=>{const c=state.customers.find(x=>x.id===el.dataset.selectCustomer);if(!c)return;draft.customerId=c.id;const parts=String(c.name||"").trim().split(/\s+/);draft.firstName=parts.shift()||"";draft.lastName=parts.join(" ");draft.phone=normalizePhone(c.phone||"");const a=c.addresses?.find(x=>x.default)||c.addresses?.[0];draft.address=a?.address||draft.address;renderWizard();});
   wizardForm.querySelectorAll("[data-condition]").forEach(el=>el.onclick=()=>{draft.pendingCondition=el.dataset.condition;renderWizard();});
@@ -1412,7 +1440,7 @@ function openEquipmentEditor(index){
 }
 wizardNext.onclick=async()=>{
   const err=validate();if(err)return toast(err);
-  const count=5;
+  const count=6;
   if(draft.step<count-1){draft.step++;saveDraft(false);renderWizard();return;}
   sync();wizardNext.disabled=true;wizardBack.disabled=true;wizardNext.textContent="Creating…";
   try{

@@ -156,3 +156,19 @@
 .v3-primary-action b{display:block;font-size:18px}.v3-primary-action small{display:block;margin-top:4px;color:var(--muted);line-height:1.35}.v3-primary-action em{font-style:normal;font-size:26px;color:#f1a35d}
 .v3-secondary-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}.v3-secondary-actions button{min-height:68px;padding:12px;border:1px solid var(--line);border-radius:14px;background:var(--panel-2);color:var(--text);text-align:left}.v3-secondary-actions b,.v3-secondary-actions small{display:block}.v3-secondary-actions small{margin-top:4px;color:var(--muted);line-height:1.3}
 @media(max-width:540px){.header-status{gap:6px}.build-badge{font-size:10px;padding:0 8px}.v3-secondary-actions{grid-template-columns:1fr}.wizard__header .text-button{max-width:110px;line-height:1.1}}
+
+
+/* v3.0 Alpha 1 — Screen 1: Job Type */
+.v3-secondary-actions.single-action{grid-template-columns:1fr}
+.job-type-card-list{display:grid;gap:14px;margin-top:8px}
+.job-type-card{width:100%;min-height:112px;display:grid;grid-template-columns:64px minmax(0,1fr) 24px;gap:16px;align-items:center;padding:18px;border:1px solid var(--tm-line);border-radius:18px;background:linear-gradient(145deg,rgba(255,255,255,.035),rgba(255,255,255,.012));color:var(--tm-text);text-align:left;cursor:pointer;transition:transform .15s,border-color .15s,background .15s}
+.job-type-card:hover,.job-type-card:focus-visible{border-color:var(--tm-orange);background:rgba(255,138,42,.07);transform:translateY(-1px)}
+.job-type-card:active{transform:scale(.985)}
+.job-type-card:disabled{opacity:.45;cursor:not-allowed;transform:none}
+.job-type-card>i{width:60px;height:60px;display:grid;place-items:center;border-radius:16px;background:rgba(255,138,42,.1);color:var(--tm-orange)}
+.job-type-card svg{width:44px;height:44px;fill:none;stroke:currentColor;stroke-width:1.55;stroke-linecap:round;stroke-linejoin:round}
+.job-type-card b{display:block;font-size:20px;line-height:1.15}
+.job-type-card small{display:block;margin-top:7px;color:var(--tm-muted);font-size:13px;line-height:1.35}
+.job-type-card>em{font-style:normal;color:var(--tm-orange);font-size:28px}
+.job-type-helper{text-align:center;margin-top:18px}
+@media(max-width:540px){.job-type-card{min-height:104px;grid-template-columns:56px minmax(0,1fr) 20px;padding:15px;gap:13px}.job-type-card>i{width:52px;height:52px}.job-type-card svg{width:38px;height:38px}.job-type-card b{font-size:18px}}
