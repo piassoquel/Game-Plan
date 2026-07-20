@@ -1149,7 +1149,7 @@ const wizardProgress = document.querySelector("#wizardProgress");
 const wizardBack = document.querySelector("#wizardBack");
 const wizardNext = document.querySelector("#wizardNext");
 const wizardTitle = document.querySelector("#wizardTitle");
-const DRAFT_KEY = "gameplan-job-draft-v3-alpha1";
+const DRAFT_KEY = "gameplan-job-draft-v3-alpha2";
 const UX_STEPS = ["Job Type", "Customer", "Equipment", "Details", "Appointment", "Summary"];
 const blankItem = () => ({
   condition: "",
@@ -1181,7 +1181,8 @@ const blankDraft = () => ({
   flights: "",
   scheduledDate: "",
   scheduledTime: "",
-  internalNotes: ""
+  internalNotes: "",
+  dismissedCustomerIds: []
 });
 let draft = blankDraft();
 function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;"}[c]));}
@@ -1278,7 +1279,7 @@ function openWizard(){
   draft.mode="job";draft.step=0;
   if(!Array.isArray(draft.equipment))draft.equipment=[];
   wizardTitle.textContent="New Job";
-  document.querySelector("#saveDraftTop").style.display="block";
+
   renderWizard();wizard.classList.add("open");wizardBackdrop.classList.add("open");wizard.setAttribute("aria-hidden","false");
 }
 function closeWizard(){wizard.classList.remove("open");wizardBackdrop.classList.remove("open");wizard.setAttribute("aria-hidden","true");}
@@ -1305,21 +1306,107 @@ function jobTypeStep(){
     <p class="ux-helper job-type-helper">One tap moves directly to Customer Information.</p>
   </div>`;
 }
+function customerText(value){
+  return String(value||"").trim().toLowerCase().replace(/[^a-z0-9]+/g," ").replace(/\s+/g," ").trim();
+}
+function customerPhoneDigits(value){return String(value||"").replace(/\D/g,"");}
+function customerAddresses(customer){return Array.isArray(customer?.addresses)?customer.addresses:[];}
+function rankCustomerMatches(){
+  const first=customerText(draft.firstName);
+  const last=customerText(draft.lastName);
+  const phone=customerPhoneDigits(draft.phone);
+  const address=customerText(draft.address);
+  const dismissed=new Set(Array.isArray(draft.dismissedCustomerIds)?draft.dismissedCustomerIds:[]);
+  const hasUsableName=first.length>=2&&last.length>=2;
+  const hasUsablePhone=phone.length>=7;
+  const hasUsableAddress=address.length>=6;
+  if(!hasUsableName&&!hasUsablePhone&&!hasUsableAddress)return [];
+  return state.customers.map(customer=>{
+    if(dismissed.has(customer.id))return null;
+    const parts=customerText(customer.name).split(" ").filter(Boolean);
+    const cFirst=parts[0]||"";
+    const cLast=parts.slice(1).join(" ");
+    const cPhone=customerPhoneDigits(customer.phone);
+    const addresses=customerAddresses(customer).map(a=>customerText(a.address)).filter(Boolean);
+    let score=0;const reasons=[];
+    if(hasUsablePhone&&cPhone){
+      if(phone.length===10&&cPhone===phone){score+=120;reasons.push("Exact phone match");}
+      else if(cPhone.endsWith(phone)||phone.endsWith(cPhone)){score+=75;reasons.push("Phone match");}
+    }
+    if(hasUsableName){
+      const firstExact=cFirst===first;
+      const lastExact=cLast===last||cLast.endsWith(` ${last}`)||last.endsWith(` ${cLast}`);
+      const firstClose=first.length>=3&&(cFirst.startsWith(first)||first.startsWith(cFirst));
+      const lastClose=last.length>=3&&(cLast.includes(last)||last.includes(cLast));
+      if(firstExact&&lastExact){score+=70;reasons.push("Exact name match");}
+      else if((firstExact||firstClose)&&(lastExact||lastClose)){score+=48;reasons.push("Similar name");}
+    }
+    if(hasUsableAddress&&addresses.length){
+      const exact=addresses.find(a=>a===address);
+      const close=addresses.find(a=>a.includes(address)||address.includes(a));
+      const addressTokens=address.split(" ").filter(t=>t.length>2);
+      const tokenMatch=addresses.some(a=>addressTokens.length>=2&&addressTokens.filter(t=>a.includes(t)).length>=Math.min(3,addressTokens.length));
+      if(exact){score+=100;reasons.push("Exact address match");}
+      else if(close){score+=65;reasons.push("Address match");}
+      else if(tokenMatch){score+=38;reasons.push("Similar address");}
+    }
+    if(score<45)return null;
+    return {customer,score,reasons:[...new Set(reasons)]};
+  }).filter(Boolean).sort((a,b)=>b.score-a.score||String(a.customer.name||"").localeCompare(String(b.customer.name||""))).slice(0,3);
+}
+function customerMatchMarkup(){
+  if(draft.customerId){
+    const customer=selectedCustomer();
+    if(customer)return `<section class="ux-match ux-match--confirmed"><div class="ux-match__title"><span><b>Existing customer selected</b><small>${esc(customer.name)}</small></span><strong>✓</strong></div><button type="button" class="ux-match__change" data-clear-customer>Change customer</button></section>`;
+  }
+  const matches=rankCustomerMatches();
+  if(!matches.length)return "";
+  return `<section class="ux-match ux-match--attention" role="status" aria-live="polite"><div class="ux-match__title"><span><b>${matches.length===1?"Possible existing customer":"Possible existing customers"}</b><small>Review before creating a duplicate record.</small></span><strong>!</strong></div><div class="ux-match__list">${matches.map(({customer,reasons,score})=>{
+    const address=customerAddresses(customer).find(a=>a.default)?.address||customerAddresses(customer)[0]?.address||"";
+    const confidence=score>=100?"Strong match":"Possible match";
+    return `<article class="ux-match__candidate"><div><span class="ux-match__confidence">${confidence} · ${esc(reasons[0]||"Customer details match")}</span><b>${esc(customer.name)}</b><small>${esc(customer.phone||"")}${address?`<br>${esc(address)}`:""}</small></div><div class="ux-match__actions"><button type="button" class="ux-match__use" data-select-customer="${esc(customer.id)}">Use Customer</button><button type="button" class="ux-match__dismiss" data-dismiss-customer="${esc(customer.id)}">Not This One</button></div></article>`;
+  }).join("")}</div></section>`;
+}
 function customerStep(){
   const phone=normalizePhone(draft.phone);
-  const q=[draft.firstName,draft.lastName,phone,draft.address].join(" ").trim().toLowerCase();
-  const matches=q.length<3?[]:state.customers.filter(c=>{
-    const hay=`${c.name||""} ${c.phone||""} ${(c.addresses||[]).map(a=>a.address).join(" ")}`.toLowerCase();
-    return q.split(/\s+/).filter(Boolean).some(token=>token.length>2&&hay.includes(token));
-  }).slice(0,3);
   return `${stepHeading("Customer Information","Who is this job for?")}
+    <div id="customerMatchMount">${customerMatchMarkup()}</div>
     <div class="ux-form-stack">
       <label class="ux-field"><span>Customer Name</span><div class="ux-name-grid"><input name="firstName" autocomplete="given-name" placeholder="First name" value="${esc(draft.firstName)}"><input name="lastName" autocomplete="family-name" placeholder="Last name" value="${esc(draft.lastName)}"></div></label>
       <label class="ux-field"><span>Phone Number</span><input name="phone" inputmode="tel" autocomplete="tel" placeholder="(831) 555-1234" value="${esc(phone)}"></label>
       <label class="ux-field"><span>Delivery Address</span><input name="address" autocomplete="street-address" placeholder="Start typing an address" value="${esc(draft.address)}"><small>Address verification uses the existing GamePlan address service.</small></label>
     </div>
-    ${matches.length?`<section class="ux-match"><small>Possible existing customer</small>${matches.map(c=>`<button type="button" data-select-customer="${esc(c.id)}"><span><b>${esc(c.name)}</b><em>${esc(c.phone||"")}</em></span><strong>Use</strong></button>`).join("")}</section>`:""}
   </div>`;
+}
+function bindCustomerMatchActions(){
+  wizardForm.querySelectorAll("[data-select-customer]").forEach(el=>el.onclick=()=>{
+    const c=state.customers.find(x=>x.id===el.dataset.selectCustomer);if(!c)return;
+    draft.customerId=c.id;
+    const parts=String(c.name||"").trim().split(/\s+/);
+    draft.firstName=parts.shift()||"";draft.lastName=parts.join(" ");
+    draft.phone=normalizePhone(c.phone||"");
+    const a=customerAddresses(c).find(x=>x.default)||customerAddresses(c)[0];
+    draft.address=a?.address||draft.address;
+    draft.dismissedCustomerIds=[];
+    saveDraft(false);renderWizard();
+  });
+  wizardForm.querySelectorAll("[data-dismiss-customer]").forEach(el=>el.onclick=()=>{
+    const id=el.dataset.dismissCustomer;
+    draft.dismissedCustomerIds=[...new Set([...(draft.dismissedCustomerIds||[]),id])];
+    updateCustomerMatchMount();
+  });
+  wizardForm.querySelector("[data-clear-customer]")?.addEventListener("click",()=>{
+    draft.customerId="";draft.dismissedCustomerIds=[];updateCustomerMatchMount();
+  });
+}
+function updateCustomerMatchMount(){
+  const mount=wizardForm.querySelector("#customerMatchMount");if(!mount)return;
+  mount.innerHTML=customerMatchMarkup();bindCustomerMatchActions();
+}
+let customerMatchTimer=0;
+function scheduleCustomerMatchUpdate(){
+  clearTimeout(customerMatchTimer);
+  customerMatchTimer=setTimeout(updateCustomerMatchMount,260);
 }
 function popularEquipment(){
   const favorites=state.equipmentTypes.filter(x=>x.quickAccess===true||String(x.quickAccess).toLowerCase()==="true");
@@ -1417,8 +1504,17 @@ function bindStep(){
     if(!type)return toast("That job type is not active in the CMS.");
     draft.jobTypeId=type.id;draft.step=1;saveDraft(false);renderWizard();
   });
-  const phone=wizardForm.querySelector('input[name="phone"]');if(phone)phone.oninput=()=>{phone.value=normalizePhone(phone.value);draft.phone=phone.value;};
-  wizardForm.querySelectorAll("[data-select-customer]").forEach(el=>el.onclick=()=>{const c=state.customers.find(x=>x.id===el.dataset.selectCustomer);if(!c)return;draft.customerId=c.id;const parts=String(c.name||"").trim().split(/\s+/);draft.firstName=parts.shift()||"";draft.lastName=parts.join(" ");draft.phone=normalizePhone(c.phone||"");const a=c.addresses?.find(x=>x.default)||c.addresses?.[0];draft.address=a?.address||draft.address;renderWizard();});
+  if(draft.step===1){
+    const fields=[...wizardForm.querySelectorAll('input[name="firstName"],input[name="lastName"],input[name="phone"],input[name="address"]')];
+    fields.forEach(input=>input.addEventListener("input",()=>{
+      if(input.name==="phone")input.value=normalizePhone(input.value);
+      draft[input.name]=input.value;
+      draft.customerId="";
+      draft.dismissedCustomerIds=[];
+      scheduleCustomerMatchUpdate();
+    }));
+    bindCustomerMatchActions();
+  }
   wizardForm.querySelectorAll("[data-condition]").forEach(el=>el.onclick=()=>{draft.pendingCondition=el.dataset.condition;renderWizard();});
   wizardForm.querySelectorAll("[data-add-equipment]").forEach(el=>el.onclick=()=>{if(!draft.pendingCondition){toast("Choose New or Used first.");return;}draft.equipment.push({...blankItem(),condition:draft.pendingCondition,equipmentTypeId:el.dataset.addEquipment});renderWizard();});
   wizardForm.querySelectorAll("[data-edit-equipment]").forEach(el=>el.onclick=()=>openEquipmentEditor(Number(el.dataset.editEquipment)));
@@ -1450,7 +1546,7 @@ wizardNext.onclick=async()=>{
 };
 wizardBack.onclick=()=>{sync();draft.step=Math.max(0,draft.step-1);renderWizard();};
 document.querySelector("#closeWizard").onclick=closeWizard;
-document.querySelector("#saveDraftTop").onclick=()=>saveDraft(true);
+
 wizardBackdrop.onclick=closeWizard;
 
 document.querySelector("#closeDrawer").onclick = closeJob;

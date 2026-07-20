@@ -172,3 +172,26 @@
 .job-type-card>em{font-style:normal;color:var(--tm-orange);font-size:28px}
 .job-type-helper{text-align:center;margin-top:18px}
 @media(max-width:540px){.job-type-card{min-height:104px;grid-template-columns:56px minmax(0,1fr) 20px;padding:15px;gap:13px}.job-type-card>i{width:52px;height:52px}.job-type-card svg{width:38px;height:38px}.job-type-card b{font-size:18px}}
+
+
+/* v3.0 Alpha 2 — Screen 2 customer matching */
+#saveDraftTop{display:none!important}
+#customerMatchMount:empty{display:none}
+.ux-match{margin:0 0 18px;padding:14px;border-radius:15px}
+.ux-match--attention{border:1px solid rgba(245,158,11,.52);background:linear-gradient(145deg,rgba(245,158,11,.12),rgba(245,158,11,.045));box-shadow:0 10px 28px rgba(0,0,0,.18)}
+.ux-match--confirmed{border:1px solid rgba(34,197,94,.42);background:rgba(34,197,94,.07)}
+.ux-match__title{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:10px}
+.ux-match__title span b,.ux-match__title span small{display:block}
+.ux-match__title span b{font-size:15px}.ux-match__title span small{margin-top:3px;color:var(--tm-muted);font-size:12px}
+.ux-match__title>strong{width:30px;height:30px;display:grid;place-items:center;border-radius:50%;background:rgba(245,158,11,.18);color:#ffd068;font-size:18px}
+.ux-match--confirmed .ux-match__title{margin-bottom:0}.ux-match--confirmed .ux-match__title>strong{background:rgba(34,197,94,.16);color:#8df2ac}
+.ux-match__list{display:grid;gap:10px}
+.ux-match__candidate{display:grid;gap:12px;padding:13px;border:1px solid rgba(255,255,255,.1);border-radius:12px;background:rgba(8,11,14,.44)}
+.ux-match__candidate b,.ux-match__candidate small{display:block}.ux-match__candidate b{margin-top:5px;font-size:16px}.ux-match__candidate small{margin-top:4px;color:var(--tm-muted);line-height:1.4}
+.ux-match__confidence{display:inline-flex;padding:4px 7px;border-radius:999px;background:rgba(245,158,11,.14);color:#ffd068;font-size:10px;font-weight:800;letter-spacing:.02em;text-transform:uppercase}
+.ux-match__actions{display:grid;grid-template-columns:1fr auto;gap:8px}
+.ux-match__actions button,.ux-match__change{min-height:42px;border-radius:10px;font:inherit;font-weight:800;cursor:pointer}
+.ux-match__use{border:1px solid var(--tm-orange)!important;background:var(--tm-orange)!important;color:#111!important;padding:0 13px!important}
+.ux-match__dismiss,.ux-match__change{border:1px solid var(--tm-line)!important;background:transparent!important;color:var(--tm-muted)!important;padding:0 12px!important}
+.ux-match__change{width:auto!important;margin-top:10px}
+@media(max-width:540px){.ux-match{margin-left:-2px;margin-right:-2px}.ux-match__actions{grid-template-columns:1fr}.ux-match__dismiss{min-height:38px}}
