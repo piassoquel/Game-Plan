@@ -1481,27 +1481,13 @@ function destinationAccessCondition(key,flights=draft.flights){
 function primaryAccessIds(){
   return new Set(["garage","main","mobile","upstairs"].map(key=>destinationAccessCondition(key)?.id).filter(Boolean).map(String));
 }
-function commonChallengeConditions(){
-  const primary=primaryAccessIds();
-  return state.accessConditions.filter(access=>{
-    const text=accessSearchText(access);
-    return !primary.has(String(access.id)) && /(narrow|doorway|tight hall|long hall|hallway|walkway|driveway)/.test(text);
-  });
-}
-function extraAccessConditions(){
-  const excluded=new Set([...primaryAccessIds(),...commonChallengeConditions().map(access=>String(access.id))]);
-  return state.accessConditions.filter(access=>!excluded.has(String(access.id)));
-}
 function rebuildDestinationAccess(){
-  const primary=primaryAccessIds();
-  const current=draft.access.filter(id=>!primary.has(String(id)));
   const destination=destinationAccessCondition(draft.destinationId,draft.flights);
-  draft.access=destination?[...new Set([destination.id,...current])]:current;
+  draft.access=destination?[destination.id]:[];
 }
 function selectDestination(key){
   draft.destinationId=key;
   if(key!=="upstairs")draft.flights="";
-  if(key==="garage"||key==="mobile"){draft.access=[];draft.moreAccessOpen=false;}
   rebuildDestinationAccess();
 }
 function destinationLabel(){
@@ -1511,33 +1497,26 @@ function destinationCard(key,label,description,icon){
   const selected=draft.destinationId===key;
   return `<button type="button" class="ux-icon-card destination-card ${selected?"selected":""}" data-destination="${key}"><i>${gpIcon(icon)}</i><span>${label}</span><small>${description}</small>${selected?"<strong>✓</strong>":""}</button>`;
 }
-function modifierButton(access){
-  const selected=draft.access.includes(access.id);
-  return `<button type="button" class="ux-modifier ${selected?"selected":""}" data-access-modifier="${esc(access.id)}"><span>${esc(access.name)}</span><strong>${selected?"✓":"＋"}</strong></button>`;
-}
 function deliveryDetailsStep(){
   const price=quoteEstimate();
-  const challenges=commonChallengeConditions();
-  const extras=extraAccessConditions();
-  const canModify=draft.destinationId==="main"||draft.destinationId==="upstairs";
   return `${stepHeading("Delivery Details","Where is the equipment going?")}
     <div class="ux-price-card"><small>Estimated Delivery Price</small><strong>$${price}</strong><span>Updates automatically</span></div>
     <h3 class="ux-section-label">Destination</h3>
     <div class="ux-card-grid destination-grid">
-      ${destinationCard("garage","Garage","No additional access questions","garage")}
+      ${destinationCard("garage","Garage","Equipment stays in the garage","garage")}
       ${destinationCard("main","Main Level","Inside the home, no stairs","single-level")}
-      ${destinationCard("mobile","Mobile Home","Common delivery destination","mobile-home")}
+      ${destinationCard("mobile","Mobile Home","Mobile or manufactured home","mobile-home")}
       ${destinationCard("upstairs","Upstairs","One or more flights","upstairs")}
     </div>
-    ${draft.destinationId==="upstairs"?`<section class="ux-progressive-panel"><h3>How many flights?</h3><div class="ux-flight-options">${["1","2","3+"].map(value=>`<button type="button" class="ux-flight ${draft.flights===value?"selected":""}" data-flights="${value}">${value}</button>`).join("")}</div></section>`:""}
-    ${canModify&&challenges.length?`<section class="ux-progressive-panel"><h3>Access Challenges <small>Optional</small></h3><div class="ux-modifier-list">${challenges.map(modifierButton).join("")}</div></section>`:""}
-    <details class="ux-more access-more" data-more-access ${draft.moreAccessOpen?"open":""}>
-      <summary><span><b>More</b><small>Gate, heavy equipment, and uncommon conditions</small></span><em>⌄</em></summary>
+    ${draft.destinationId==="upstairs"?`<section class="ux-progressive-panel"><h3>How many flights?</h3><div class="ux-flight-options">${["1","2","3+"].map(value=>`<button type="button" class="ux-flight ${draft.flights===value?"selected":""}" data-flights="${value}">${value} ${value==="1"?"Flight":"Flights"}</button>`).join("")}</div></section>`:""}
+    <details class="ux-more access-more other-condition" data-more-access ${draft.moreAccessOpen?"open":""}>
+      <summary><span><b>Other Special Condition</b><small>Add anything unusual the crew should know</small></span><em>⌄</em></summary>
       <div class="ux-more-body">
-        ${!draft.destinationId?`<p class="ux-helper">Choose a destination first.</p>`:draft.destinationId==="garage"||draft.destinationId==="mobile"?`<p class="ux-helper">No additional modifiers are needed for this destination.</p>`:extras.length?`<div class="ux-modifier-list">${extras.map(modifierButton).join("")}</div>`:`<p class="ux-helper">No additional conditions are active in the CMS.</p>`}
+        <label class="ux-field special-condition-field"><span>Special condition <small>Optional</small></span><textarea name="internalNotes" rows="4" maxlength="500" placeholder="Example: locked gate, steep driveway, rear entrance, or call before arrival">${esc(draft.internalNotes)}</textarea></label>
+        <p class="ux-helper">This note helps the crew prepare. It does not change the estimated price.</p>
       </div>
     </details>
-    <p class="ux-helper delivery-helper">GamePlan applies pricing and labor rules in the background.</p>
+    <p class="ux-helper delivery-helper">GamePlan applies stair pricing and labor rules in the background.</p>
   </div>`;
 }
 function appointmentStep(){
@@ -1553,8 +1532,8 @@ function customerName(){const c=selectedCustomer();return c?.name||`${draft.firs
 function summaryCard(key,title,body,icon){return `<button type="button" class="ux-summary-card" data-edit-step="${key}"><i>${gpIcon(icon)}</i><span><small>${title}</small><b>${body}</b></span><em>›</em></button>`;}
 function summaryStep(){
   const items=draft.equipment.map(i=>`${Math.max(1,Number(i.quantity||1))}× ${i.condition} ${selectedType(i).name||"Equipment"}`).join(" · ");
-  const modifiers=state.accessConditions.filter(a=>draft.access.includes(a.id)&&String(a.id)!==String(destinationAccessCondition(draft.destinationId,draft.flights)?.id||"")).map(a=>a.name);
-  const access=[destinationLabel(),draft.destinationId==="upstairs"&&draft.flights?`${draft.flights} flight${draft.flights==="1"?"":"s"}`:"",...modifiers].filter(Boolean).join(" · ");
+  const access=[destinationLabel(),draft.destinationId==="upstairs"&&draft.flights?`${draft.flights} flight${draft.flights==="1"?"":"s"}`:""].filter(Boolean).join(" · ");
+  const specialCondition=String(draft.internalNotes||"").trim();
   const date=draft.scheduledDate?new Intl.DateTimeFormat("en-US",{weekday:"short",month:"short",day:"numeric"}).format(new Date(`${draft.scheduledDate}T12:00:00`)):"Not selected";
   const time=timeSlotsForSelectedDate().find(x=>x.value===draft.scheduledTime)?.label||draft.scheduledTime||"Not selected";
   return `${stepHeading("Job Summary","Does everything look correct?")}
@@ -1562,7 +1541,7 @@ function summaryStep(){
     <div class="ux-summary-list">
       ${summaryCard(1,"Customer",`${esc(customerName())}<br><small>${esc(draft.phone)} · ${esc(draft.address)}</small>`,"single-level")}
       ${summaryCard(2,"Equipment",esc(items),iconNameFor(selectedType(draft.equipment[0])))}
-      ${summaryCard(3,"Delivery Details",`${esc(access)}<br><small>Estimated $${quoteEstimate()}</small>`,"stairs")}
+      ${summaryCard(3,"Delivery Details",`${esc(access)}<br><small>Estimated $${quoteEstimate()}${specialCondition?` · ${esc(specialCondition)}`:""}</small>`,"stairs")}
       ${summaryCard(4,"Appointment",`${esc(date)} at ${esc(time)}`,"equipment")}
       <button type="button" class="ux-summary-card optional" id="equipmentDetailsLater"><i>${gpIcon("assembly")}</i><span><small>Equipment Details</small><b>Add make, model, notes, and photos later</b></span><em>›</em></button>
     </div>
@@ -1619,6 +1598,7 @@ function bindStep(){
   wizardForm.querySelectorAll("[data-flights]").forEach(el=>el.onclick=()=>{draft.flights=el.dataset.flights;rebuildDestinationAccess();renderWizard();});
   wizardForm.querySelectorAll("[data-access-modifier]").forEach(el=>el.onclick=()=>{const id=el.dataset.accessModifier;draft.access=draft.access.includes(id)?draft.access.filter(x=>String(x)!==String(id)):[...draft.access,id];renderWizard();});
   wizardForm.querySelector("[data-more-access]")?.addEventListener("toggle",event=>{draft.moreAccessOpen=event.currentTarget.open;});
+  wizardForm.querySelector('textarea[name="internalNotes"]')?.addEventListener("input",event=>{draft.internalNotes=event.currentTarget.value;});
   wizardForm.querySelectorAll("[data-date]").forEach(el=>el.onclick=()=>{draft.scheduledDate=el.dataset.date;draft.scheduledTime="";renderWizard();});
   wizardForm.querySelectorAll("[data-time]").forEach(el=>el.onclick=()=>{draft.scheduledTime=el.dataset.time;renderWizard();});
   wizardForm.querySelectorAll("[data-edit-step]").forEach(el=>el.onclick=()=>{draft.step=Number(el.dataset.editStep);renderWizard();});

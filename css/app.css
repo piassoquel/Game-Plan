@@ -216,3 +216,18 @@
 .ux-modifier-list{display:grid;gap:8px}.ux-modifier{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:48px;width:100%;padding:10px 13px;border:1px solid var(--tm-line);border-radius:12px;background:var(--tm-panel);color:var(--tm-text);font:inherit;font-weight:750;text-align:left;cursor:pointer}.ux-modifier strong{width:25px;height:25px;border-radius:50%;display:grid;place-items:center;border:1px solid var(--tm-line);color:var(--tm-orange)}.ux-modifier.selected{border-color:var(--tm-orange);background:rgba(255,138,42,.075)}.ux-modifier.selected strong{border-color:var(--tm-orange);background:var(--tm-orange);color:#101317}
 .access-more{margin-top:14px}.access-more summary{color:var(--tm-text);min-height:58px}.access-more summary>span{display:grid;gap:2px}.access-more summary b{font-size:15px}.access-more summary small{font-size:11px;color:var(--tm-muted);font-weight:500}.access-more summary em{font-style:normal;color:var(--tm-orange);transition:.16s}.access-more[open] summary em{transform:rotate(180deg)}.ux-more-body{padding:12px}.ux-more-body .ux-helper{margin:0}.delivery-helper{margin:14px 0 0}
 @media(max-width:540px){.destination-card{min-height:116px}.destination-card small{max-width:130px}.ux-progressive-panel{padding:12px}}
+
+
+/* v3.0 Alpha 3.1 — Final Screen 4 */
+.destination-card.selected{border-color:#3b82f6;background:linear-gradient(180deg,rgba(59,130,246,.16),rgba(59,130,246,.07));box-shadow:0 0 0 1px rgba(59,130,246,.18)}
+.destination-card.selected>strong{position:absolute;top:9px;right:9px;width:23px;height:23px;border-radius:50%;display:grid;place-items:center;background:#ff8a2a;color:#101317;font-size:12px}
+.ux-flight.selected{border-color:#3b82f6;background:rgba(59,130,246,.14);box-shadow:0 0 0 1px rgba(59,130,246,.16);color:#fff}
+.other-condition summary{color:var(--tm-text)}
+.other-condition[open]{border-color:rgba(59,130,246,.5);background:rgba(59,130,246,.045)}
+.other-condition[open] summary{background:rgba(59,130,246,.08)}
+.special-condition-field{margin:0 0 9px;display:grid;gap:7px}
+.special-condition-field>span{font-size:13px;font-weight:800;color:var(--tm-text)}
+.special-condition-field>span small{font-weight:500;color:var(--tm-muted)}
+.special-condition-field textarea{width:100%;resize:vertical;min-height:104px;border:1px solid var(--tm-line);border-radius:12px;background:var(--tm-panel);color:var(--tm-text);padding:12px 13px;font:inherit;line-height:1.45;outline:none}
+.special-condition-field textarea:focus{border-color:#3b82f6;box-shadow:0 0 0 3px rgba(59,130,246,.12)}
+@media(max-width:480px){.destination-card{min-height:124px}.ux-flight{font-size:13px;padding:0 6px}}
