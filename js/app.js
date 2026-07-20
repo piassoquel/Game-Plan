@@ -1327,13 +1327,13 @@ function rankCustomerMatches(){
   const last=customerText(draft.lastName);
   const phone=customerPhoneDigits(draft.phone);
   const address=customerText(draft.address);
-  const dismissed=new Set(Array.isArray(draft.dismissedCustomerIds)?draft.dismissedCustomerIds:[]);
+  const dismissed=new Set((Array.isArray(draft.dismissedCustomerIds)?draft.dismissedCustomerIds:[]).map(String));
   const hasUsableName=first.length>=2&&last.length>=2;
   const hasUsablePhone=phone.length>=7;
   const hasUsableAddress=address.length>=6;
   if(!hasUsableName&&!hasUsablePhone&&!hasUsableAddress)return [];
   return state.customers.map(customer=>{
-    if(dismissed.has(customer.id))return null;
+    if(dismissed.has(String(customer.id)))return null;
     const parts=customerText(customer.name).split(" ").filter(Boolean);
     const cFirst=parts[0]||"";
     const cLast=parts.slice(1).join(" ");
@@ -1392,6 +1392,10 @@ function customerStep(){
 function bindCustomerMatchActions(){
   wizardForm.querySelectorAll("[data-select-customer]").forEach(el=>el.onclick=()=>{
     const c=state.customers.find(x=>String(x.id)===String(el.dataset.selectCustomer));if(!c)return;
+    // Capture any current form edits first, then replace them with the chosen customer.
+    // Do not call saveDraft() here because saveDraft() syncs the old form values
+    // back into draft before the screen is re-rendered.
+    sync();
     const values=customerAutofillValues(c);
     draft.customerId=c.id;
     draft.firstName=values.firstName;
@@ -1399,15 +1403,8 @@ function bindCustomerMatchActions(){
     draft.phone=values.phone;
     draft.address=values.address||draft.address;
     draft.dismissedCustomerIds=[];
-    saveDraft(false);
+    localStorage.setItem(DRAFT_KEY,JSON.stringify(draft));
     renderWizard();
-    requestAnimationFrame(()=>{
-      const fieldValues={firstName:draft.firstName,lastName:draft.lastName,phone:draft.phone,address:draft.address};
-      Object.entries(fieldValues).forEach(([name,value])=>{
-        const input=wizardForm.querySelector(`[name="${name}"]`);
-        if(input)input.value=value||"";
-      });
-    });
   });
   wizardForm.querySelectorAll("[data-dismiss-customer]").forEach(el=>el.onclick=()=>{
     const id=el.dataset.dismissCustomer;
@@ -1529,7 +1526,7 @@ function bindStep(){
       if(input.name==="phone")input.value=normalizePhone(input.value);
       draft[input.name]=input.value;
       draft.customerId="";
-      draft.dismissedCustomerIds=[];
+      // Keep dismissed suggestions dismissed for the remainder of this draft.
       scheduleCustomerMatchUpdate();
     }));
     bindCustomerMatchActions();
