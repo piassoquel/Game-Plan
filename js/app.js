@@ -1182,7 +1182,8 @@ const blankDraft = () => ({
   scheduledDate: "",
   scheduledTime: "",
   internalNotes: "",
-  dismissedCustomerIds: []
+  dismissedCustomerIds: [],
+  moreAccessOpen: false
 });
 let draft = blankDraft();
 function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;"}[c]));}
@@ -1459,14 +1460,84 @@ function equipmentEditSheet(index){
   const item=draft.equipment[index];if(!item)return "";const type=selectedType(item);
   return `<div class="ux-sheet-backdrop open" id="equipmentEditSheet"><section class="ux-sheet" role="dialog" aria-modal="true"><div class="ux-sheet-handle"></div><h3>Edit ${esc(type.name||"Equipment")}</h3><div class="ux-condition"><button type="button" class="ux-segment ${item.condition==="New"?"selected":""}" data-edit-condition="New">New</button><button type="button" class="ux-segment ${item.condition==="Used"?"selected":""}" data-edit-condition="Used">Used</button></div><label class="ux-field"><span>Quantity</span><div class="ux-quantity"><button type="button" data-qty-change="-1">−</button><b>${Math.max(1,Number(item.quantity||1))}</b><button type="button" data-qty-change="1">＋</button></div></label><button type="button" class="button danger" id="removeEditedEquipment">Remove Item</button><button type="button" class="button neutral" id="closeEquipmentEdit">Done</button></section></div>`;
 }
-function accessCard(access,selected=false){return `<button type="button" class="ux-icon-card compact ${selected?"selected":""}" data-access="${esc(access.id)}"><i>${gpIcon(iconNameFor(access,"access"))}</i><span>${esc(access.name)}</span>${selected?"<strong>✓</strong>":""}</button>`;}
+function accessSearchText(access){return `${access?.id||""} ${access?.name||""}`.toLowerCase();}
+function findAccessCondition(terms){
+  const needles=Array.isArray(terms)?terms:[terms];
+  return state.accessConditions.find(access=>needles.some(term=>accessSearchText(access).includes(term)));
+}
+function destinationAccessCondition(key,flights=draft.flights){
+  if(key==="garage")return findAccessCondition(["garage"]);
+  if(key==="main")return findAccessCondition(["main floor","main level","single level","single-level"]);
+  if(key==="mobile")return findAccessCondition(["mobile home","mobile"]);
+  if(key==="upstairs") {
+    const flightText=String(flights||"");
+    if(flightText==="1")return findAccessCondition(["1 flight","one flight"] )||findAccessCondition(["upstairs","stairs"]);
+    if(flightText==="2")return findAccessCondition(["2 flight","two flight"] )||findAccessCondition(["upstairs","stairs"]);
+    if(flightText==="3+")return findAccessCondition(["3 flight","three flight","multiple flight"] )||findAccessCondition(["upstairs","stairs"]);
+    return findAccessCondition(["upstairs","stairs"]);
+  }
+  return null;
+}
+function primaryAccessIds(){
+  return new Set(["garage","main","mobile","upstairs"].map(key=>destinationAccessCondition(key)?.id).filter(Boolean).map(String));
+}
+function commonChallengeConditions(){
+  const primary=primaryAccessIds();
+  return state.accessConditions.filter(access=>{
+    const text=accessSearchText(access);
+    return !primary.has(String(access.id)) && /(narrow|doorway|tight hall|long hall|hallway|walkway|driveway)/.test(text);
+  });
+}
+function extraAccessConditions(){
+  const excluded=new Set([...primaryAccessIds(),...commonChallengeConditions().map(access=>String(access.id))]);
+  return state.accessConditions.filter(access=>!excluded.has(String(access.id)));
+}
+function rebuildDestinationAccess(){
+  const primary=primaryAccessIds();
+  const current=draft.access.filter(id=>!primary.has(String(id)));
+  const destination=destinationAccessCondition(draft.destinationId,draft.flights);
+  draft.access=destination?[...new Set([destination.id,...current])]:current;
+}
+function selectDestination(key){
+  draft.destinationId=key;
+  if(key!=="upstairs")draft.flights="";
+  if(key==="garage"||key==="mobile"){draft.access=[];draft.moreAccessOpen=false;}
+  rebuildDestinationAccess();
+}
+function destinationLabel(){
+  return ({garage:"Garage",main:"Main Level",mobile:"Mobile Home",upstairs:"Upstairs"})[draft.destinationId]||"Not selected";
+}
+function destinationCard(key,label,description,icon){
+  const selected=draft.destinationId===key;
+  return `<button type="button" class="ux-icon-card destination-card ${selected?"selected":""}" data-destination="${key}"><i>${gpIcon(icon)}</i><span>${label}</span><small>${description}</small>${selected?"<strong>✓</strong>":""}</button>`;
+}
+function modifierButton(access){
+  const selected=draft.access.includes(access.id);
+  return `<button type="button" class="ux-modifier ${selected?"selected":""}" data-access-modifier="${esc(access.id)}"><span>${esc(access.name)}</span><strong>${selected?"✓":"＋"}</strong></button>`;
+}
 function deliveryDetailsStep(){
   const price=quoteEstimate();
-  return `${stepHeading("Delivery Details","What is the delivery like?")}
+  const challenges=commonChallengeConditions();
+  const extras=extraAccessConditions();
+  const canModify=draft.destinationId==="main"||draft.destinationId==="upstairs";
+  return `${stepHeading("Delivery Details","Where is the equipment going?")}
     <div class="ux-price-card"><small>Estimated Delivery Price</small><strong>$${price}</strong><span>Updates automatically</span></div>
-    <h3 class="ux-section-label">Choose all access conditions that apply</h3>
-    <div class="ux-card-grid access-grid">${state.accessConditions.map(a=>accessCard(a,draft.access.includes(a.id))).join("")}</div>
-    <p class="ux-helper">GamePlan applies the pricing and labor rules in the background.</p>
+    <h3 class="ux-section-label">Destination</h3>
+    <div class="ux-card-grid destination-grid">
+      ${destinationCard("garage","Garage","No additional access questions","garage")}
+      ${destinationCard("main","Main Level","Inside the home, no stairs","single-level")}
+      ${destinationCard("mobile","Mobile Home","Common delivery destination","mobile-home")}
+      ${destinationCard("upstairs","Upstairs","One or more flights","upstairs")}
+    </div>
+    ${draft.destinationId==="upstairs"?`<section class="ux-progressive-panel"><h3>How many flights?</h3><div class="ux-flight-options">${["1","2","3+"].map(value=>`<button type="button" class="ux-flight ${draft.flights===value?"selected":""}" data-flights="${value}">${value}</button>`).join("")}</div></section>`:""}
+    ${canModify&&challenges.length?`<section class="ux-progressive-panel"><h3>Access Challenges <small>Optional</small></h3><div class="ux-modifier-list">${challenges.map(modifierButton).join("")}</div></section>`:""}
+    <details class="ux-more access-more" data-more-access ${draft.moreAccessOpen?"open":""}>
+      <summary><span><b>More</b><small>Gate, heavy equipment, and uncommon conditions</small></span><em>⌄</em></summary>
+      <div class="ux-more-body">
+        ${!draft.destinationId?`<p class="ux-helper">Choose a destination first.</p>`:draft.destinationId==="garage"||draft.destinationId==="mobile"?`<p class="ux-helper">No additional modifiers are needed for this destination.</p>`:extras.length?`<div class="ux-modifier-list">${extras.map(modifierButton).join("")}</div>`:`<p class="ux-helper">No additional conditions are active in the CMS.</p>`}
+      </div>
+    </details>
+    <p class="ux-helper delivery-helper">GamePlan applies pricing and labor rules in the background.</p>
   </div>`;
 }
 function appointmentStep(){
@@ -1482,7 +1553,8 @@ function customerName(){const c=selectedCustomer();return c?.name||`${draft.firs
 function summaryCard(key,title,body,icon){return `<button type="button" class="ux-summary-card" data-edit-step="${key}"><i>${gpIcon(icon)}</i><span><small>${title}</small><b>${body}</b></span><em>›</em></button>`;}
 function summaryStep(){
   const items=draft.equipment.map(i=>`${Math.max(1,Number(i.quantity||1))}× ${i.condition} ${selectedType(i).name||"Equipment"}`).join(" · ");
-  const access=state.accessConditions.filter(a=>draft.access.includes(a.id)).map(a=>a.name).join(", ")||"No special access selected";
+  const modifiers=state.accessConditions.filter(a=>draft.access.includes(a.id)&&String(a.id)!==String(destinationAccessCondition(draft.destinationId,draft.flights)?.id||"")).map(a=>a.name);
+  const access=[destinationLabel(),draft.destinationId==="upstairs"&&draft.flights?`${draft.flights} flight${draft.flights==="1"?"":"s"}`:"",...modifiers].filter(Boolean).join(" · ");
   const date=draft.scheduledDate?new Intl.DateTimeFormat("en-US",{weekday:"short",month:"short",day:"numeric"}).format(new Date(`${draft.scheduledDate}T12:00:00`)):"Not selected";
   const time=timeSlotsForSelectedDate().find(x=>x.value===draft.scheduledTime)?.label||draft.scheduledTime||"Not selected";
   return `${stepHeading("Job Summary","Does everything look correct?")}
@@ -1506,7 +1578,8 @@ function validate(){
   if(draft.step===0&&!draft.jobTypeId)return "Choose a job type.";
   if(draft.step===1){if(!draft.firstName.trim())return "Enter the customer's first name.";if(draft.phone.replace(/\D/g,"").length!==10)return "Enter a valid 10-digit phone number.";if(!draft.address.trim())return "Enter the customer address.";}
   if(draft.step===2&&draft.equipment.length<1)return "Add at least one equipment item.";
-  if(draft.step===3&&draft.access.length<1)return "Select at least one delivery condition.";
+  if(draft.step===3&&!draft.destinationId)return "Choose where the equipment is going.";
+  if(draft.step===3&&draft.destinationId==="upstairs"&&!draft.flights)return "Choose the number of flights.";
   if(draft.step===4&&(!draft.scheduledDate||!draft.scheduledTime))return "Choose an available date and time.";
   return "";
 }
@@ -1542,7 +1615,10 @@ function bindStep(){
   wizardForm.querySelectorAll("[data-condition]").forEach(el=>el.onclick=()=>{draft.pendingCondition=el.dataset.condition;renderWizard();});
   wizardForm.querySelectorAll("[data-add-equipment]").forEach(el=>el.onclick=()=>{if(!draft.pendingCondition){toast("Choose New or Used first.");return;}draft.equipment.push({...blankItem(),condition:draft.pendingCondition,equipmentTypeId:el.dataset.addEquipment});renderWizard();});
   wizardForm.querySelectorAll("[data-edit-equipment]").forEach(el=>el.onclick=()=>openEquipmentEditor(Number(el.dataset.editEquipment)));
-  wizardForm.querySelectorAll("[data-access]").forEach(el=>el.onclick=()=>{const id=el.dataset.access;draft.access=draft.access.includes(id)?draft.access.filter(x=>x!==id):[...draft.access,id];renderWizard();});
+  wizardForm.querySelectorAll("[data-destination]").forEach(el=>el.onclick=()=>{selectDestination(el.dataset.destination);renderWizard();});
+  wizardForm.querySelectorAll("[data-flights]").forEach(el=>el.onclick=()=>{draft.flights=el.dataset.flights;rebuildDestinationAccess();renderWizard();});
+  wizardForm.querySelectorAll("[data-access-modifier]").forEach(el=>el.onclick=()=>{const id=el.dataset.accessModifier;draft.access=draft.access.includes(id)?draft.access.filter(x=>String(x)!==String(id)):[...draft.access,id];renderWizard();});
+  wizardForm.querySelector("[data-more-access]")?.addEventListener("toggle",event=>{draft.moreAccessOpen=event.currentTarget.open;});
   wizardForm.querySelectorAll("[data-date]").forEach(el=>el.onclick=()=>{draft.scheduledDate=el.dataset.date;draft.scheduledTime="";renderWizard();});
   wizardForm.querySelectorAll("[data-time]").forEach(el=>el.onclick=()=>{draft.scheduledTime=el.dataset.time;renderWizard();});
   wizardForm.querySelectorAll("[data-edit-step]").forEach(el=>el.onclick=()=>{draft.step=Number(el.dataset.editStep);renderWizard();});

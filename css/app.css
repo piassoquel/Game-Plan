@@ -204,3 +204,15 @@
 .ux-match__others[open] summary::after{content:" ▴"}
 .ux-match__other-list{display:grid;gap:10px;margin-top:8px}
 .ux-match__candidate--secondary{background:rgba(8,11,14,.28)}
+
+/* v3.0 Alpha 3 — Screen 4 progressive delivery details */
+.destination-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+.destination-card{min-height:126px}
+.destination-card.selected{border-color:var(--tm-orange);background:rgba(255,138,42,.075)}
+.destination-card.selected>strong{position:absolute;top:8px;right:8px;width:22px;height:22px;border-radius:50%;display:grid;place-items:center;background:var(--tm-orange);font-size:12px}
+.ux-progressive-panel{margin-top:14px;padding:14px;border:1px solid var(--tm-line);border-radius:14px;background:rgba(255,255,255,.02)}
+.ux-progressive-panel h3{margin:0 0 12px;font-size:15px}.ux-progressive-panel h3 small{color:var(--tm-muted);font-size:11px;font-weight:600;margin-left:5px}
+.ux-flight-options{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}.ux-flight{min-height:48px;border:1px solid var(--tm-line);border-radius:12px;background:var(--tm-panel);color:var(--tm-text);font:inherit;font-weight:800;cursor:pointer}.ux-flight.selected{border-color:var(--tm-orange);background:rgba(255,138,42,.09);color:#fff}
+.ux-modifier-list{display:grid;gap:8px}.ux-modifier{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:48px;width:100%;padding:10px 13px;border:1px solid var(--tm-line);border-radius:12px;background:var(--tm-panel);color:var(--tm-text);font:inherit;font-weight:750;text-align:left;cursor:pointer}.ux-modifier strong{width:25px;height:25px;border-radius:50%;display:grid;place-items:center;border:1px solid var(--tm-line);color:var(--tm-orange)}.ux-modifier.selected{border-color:var(--tm-orange);background:rgba(255,138,42,.075)}.ux-modifier.selected strong{border-color:var(--tm-orange);background:var(--tm-orange);color:#101317}
+.access-more{margin-top:14px}.access-more summary{color:var(--tm-text);min-height:58px}.access-more summary>span{display:grid;gap:2px}.access-more summary b{font-size:15px}.access-more summary small{font-size:11px;color:var(--tm-muted);font-weight:500}.access-more summary em{font-style:normal;color:var(--tm-orange);transition:.16s}.access-more[open] summary em{transform:rotate(180deg)}.ux-more-body{padding:12px}.ux-more-body .ux-helper{margin:0}.delivery-helper{margin:14px 0 0}
+@media(max-width:540px){.destination-card{min-height:116px}.destination-card small{max-width:130px}.ux-progressive-panel{padding:12px}}
