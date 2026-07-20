@@ -1311,6 +1311,17 @@ function customerText(value){
 }
 function customerPhoneDigits(value){return String(value||"").replace(/\D/g,"");}
 function customerAddresses(customer){return Array.isArray(customer?.addresses)?customer.addresses:[];}
+function customerAutofillValues(customer){
+  const fullName=String(customer?.name||customer?.customerName||"").trim();
+  const nameParts=fullName.split(/\s+/).filter(Boolean);
+  const firstName=String(customer?.firstName||customer?.givenName||nameParts.shift()||"").trim();
+  const lastName=String(customer?.lastName||customer?.familyName||nameParts.join(" ")||"").trim();
+  const phone=String(customer?.phone||customer?.phoneNumber||customer?.mobile||"").trim();
+  const addresses=customerAddresses(customer);
+  const preferred=addresses.find(item=>item?.default===true||String(item?.default).toLowerCase()==="true")||addresses[0]||{};
+  const address=String(preferred?.address||preferred?.formattedAddress||customer?.address||customer?.deliveryAddress||"").trim();
+  return {firstName,lastName,phone:normalizePhone(phone),address};
+}
 function rankCustomerMatches(){
   const first=customerText(draft.firstName);
   const last=customerText(draft.lastName);
@@ -1380,15 +1391,23 @@ function customerStep(){
 }
 function bindCustomerMatchActions(){
   wizardForm.querySelectorAll("[data-select-customer]").forEach(el=>el.onclick=()=>{
-    const c=state.customers.find(x=>x.id===el.dataset.selectCustomer);if(!c)return;
+    const c=state.customers.find(x=>String(x.id)===String(el.dataset.selectCustomer));if(!c)return;
+    const values=customerAutofillValues(c);
     draft.customerId=c.id;
-    const parts=String(c.name||"").trim().split(/\s+/);
-    draft.firstName=parts.shift()||"";draft.lastName=parts.join(" ");
-    draft.phone=normalizePhone(c.phone||"");
-    const a=customerAddresses(c).find(x=>x.default)||customerAddresses(c)[0];
-    draft.address=a?.address||draft.address;
+    draft.firstName=values.firstName;
+    draft.lastName=values.lastName;
+    draft.phone=values.phone;
+    draft.address=values.address||draft.address;
     draft.dismissedCustomerIds=[];
-    saveDraft(false);renderWizard();
+    saveDraft(false);
+    renderWizard();
+    requestAnimationFrame(()=>{
+      const fieldValues={firstName:draft.firstName,lastName:draft.lastName,phone:draft.phone,address:draft.address};
+      Object.entries(fieldValues).forEach(([name,value])=>{
+        const input=wizardForm.querySelector(`[name="${name}"]`);
+        if(input)input.value=value||"";
+      });
+    });
   });
   wizardForm.querySelectorAll("[data-dismiss-customer]").forEach(el=>el.onclick=()=>{
     const id=el.dataset.dismissCustomer;
