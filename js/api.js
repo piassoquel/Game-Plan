@@ -49,11 +49,4 @@ export class GamePlanApi {
     return this.post("updateEquipmentBuildStatus", { jobId, jobEquipmentId, buildComplete, pinToken, approvalToken });
   }
   getJob(jobId) { return this.post("job", { jobId }); }
-  getStaffManagement(pinToken = "") {
-    return this.post("getStaffManagement", { pinToken });
-  }
-  saveStaffProfile(staffData, pinToken = "") {
-    return this.post("saveStaffProfile", { ...staffData, pinToken });
-  }
 }
-

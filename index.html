@@ -7,10 +7,10 @@
   <meta name="description" content="GamePlan delivery and installation operations app">
   <link rel="manifest" href="./manifest.json">
   <link rel="icon" href="./assets/icons/icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="./css/app.css?v=3.0.0">
+  <link rel="stylesheet" href="./css/app.css?v=3.0.1">
   <title>GamePlan</title>
 </head>
-<body>
+<body data-gameplan-build="3.0.1">
   <div class="shell">
     <aside class="side">
       <div class="brand">
@@ -42,7 +42,7 @@
           <h1 id="title">Today's GamePlan</h1>
           <p id="subtitle"></p>
         </div>
-        <span class="demo loading" id="dataStatus">Loading…</span>
+        <div class="header-status"><span class="build-badge">UX v3.0.1</span><span class="demo loading" id="dataStatus">Loading…</span></div>
       </header>
 
       <section id="view"></section>
@@ -94,7 +94,7 @@
     </div>
   </div>
 
-  <script src="./js/config.js?v=3.0.0"></script>
-  <script type="module" src="./js/app.js?v=3.0.0"></script>
+  <script src="./js/config.js?v=3.0.1"></script>
+  <script type="module" src="./js/app.js?v=3.0.1"></script>
 </body>
 </html>

@@ -833,12 +833,14 @@ const views = {
         </section>
       </div>
       <div class="grid">
-        <section class="card">
-          <div class="head"><h2>Quick Actions</h2></div>
-          <div class="body quick">
-            <button data-demo-action="New Job">＋<br>New Job</button>
-            <button data-quick-quote>≈<br>Quick Quote</button>
-            <button data-route="schedule">▣<br>Schedule</button>
+        <section class="card mobile-workflow-card">
+          <div class="head"><div><h2>Start Here</h2><span class="agenda-subtitle">Mobile Workflow v3.0</span></div></div>
+          <div class="body v3-actions">
+            <button class="v3-primary-action" data-quick-quote><span class="v3-action-icon">＋</span><span><b>New Quick Quote</b><small>Customer → Equipment → Details → Appointment</small></span><em>›</em></button>
+            <div class="v3-secondary-actions">
+              <button data-demo-action="New Job"><b>Create Job</b><small>Use the same guided workflow</small></button>
+              <button data-route="schedule"><b>Schedule</b><small>View the weekly plan</small></button>
+            </div>
           </div>
         </section>
         <section class="card">
@@ -1271,9 +1273,9 @@ function crewSize(){return Math.max(1,...draft.equipment.map(i=>Number(selectedT
 function openWizard(mode="job"){
   const saved=localStorage.getItem(DRAFT_KEY);
   draft=saved?{...blankDraft(),...JSON.parse(saved)}:blankDraft();
-  draft.mode="job";draft.step=0;
+  draft.mode=mode;draft.step=0;
   if(!Array.isArray(draft.equipment))draft.equipment=[];
-  wizardTitle.textContent="New Job";
+  wizardTitle.textContent=mode==="quote"?"Quick Quote":"New Job";
   document.querySelector("#saveDraftTop").style.display="block";
   renderWizard();wizard.classList.add("open");wizardBackdrop.classList.add("open");wizard.setAttribute("aria-hidden","false");
 }
