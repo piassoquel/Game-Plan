@@ -1183,7 +1183,9 @@ const blankDraft = () => ({
   scheduledTime: "",
   internalNotes: "",
   dismissedCustomerIds: [],
-  moreAccessOpen: false
+  moreAccessOpen: false,
+  appointmentWeekStart: "",
+  appointmentView: "dates"
 });
 let draft = blankDraft();
 function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;"}[c]));}
@@ -1245,25 +1247,73 @@ function startOfLocalDay(date){const d=new Date(date);d.setHours(0,0,0,0);return
 function addLocalDays(date,n){const d=new Date(date);d.setDate(d.getDate()+n);return d;}
 function dateKeyLocal(date){const d=new Date(date);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;}
 function dateLabel(date){return new Intl.DateTimeFormat("en-US",{weekday:"short",month:"short",day:"numeric"}).format(date);}
-function jobsOnDate(key){return state.jobs.filter(job=>String(job.scheduledDate||job.date||"").slice(0,10)===key && !/cancel/i.test(job.status||""));}
-function dayAvailability(date){
-  const count=jobsOnDate(dateKeyLocal(date)).length;
-  if(date.getDay()===0)return {tone:"closed",label:"Closed",detail:"Store rule"};
-  if(count>=6)return {tone:"full",label:"Full",detail:"No availability"};
-  if(count>=5)return {tone:"nearly",label:"Nearly Full",detail:"1 practical slot"};
-  if(count>=3)return {tone:"limited",label:"Limited",detail:`${Math.max(1,6-count)} open slots`};
-  return {tone:"open",label:"Open",detail:`${Math.max(1,6-count)} open slots`};
+function jobsOnDate(key){
+  return state.jobs.filter(job=>{
+    const jobKey=String(job.scheduledDate||job.dateISO||job.appointmentDate||job.dateTime||job.date||"").slice(0,10);
+    const status=String(job.status||"").toLowerCase();
+    return jobKey===key && /scheduled|tentative/.test(status) && !/cancel|complete/.test(status);
+  });
 }
-function timeSlotsForSelectedDate(){
-  const occupied=new Set(jobsOnDate(draft.scheduledDate).map(job=>String(job.scheduledTime||job.time||"").slice(0,5)));
+function minutesFromTime(value){
+  const raw=String(value||"").trim();
+  const match=raw.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
+  if(!match)return null;
+  let hour=Number(match[1]);const minute=Number(match[2]);const suffix=(match[3]||"").toUpperCase();
+  if(suffix==="PM"&&hour!==12)hour+=12;if(suffix==="AM"&&hour===12)hour=0;
+  return hour*60+minute;
+}
+function appointmentWeekStart(){
+  if(draft.appointmentWeekStart){const d=new Date(`${draft.appointmentWeekStart}T12:00:00`);if(!Number.isNaN(d.getTime()))return d;}
+  const today=startOfLocalDay(new Date());const day=today.getDay();const monday=addLocalDays(today,-((day+6)%7));
+  draft.appointmentWeekStart=dateKeyLocal(monday);return monday;
+}
+function appointmentWeekLabel(start){
+  const end=addLocalDays(start,6);const sameMonth=start.getMonth()===end.getMonth();
+  const first=new Intl.DateTimeFormat("en-US",{month:"short",day:"numeric"}).format(start);
+  const last=new Intl.DateTimeFormat("en-US",sameMonth?{day:"numeric"}:{month:"short",day:"numeric"}).format(end);
+  return `${first}–${last}`;
+}
+function estimatedDraftMinutes(){
+  let minutes=60;
+  draft.equipment.forEach(item=>{
+    const type=selectedType(item);const qty=Math.max(1,Number(item.quantity||1));
+    const perItem=Number(type.defaultDurationMinutes||type.defaultOnSiteMinutes||type.estimatedMinutes||0);
+    minutes+=qty*(perItem>0?perItem:30);
+    if(item.condition==="New")minutes+=qty*Number(type.defaultAssemblyMinutes||30);
+  });
+  if(draft.destinationId==="upstairs")minutes+=draft.flights==="3+"?45:Number(draft.flights||1)*15;
+  return Math.max(60,Math.ceil(minutes/30)*30);
+}
+function jobInterval(job){
+  const start=minutesFromTime(job.scheduledTime||job.time||"");if(start===null)return null;
+  const duration=Math.max(30,Math.round(parseDurationHours(job)*60));
+  return {start,end:start+duration};
+}
+function slotConflicts(dateKey,startMinutes,durationMinutes){
+  const end=startMinutes+durationMinutes;
+  return jobsOnDate(dateKey).some(job=>{const interval=jobInterval(job);return interval&&startMinutes<interval.end&&end>interval.start;});
+}
+function dayAvailability(date){
+  const today=startOfLocalDay(new Date());
+  if(date<today)return {tone:"past",label:"Past",detail:"Not selectable",disabled:true};
+  if(date.getDay()===0)return {tone:"closed",label:"Closed",detail:"Store rule",disabled:true};
+  const slots=availableSlotsForDate(dateKeyLocal(date));const open=slots.filter(slot=>!slot.disabled).length;
+  if(open===0)return {tone:"full",label:"Full",detail:"No availability",disabled:true};
+  if(open<=2)return {tone:"nearly",label:"Nearly Full",detail:`${open} open ${open===1?"slot":"slots"}`};
+  if(open<=5)return {tone:"limited",label:"Limited",detail:`${open} open slots`};
+  return {tone:"open",label:"Open",detail:`${open} open slots`};
+}
+function availableSlotsForDate(dateKey){
+  const duration=estimatedDraftMinutes();
   return ["10:00","10:30","11:00","11:30","12:00","12:30","13:00","13:30","14:00"].map(value=>{
-    const [h,m]=value.split(":").map(Number);const mins=h*60+m;
-    const disabled=occupied.has(value);
+    const mins=minutesFromTime(value);const disabled=slotConflicts(dateKey,mins,duration);
     const tone=disabled?"unavailable":mins<720?"preferred":mins<780?"limited":mins<840?"approval":"rare";
+    const [h,m]=value.split(":").map(Number);
     const label=new Intl.DateTimeFormat("en-US",{hour:"numeric",minute:"2-digit"}).format(new Date(2026,0,1,h,m));
     return {value,label,tone,disabled};
   });
 }
+function timeSlotsForSelectedDate(){return draft.scheduledDate?availableSlotsForDate(draft.scheduledDate):[];}
 function quoteEstimate(){
   let total=30;
   draft.equipment.forEach(item=>{
@@ -1520,12 +1570,23 @@ function deliveryDetailsStep(){
   </div>`;
 }
 function appointmentStep(){
-  const start=startOfLocalDay(new Date());const days=Array.from({length:7},(_,i)=>addLocalDays(start,i));const slots=draft.scheduledDate?timeSlotsForSelectedDate():[];
+  const weekStart=appointmentWeekStart();
+  const days=Array.from({length:7},(_,i)=>addLocalDays(weekStart,i));
+  const slots=draft.scheduledDate?timeSlotsForSelectedDate():[];
+  const showingTimes=draft.appointmentView==="times"&&draft.scheduledDate;
+  const selectedDate=draft.scheduledDate?new Date(`${draft.scheduledDate}T12:00:00`):null;
   return `${stepHeading("Reserve Appointment","When would the customer like the appointment?")}
     <div class="ux-price-card small"><small>Estimated Delivery Price</small><strong>$${quoteEstimate()}</strong></div>
-    <h3 class="ux-section-label">Select a Date</h3>
-    <div class="ux-date-list">${days.map(day=>{const key=dateKeyLocal(day),a=dayAvailability(day);return `<button type="button" class="ux-date-card ${a.tone} ${draft.scheduledDate===key?"selected":""}" data-date="${key}" ${a.tone==="full"||a.tone==="closed"?"disabled":""}><span><b>${dateLabel(day)}</b><small>${a.detail}</small></span><strong><i></i>${a.label}</strong><em>›</em></button>`;}).join("")}</div>
-    ${draft.scheduledDate?`<h3 class="ux-section-label time-heading">Select a Time</h3><div class="ux-time-list">${slots.map(slot=>`<button type="button" class="ux-time-slot ${slot.tone} ${draft.scheduledTime===slot.value?"selected":""}" data-time="${slot.value}" ${slot.disabled?"disabled":""}><b>${slot.label}</b><span>${slot.disabled?"Unavailable":slot.tone==="preferred"?(slot.value==="10:00"?"Best Choice":"Preferred"):slot.tone==="limited"?"Limited":slot.tone==="approval"?"Manager Approval":"Rare — Approval"}</span></button>`).join("")}</div>`:`<div class="ux-empty-selection">Choose a date to see available times.</div>`}
+    ${showingTimes?`
+      <div class="ux-appointment-panel slide-in">
+        <button type="button" class="ux-back-to-dates" data-back-to-dates>← Choose Another Date</button>
+        <h3 class="ux-section-label">${esc(new Intl.DateTimeFormat("en-US",{weekday:"long",month:"long",day:"numeric"}).format(selectedDate))}</h3>
+        <div class="ux-time-list">${slots.map(slot=>`<button type="button" class="ux-time-slot ${slot.tone} ${draft.scheduledTime===slot.value?"selected":""}" data-time="${slot.value}" ${slot.disabled?"disabled":""}><b>${slot.label}</b><span>${slot.disabled?"Unavailable":slot.tone==="preferred"?(slot.value==="10:00"?"Best Choice":"Preferred"):slot.tone==="limited"?"Limited":slot.tone==="approval"?"Manager Approval":"Rare — Approval"}</span></button>`).join("")}</div>
+      </div>`:`
+      <div class="ux-appointment-panel slide-in">
+        <div class="ux-week-header"><button type="button" data-appointment-week="-1" aria-label="Previous week">←</button><div><h3 class="ux-section-label">Select a Date</h3><strong>${appointmentWeekLabel(weekStart)}</strong></div><button type="button" data-appointment-week="1" aria-label="Next week">→</button></div>
+        <div class="ux-date-list">${days.map(day=>{const key=dateKeyLocal(day),a=dayAvailability(day);return `<button type="button" class="ux-date-card ${a.tone} ${draft.scheduledDate===key?"selected":""}" data-date="${key}" ${a.disabled?"disabled":""}><span><b>${dateLabel(day)}</b><small>${a.detail}</small></span><strong><i></i>${a.label}</strong><em>›</em></button>`;}).join("")}</div>
+      </div>`}
   </div>`;
 }
 function customerName(){const c=selectedCustomer();return c?.name||`${draft.firstName} ${draft.lastName}`.trim();}
@@ -1599,7 +1660,9 @@ function bindStep(){
   wizardForm.querySelectorAll("[data-access-modifier]").forEach(el=>el.onclick=()=>{const id=el.dataset.accessModifier;draft.access=draft.access.includes(id)?draft.access.filter(x=>String(x)!==String(id)):[...draft.access,id];renderWizard();});
   wizardForm.querySelector("[data-more-access]")?.addEventListener("toggle",event=>{draft.moreAccessOpen=event.currentTarget.open;});
   wizardForm.querySelector('textarea[name="internalNotes"]')?.addEventListener("input",event=>{draft.internalNotes=event.currentTarget.value;});
-  wizardForm.querySelectorAll("[data-date]").forEach(el=>el.onclick=()=>{draft.scheduledDate=el.dataset.date;draft.scheduledTime="";renderWizard();});
+  wizardForm.querySelectorAll("[data-date]").forEach(el=>el.onclick=()=>{draft.scheduledDate=el.dataset.date;draft.scheduledTime="";draft.appointmentView="times";renderWizard();});
+  wizardForm.querySelector("[data-back-to-dates]")?.addEventListener("click",()=>{draft.appointmentView="dates";renderWizard();});
+  wizardForm.querySelectorAll("[data-appointment-week]").forEach(el=>el.onclick=()=>{const current=appointmentWeekStart();const next=addLocalDays(current,Number(el.dataset.appointmentWeek)*7);draft.appointmentWeekStart=dateKeyLocal(next);draft.appointmentView="dates";renderWizard();});
   wizardForm.querySelectorAll("[data-time]").forEach(el=>el.onclick=()=>{draft.scheduledTime=el.dataset.time;renderWizard();});
   wizardForm.querySelectorAll("[data-edit-step]").forEach(el=>el.onclick=()=>{draft.step=Number(el.dataset.editStep);renderWizard();});
   wizardForm.querySelector("#equipmentDetailsLater")?.addEventListener("click",()=>toast("Equipment details will remain available from the Job Summary after creation."));
