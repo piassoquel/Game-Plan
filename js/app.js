@@ -1,4 +1,4 @@
-import { GamePlanApi } from "./api.js?v=3.0.2-alpha1";
+import { GamePlanApi } from "./api.js?v=3.0.9-alpha5";
 
 const CACHE_KEY = "gameplan-live-bootstrap-v2";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -1185,7 +1185,9 @@ const blankDraft = () => ({
   dismissedCustomerIds: [],
   moreAccessOpen: false,
   appointmentWeekStart: "",
-  appointmentView: "dates"
+  appointmentView: "dates",
+  editingFromSummary: false,
+  editStep: null
 });
 let draft = blankDraft();
 function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;"}[c]));}
@@ -1618,10 +1620,15 @@ function summaryStep(){
     <div class="ux-summary-list">
       ${summaryCard(1,"Customer",`${esc(customerName())}<br><small>${esc(draft.phone)} · ${esc(draft.address)}</small>`,"single-level")}
       ${summaryCard(2,"Equipment",esc(items),iconNameFor(selectedType(draft.equipment[0])))}
-      ${summaryCard(3,"Delivery Details",`${esc(access)}<br><small>Estimated $${quoteEstimate()}${specialCondition?` · ${esc(specialCondition)}`:""}</small>`,"stairs")}
+      ${summaryCard(3,"Delivery Details",`${esc(access)}${specialCondition?`<br><small>${esc(specialCondition)}</small>`:""}`,"stairs")}
       ${summaryCard(4,"Appointment",`${esc(date)} at ${esc(time)}`,"equipment")}
       <button type="button" class="ux-summary-card optional" id="equipmentDetailsLater"><i>${gpIcon("assembly")}</i><span><small>Equipment Details</small><b>Add make, model, notes, and photos later</b></span><em>›</em></button>
     </div>
+    <section class="ux-review-price" aria-label="Estimated delivery price">
+      <span>Estimated Delivery Price</span>
+      <strong>$${quoteEstimate()}</strong>
+      <small>Final charge may change if job details change.</small>
+    </section>
   </div>`;
 }
 function sync(){
@@ -1647,7 +1654,8 @@ function renderWizard(){
   wizardForm.innerHTML=steps[draft.step]();
   wizardBack.style.visibility=draft.step?"visible":"hidden";
   wizardNext.style.visibility=draft.step===0?"hidden":"visible";
-  wizardNext.textContent=draft.step===steps.length-1?"Save & Return":draft.step===4?"Reserve Appointment":"Continue";
+  wizardBack.textContent=draft.editingFromSummary?"Cancel Edit":"Back";
+  wizardNext.textContent=draft.editingFromSummary?"Save Edit":draft.step===steps.length-1?"Save & Return":draft.step===4?"Reserve Appointment":"Continue";
   wizardNext.classList.add("primary-action");
   bindStep();
 }
@@ -1680,7 +1688,13 @@ function bindStep(){
   wizardForm.querySelector("[data-back-to-dates]")?.addEventListener("click",()=>{draft.appointmentView="dates";renderWizard();});
   wizardForm.querySelectorAll("[data-appointment-week]").forEach(el=>el.onclick=()=>{const current=appointmentWeekStart();const next=addLocalDays(current,Number(el.dataset.appointmentWeek)*7);draft.appointmentWeekStart=dateKeyLocal(next);draft.appointmentView="dates";renderWizard();});
   wizardForm.querySelectorAll("[data-time]").forEach(el=>el.onclick=()=>{draft.scheduledTime=el.dataset.time;renderWizard();});
-  wizardForm.querySelectorAll("[data-edit-step]").forEach(el=>el.onclick=()=>{draft.step=Number(el.dataset.editStep);renderWizard();});
+  wizardForm.querySelectorAll("[data-edit-step]").forEach(el=>el.onclick=()=>{
+    draft.editingFromSummary=true;
+    draft.editStep=Number(el.dataset.editStep);
+    draft.step=draft.editStep;
+    saveDraft(false);
+    renderWizard();
+  });
   wizardForm.querySelector("#equipmentDetailsLater")?.addEventListener("click",()=>toast("Equipment details will remain available from the Job Summary after creation."));
 }
 function openEquipmentEditor(index){
@@ -1695,15 +1709,70 @@ function openEquipmentEditor(index){
 }
 wizardNext.onclick=async()=>{
   const err=validate();if(err)return toast(err);
+
+  // Edits launched from Screen 6 are saved directly back to Screen 6.
+  if(draft.editingFromSummary){
+    sync();
+    draft.editingFromSummary=false;
+    draft.editStep=null;
+    draft.step=5;
+    saveDraft(false);
+    renderWizard();
+    toast("Edit saved.");
+    return;
+  }
+
   const count=6;
   if(draft.step<count-1){draft.step++;saveDraft(false);renderWizard();return;}
-  sync();wizardNext.disabled=true;wizardBack.disabled=true;wizardNext.textContent="Creating…";
+
+  sync();
+  wizardNext.disabled=true;
+  wizardBack.disabled=true;
+  wizardNext.textContent="Saving…";
   try{
-    const pinToken=await requestPin("canCreateQuote","Enter your employee PIN to reserve this tentative appointment and stamp your name into its history.");
-    const result=await api.createJob(draft,pinToken);touchPinSession();localStorage.removeItem(DRAFT_KEY);closeWizard();toast(`${result.jobNumber||"Job"} reserved as Tentative.`);await loadLiveData();go("jobs");
-  }catch(error){console.error(error);toast(error.message||"The tentative job could not be created.");wizardNext.disabled=false;wizardBack.disabled=false;renderWizard();}
+    const pinToken=await requestPin("canCreateQuote","Enter your employee PIN to save this tentative appointment and stamp your name into its history.");
+    const payload={
+      ...draft,
+      status:"Tentative",
+      estimatedPrice:quoteEstimate(),
+      estimatedDurationMinutes:estimatedDraftMinutes(),
+      customerName:customerName()
+    };
+    delete payload.editingFromSummary;
+    delete payload.editStep;
+
+    const result=await api.createJob(payload,pinToken);
+    if(!result)throw new Error("The CMS did not confirm that the job was saved.");
+
+    touchPinSession();
+    localStorage.removeItem(DRAFT_KEY);
+    draft=blankDraft();
+    closeWizard();
+
+    const jobLabel=result.jobNumber||result.jobId||result.id||"New job";
+    toast(`✓ ${jobLabel} saved as Tentative.`);
+    await loadLiveData();
+    go("today");
+  }catch(error){
+    console.error(error);
+    toast(error.message||"The tentative job could not be saved.");
+    wizardNext.disabled=false;
+    wizardBack.disabled=false;
+    renderWizard();
+  }
 };
-wizardBack.onclick=()=>{sync();draft.step=Math.max(0,draft.step-1);renderWizard();};
+wizardBack.onclick=()=>{
+  sync();
+  if(draft.editingFromSummary){
+    draft.editingFromSummary=false;
+    draft.editStep=null;
+    draft.step=5;
+    renderWizard();
+    return;
+  }
+  draft.step=Math.max(0,draft.step-1);
+  renderWizard();
+};
 document.querySelector("#closeWizard").onclick=closeWizard;
 
 wizardBackdrop.onclick=closeWizard;

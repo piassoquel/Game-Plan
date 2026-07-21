@@ -234,3 +234,7 @@
 
 /* GamePlan v3.0 Alpha 4 — Screen 5 scheduling */
 .ux-week-header{display:grid;grid-template-columns:46px 1fr 46px;gap:10px;align-items:center;margin:20px 0 12px}.ux-week-header>div{text-align:center}.ux-week-header .ux-section-label{margin:0 0 4px}.ux-week-header strong{display:block;font-size:17px}.ux-week-header>button,.ux-back-to-dates{min-height:44px;border:1px solid rgba(59,130,246,.5);border-radius:11px;background:rgba(59,130,246,.08);color:#93c5fd;font:inherit;font-weight:800;cursor:pointer}.ux-week-header>button:hover,.ux-back-to-dates:hover{background:rgba(59,130,246,.16)}.ux-back-to-dates{width:100%;margin:20px 0 6px}.ux-date-card.past{color:#707984;background:rgba(255,255,255,.02);border-color:#2b333b}.ux-date-card.past>strong i{background:#59616a}.ux-appointment-panel.slide-in{animation:gpScheduleSlide .18s ease-out}@keyframes gpScheduleSlide{from{opacity:.35;transform:translateX(18px)}to{opacity:1;transform:translateX(0)}}.ux-time-slot:disabled{cursor:not-allowed}.ux-time-slot.unavailable{opacity:.42;filter:saturate(.55)}
+
+.ux-review-price{margin-top:16px;border:1px solid rgba(59,130,246,.55);border-radius:16px;background:linear-gradient(135deg,rgba(59,130,246,.14),rgba(59,130,246,.04));padding:20px;text-align:center;box-shadow:0 14px 36px rgba(0,0,0,.18)}
+.ux-review-price span,.ux-review-price small{display:block;color:#9ca3af}
+.ux-review-price strong{display:block;font-size:44px;line-height:1;margin:9px 0;color:#fff}
