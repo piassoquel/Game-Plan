@@ -505,6 +505,8 @@ function badgeClass(status) {
 
 
 function jobNeedsDetails(job) {
+  const status = String(job.status || "").toLowerCase();
+  if (["completed", "cancelled"].includes(status)) return false;
   return String(job.detailsStatus || "").toLowerCase() !== "complete";
 }
 
@@ -561,7 +563,8 @@ function completeDetailsItemCard(item,index) {
   return `<section class="complete-item-card" data-details-item="${index}">
     <div class="complete-item-head"><span class="item-number">${index+1}</span><i class="equipment-reference-icon">${detailsItemIcon(item)}</i><div><h3>${esc(title)}</h3><p>Quantity: ${Math.max(1,Number(item.quantity||1))}</p></div></div>
     <label class="details-field"><span>Manufacturer</span><input data-detail-manufacturer value="${esc(item.brand||"")}" placeholder="Enter manufacturer"></label>
-    <label class="details-field"><span>Equipment Type</span><input data-detail-equipment-type value="${esc(equipmentTypeName(item))}" readonly></label>
+    <label class="details-field"><span>Equipment Type</span><input data-detail-equipment-type value="${esc(equipmentTypeName(item))}" placeholder="Enter equipment type"></label>
+    <label class="details-field"><span>Model</span><input data-detail-model value="${esc(item.model && item.model !== equipmentTypeName(item) ? item.model : "")}" placeholder="Enter model or identifying description"></label>
     <label class="details-photo-field"><span>Photo <small>(Required)</small></span><div class="details-photo-control ${item.imageUrl?"has-photo":""}" data-photo-control>
       ${item.imageUrl?`<img src="${esc(item.imageUrl)}" alt="Used equipment photo">`:`<b>▣</b><em>Tap to take photo</em>`}
       <input type="file" accept="image/*" capture="environment" data-detail-photo aria-label="Take equipment photo">
@@ -606,10 +609,10 @@ function bindCompleteDetails(job, items) {
   });
   screen.querySelector("[data-save-details]").onclick = async event => {
     const button=event.currentTarget; const errorBox=screen.querySelector("[data-details-error]"); errorBox.textContent="";
-    const payloadItems=items.map((item,index)=>{const card=screen.querySelector(`[data-details-item="${index}"]`); const isNew=String(item.condition).toLowerCase()==="new"; return {jobEquipmentId:item.id,condition:item.condition,equipmentTypeId:item.equipmentTypeId,productId:isNew?card.querySelector("[data-detail-product]").value:"",manufacturer:isNew?item.brand:card.querySelector("[data-detail-manufacturer]").value.trim(),model:isNew?item.model:"",photoDataUrl:item.photoDataUrl||"",photoName:item.photoName||""};});
-    const missing=payloadItems.find((item,index)=>String(item.condition).toLowerCase()==="new"?!item.productId:(!item.manufacturer && !items[index].brand)||(!item.photoDataUrl&&!items[index].imageUrl));
+    const payloadItems=items.map((item,index)=>{const card=screen.querySelector(`[data-details-item="${index}"]`); const isNew=String(item.condition).toLowerCase()==="new"; return {jobEquipmentId:item.id,condition:item.condition,equipmentTypeId:item.equipmentTypeId,productId:isNew?card.querySelector("[data-detail-product]").value:"",manufacturer:isNew?item.brand:card.querySelector("[data-detail-manufacturer]").value.trim(),equipmentTypeText:isNew?equipmentTypeName(item):card.querySelector("[data-detail-equipment-type]").value.trim(),model:isNew?item.model:card.querySelector("[data-detail-model]").value.trim(),photoDataUrl:item.photoDataUrl||"",photoName:item.photoName||""};});
+    const missing=payloadItems.find((item,index)=>String(item.condition).toLowerCase()==="new"?!item.productId:!item.manufacturer||!item.model||(!item.photoDataUrl&&!items[index].imageUrl));
     const pickupType=screen.querySelector('[name="pickupType"]:checked')?.value||"";
-    if(missing){errorBox.textContent="Choose a model for every new item and add a manufacturer and photo for every used item.";return;}
+    if(missing){errorBox.textContent="Choose a model for every new item and add a manufacturer, equipment type, model, and photo for every used item.";return;}
     if(job.hasPickup&&!pickupType){errorBox.textContent="Choose Pickup for Sale or Pickup for Disposal.";return;}
     button.disabled=true;button.textContent="Saving…";
     try{const pinToken=await requestPin("canCreateQuote","Enter your employee PIN to save equipment details.");await api.updateJobDetails(job.id,payloadItems,pickupType,screen.querySelector('[name="pickupNotes"]')?.value||"",pinToken);touchPinSession();toast("Job details saved.");closeJob();await loadLiveData();go("today");}
