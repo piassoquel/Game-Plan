@@ -1,4 +1,4 @@
-import { GamePlanApi } from "./api.js?v=3.0.9-alpha5";
+import { GamePlanApi } from "./api.js?v=3.1.0-alpha6";
 
 const CACHE_KEY = "gameplan-live-bootstrap-v2";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -503,6 +503,120 @@ function badgeClass(status) {
   })[status] || "";
 }
 
+
+function jobNeedsDetails(job) {
+  return String(job.detailsStatus || "").toLowerCase() !== "complete";
+}
+
+function statusCount(status) {
+  if (status === "Needs Attention") return state.jobs.filter(jobNeedsDetails).length;
+  return state.jobs.filter(job => job.status === status).length;
+}
+
+function homeStatusButtons() {
+  const cards = [
+    ["Tentative", "tentative", "▣"],
+    ["Needs Attention", "attention", "!"],
+    ["Scheduled", "scheduled", "✓"],
+    ["Completed", "completed", "✓"]
+  ];
+  return `<section class="home-status-grid" aria-label="Job status filters">${cards.map(([label,tone,icon]) =>
+    `<button class="home-status-card ${tone}" type="button" data-home-status="${esc(label)}"><i>${icon}</i><b>${statusCount(label)}</b><span>${esc(label)}</span></button>`
+  ).join("")}</section>`;
+}
+
+function needsAttentionCard(job) {
+  const itemCount = (job.equipment || []).reduce((sum,item)=>sum + Math.max(1,Number(item.quantity || 1)),0);
+  return `<article class="attention-job-card" data-job-id="${esc(job.id)}">
+    <div class="attention-rail"></div><div class="attention-symbol">!</div>
+    <div class="attention-copy"><strong>DETAILS NEEDED</strong><h3>${esc(job.customer)}</h3>
+      <p>${esc(job.date)} · ${esc(job.time)}<br>${itemCount} Item${itemCount===1?"":"s"} · ${esc(job.type)}</p>
+      <span class="badge tentative">${esc(job.status)}</span></div>
+    <button class="button attention-complete" type="button" data-complete-details="${esc(job.id)}">Complete Details</button>
+  </article>`;
+}
+
+function equipmentTypeName(item) {
+  return state.equipmentTypes.find(type => type.id === item.equipmentTypeId)?.name || item.typeName || item.type || "Equipment";
+}
+
+function detailsItemIcon(item) {
+  const type = state.equipmentTypes.find(value => value.id === item.equipmentTypeId) || { id:item.equipmentTypeId, name:equipmentTypeName(item) };
+  return gpIcon(iconNameFor(type));
+}
+
+function productOptionsFor(item) {
+  return state.products.filter(product => product.equipmentTypeId === item.equipmentTypeId)
+    .map(product => `<option value="${esc(product.id)}" ${product.id===item.productId?"selected":""}>${esc([product.brand,product.model].filter(Boolean).join(" "))}</option>`).join("");
+}
+
+function completeDetailsItemCard(item,index) {
+  const isNew = String(item.condition).toLowerCase() === "new";
+  const title = `${isNew ? "New" : "Used"} ${equipmentTypeName(item)}`;
+  if (isNew) return `<section class="complete-item-card" data-details-item="${index}">
+    <div class="complete-item-head"><span class="item-number">${index+1}</span><i class="equipment-reference-icon">${detailsItemIcon(item)}</i><div><h3>${esc(title)}</h3><p>Quantity: ${Math.max(1,Number(item.quantity||1))}</p></div></div>
+    <label class="details-field"><span>Model</span><select data-detail-product><option value="">Select model…</option>${productOptionsFor(item)}</select></label>
+    <div class="details-product-image" data-product-image>${item.imageUrl?`<img src="${esc(item.imageUrl)}" alt="Selected equipment">`:`<span>▧<small>Image will appear when<br>model is selected</small></span>`}</div>
+  </section>`;
+  return `<section class="complete-item-card" data-details-item="${index}">
+    <div class="complete-item-head"><span class="item-number">${index+1}</span><i class="equipment-reference-icon">${detailsItemIcon(item)}</i><div><h3>${esc(title)}</h3><p>Quantity: ${Math.max(1,Number(item.quantity||1))}</p></div></div>
+    <label class="details-field"><span>Manufacturer</span><input data-detail-manufacturer value="${esc(item.brand||"")}" placeholder="Enter manufacturer"></label>
+    <label class="details-field"><span>Equipment Type</span><input data-detail-equipment-type value="${esc(equipmentTypeName(item))}" readonly></label>
+    <label class="details-photo-field"><span>Photo <small>(Required)</small></span><div class="details-photo-control ${item.imageUrl?"has-photo":""}" data-photo-control>
+      ${item.imageUrl?`<img src="${esc(item.imageUrl)}" alt="Used equipment photo">`:`<b>▣</b><em>Tap to take photo</em>`}
+      <input type="file" accept="image/*" capture="environment" data-detail-photo aria-label="Take equipment photo">
+    </div></label>
+  </section>`;
+}
+
+function openCompleteDetails(jobId) {
+  const job = state.jobs.find(item => item.id === jobId);
+  if (!job) return;
+  const deliveryItems = (job.equipment || []).filter(item => item.deliveryRequired !== false && !item.pickupRequired);
+  const pickupItems = (job.equipment || []).filter(item => item.pickupRequired);
+  const allItems = [...deliveryItems,...pickupItems];
+  drawerContent.innerHTML = `<div class="complete-details-screen" data-details-job="${esc(job.id)}">
+    <section class="complete-job-summary"><div><b>${esc(job.customer)}</b><span>${esc(job.date)} at ${esc(job.time)}</span><small>${esc(job.address)}</small></div><span class="badge ${badgeClass(job.status)}">${esc(job.status)}</span><footer><span>Job #${esc(job.number||job.id)}<br>${allItems.length} Items</span><span>${esc(job.type)}<br>${esc(job.duration||"")}</span></footer></section>
+    <p class="complete-instruction">Add the equipment details below. All fields are required.</p>
+    ${deliveryItems.length?`<h2 class="complete-section-title">DELIVERY ITEMS (${deliveryItems.length})</h2>${deliveryItems.map((item,i)=>completeDetailsItemCard(item,i)).join("")}`:""}
+    ${pickupItems.length?`<h2 class="complete-section-title">PICKUP ITEMS (${pickupItems.length})</h2>${pickupItems.map((item,i)=>completeDetailsItemCard(item,deliveryItems.length+i)).join("")}`:""}
+    ${job.hasPickup?`<h2 class="complete-section-title">PICKUP DETAILS</h2><section class="pickup-details-card"><fieldset><legend>Pickup Type <small>(Required)</small></legend><label><input type="radio" name="pickupType" value="Sale" ${job.pickupType==="Sale"?"checked":""}> Pickup for Sale</label><label><input type="radio" name="pickupType" value="Disposal" ${job.pickupType==="Disposal"?"checked":""}> Pickup for Disposal</label></fieldset><label class="details-field stacked"><span>Pickup Notes <small>(Optional)</small></span><textarea name="pickupNotes" placeholder="Add any notes about the pickup…">${esc(job.pickupNotes||"")}</textarea></label></section>`:""}
+    <div class="complete-details-error" data-details-error></div>
+    <button class="button save-details-button" type="button" data-save-details>▣ &nbsp; Save Details</button>
+  </div>`;
+  drawer.classList.add("open","complete-details-open"); drawerBackdrop.classList.add("open"); drawer.setAttribute("aria-hidden","false");
+  bindCompleteDetails(job, allItems);
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(new Error("The photo could not be read."));reader.readAsDataURL(file);});
+}
+
+function bindCompleteDetails(job, items) {
+  const screen = drawerContent.querySelector(".complete-details-screen");
+  screen.querySelectorAll("[data-detail-product]").forEach(select => select.onchange = () => {
+    const card=select.closest("[data-details-item]"); const item=items[Number(card.dataset.detailsItem)]; const product=state.products.find(value=>value.id===select.value);
+    item.productId=select.value; item.brand=product?.brand||""; item.model=product?.model||""; item.imageUrl=product?.imageUrl||"";
+    const image=card.querySelector("[data-product-image]"); image.innerHTML=item.imageUrl?`<img src="${esc(item.imageUrl)}" alt="${esc(item.model)}">`:`<span>▧<small>Product image is not available</small></span>`;
+  });
+  screen.querySelectorAll("[data-detail-photo]").forEach(input => input.onchange = async () => {
+    const file=input.files?.[0]; if(!file)return; const card=input.closest("[data-details-item]"); const item=items[Number(card.dataset.detailsItem)];
+    item.photoDataUrl=await fileToDataUrl(file); item.photoName=file.name||`equipment-${Date.now()}.jpg`;
+    const control=card.querySelector("[data-photo-control]"); control.classList.add("has-photo"); control.querySelectorAll("img,b,em").forEach(el=>el.remove()); control.insertAdjacentHTML("afterbegin",`<img src="${item.photoDataUrl}" alt="Equipment photo preview">`);
+  });
+  screen.querySelector("[data-save-details]").onclick = async event => {
+    const button=event.currentTarget; const errorBox=screen.querySelector("[data-details-error]"); errorBox.textContent="";
+    const payloadItems=items.map((item,index)=>{const card=screen.querySelector(`[data-details-item="${index}"]`); const isNew=String(item.condition).toLowerCase()==="new"; return {jobEquipmentId:item.id,condition:item.condition,equipmentTypeId:item.equipmentTypeId,productId:isNew?card.querySelector("[data-detail-product]").value:"",manufacturer:isNew?item.brand:card.querySelector("[data-detail-manufacturer]").value.trim(),model:isNew?item.model:"",photoDataUrl:item.photoDataUrl||"",photoName:item.photoName||""};});
+    const missing=payloadItems.find((item,index)=>String(item.condition).toLowerCase()==="new"?!item.productId:(!item.manufacturer && !items[index].brand)||(!item.photoDataUrl&&!items[index].imageUrl));
+    const pickupType=screen.querySelector('[name="pickupType"]:checked')?.value||"";
+    if(missing){errorBox.textContent="Choose a model for every new item and add a manufacturer and photo for every used item.";return;}
+    if(job.hasPickup&&!pickupType){errorBox.textContent="Choose Pickup for Sale or Pickup for Disposal.";return;}
+    button.disabled=true;button.textContent="Saving…";
+    try{const pinToken=await requestPin("canCreateQuote","Enter your employee PIN to save equipment details.");await api.updateJobDetails(job.id,payloadItems,pickupType,screen.querySelector('[name="pickupNotes"]')?.value||"",pinToken);touchPinSession();toast("Job details saved.");closeJob();await loadLiveData();go("today");}
+    catch(error){console.error(error);errorBox.textContent=error.message||"The details could not be saved.";button.disabled=false;button.textContent="▣  Save Details";}
+  };
+}
+
 function queueItem(job) {
   const action = job.status === "Tentative" ? "Review" : "Open";
   return `<article data-job-id="${job.id}">
@@ -678,7 +792,7 @@ async function markBuildComplete(jobId, jobEquipmentId) {
 }
 
 function closeJob() {
-  drawer.classList.remove("open");
+  drawer.classList.remove("open","complete-details-open");
   drawerBackdrop.classList.remove("open");
   drawer.setAttribute("aria-hidden","true");
 }
@@ -820,39 +934,12 @@ function renderEmployees() {
 const views = {
   today: {
     title:"Today's GamePlan", sub:todayDate,
-    html:()=>`<div class="grid two">
-      <div class="grid">
-        <section class="alert">
-          <b>🔧</b>
-          <div class="copy"><strong>Build Alerts</strong><span>${state.jobs.filter(isScheduledBuildAlert).length} scheduled jobs still need equipment assembled.</span></div>
-          <button class="button" data-job-filter="builds">View Items</button>
-        </section>
-        <section class="card">
-          <div class="head"><h2>Today's Queue</h2></div>
-          <div class="body queue">${state.jobs.filter(isTodayJob).length ? state.jobs.filter(isTodayJob).map(queueItem).join("") : `<div class="empty-agenda"><b>No scheduled jobs today</b><span>Confirmed work scheduled for today will appear here.</span></div>`}</div>
-        </section>
-      </div>
-      <div class="grid">
-        <section class="card mobile-workflow-card">
-          <div class="head"><div><h2>Start Here</h2><span class="agenda-subtitle">New Job Workflow</span></div></div>
-          <div class="body v3-actions">
-            <button class="v3-primary-action" data-demo-action="New Job"><span class="v3-action-icon">＋</span><span><b>New Job</b><small>Choose Delivery, Pickup, or Delivery &amp; Pickup</small></span><em>›</em></button>
-            <div class="v3-secondary-actions single-action">
-              <button data-route="schedule"><b>Schedule</b><small>View the weekly plan</small></button>
-            </div>
-          </div>
-        </section>
-        <section class="card">
-          <div class="head"><h2>Today</h2></div>
-          <div class="body stats">
-            <div class="stat"><b>${state.jobs.filter(j=>j.status==="Scheduled" && isTodayJob(j)).length}</b><span>Scheduled</span></div>
-            <div class="stat"><b>${state.jobs.filter(j=>j.status==="Tentative" && parseJobDate(j) && toDateKey(parseJobDate(j))===toDateKey(new Date())).length}</b><span>Tentative</span></div>
-            <div class="stat"><b>${state.jobs.filter(j=>isScheduledBuildAlert(j) && isTodayJob(j)).length}</b><span>Need Build</span></div>
-            <div class="stat"><b>0</b><span>Conflicts</span></div>
-          </div>
-        </section>
-      </div>
-    </div>`
+    html:()=>{const attention=state.jobs.filter(jobNeedsDetails);return `<div class="home-dashboard">
+      ${homeStatusButtons()}
+      <section class="card needs-attention-card"><div class="head"><div><h2>Needs Attention</h2><span class="attention-count">${attention.length}</span></div></div><div class="body attention-list">${attention.length?attention.map(needsAttentionCard).join(""):`<div class="empty-agenda"><b>Nothing needs attention</b><span>Incomplete reservations will stay here until their equipment details are saved.</span></div>`}</div></section>
+      <div class="grid two"><section class="card"><div class="head"><h2>Today's Schedule</h2></div><div class="body queue">${state.jobs.filter(isTodayJob).length?state.jobs.filter(isTodayJob).map(queueItem).join(""):`<div class="empty-agenda"><b>No scheduled jobs today</b><span>Confirmed work scheduled for today will appear here.</span></div>`}</div></section>
+      <section class="card mobile-workflow-card"><div class="head"><div><h2>Start Here</h2><span class="agenda-subtitle">New Job Workflow</span></div></div><div class="body v3-actions"><button class="v3-primary-action" data-demo-action="New Job"><span class="v3-action-icon">＋</span><span><b>New Job</b><small>Delivery, Pickup, or Delivery &amp; Pickup</small></span><em>›</em></button><div class="v3-secondary-actions single-action"><button data-route="schedule"><b>Schedule</b><small>View the weekly plan</small></button></div></div></section></div>
+    </div>`;}
   },
 
   schedule: {
@@ -929,6 +1016,8 @@ const views = {
 };
 
 function bindDynamic() {
+  view.querySelectorAll("[data-complete-details]").forEach(el => el.onclick = () => openCompleteDetails(el.dataset.completeDetails));
+  view.querySelectorAll("[data-home-status]").forEach(el => el.onclick = () => { const status=el.dataset.homeStatus; if(status==="Needs Attention"){const matches=state.jobs.filter(jobNeedsDetails); if(matches.length===1)return openCompleteDetails(matches[0].id); jobsViewFilter="attention";} else {jobsViewFilter=status.toLowerCase();} go("jobs"); });
   document.querySelectorAll("[data-open-job]").forEach(el => {
     el.onclick = (event) => {
       event.stopPropagation();

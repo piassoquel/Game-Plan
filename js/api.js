@@ -49,4 +49,7 @@ export class GamePlanApi {
     return this.post("updateEquipmentBuildStatus", { jobId, jobEquipmentId, buildComplete, pinToken, approvalToken });
   }
   getJob(jobId) { return this.post("job", { jobId }); }
+  updateJobDetails(jobId, equipment, pickupType = "", pickupNotes = "", pinToken = "") {
+    return this.post("updateJobDetails", { jobId, equipment, pickupType, pickupNotes, pinToken });
+  }
 }
