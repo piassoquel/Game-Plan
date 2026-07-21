@@ -1274,15 +1274,31 @@ function appointmentWeekLabel(start){
   return `${first}–${last}`;
 }
 function estimatedDraftMinutes(){
-  let minutes=60;
+  // A normal delivery begins with a small handling/arrival allowance rather
+  // than a blanket one-hour base. Equipment rules then supply the actual
+  // on-site duration. This allows a straightforward job to fit into a real
+  // 45-minute opening before another appointment.
+  let minutes=15;
   draft.equipment.forEach(item=>{
     const type=selectedType(item);const qty=Math.max(1,Number(item.quantity||1));
-    const perItem=Number(type.defaultDurationMinutes||type.defaultOnSiteMinutes||type.estimatedMinutes||0);
+    const perItem=Number(
+      type.defaultDurationMinutes||type.defaultOnSiteMinutes||type.estimatedMinutes||
+      type.deliveryMinutes||type.durationMinutes||type.laborMinutes||0
+    );
     minutes+=qty*(perItem>0?perItem:30);
-    if(item.condition==="New")minutes+=qty*Number(type.defaultAssemblyMinutes||30);
+    if(item.condition==="New"){
+      const assembly=Number(type.defaultAssemblyMinutes||type.assemblyMinutes||30);
+      minutes+=qty*Math.max(0,assembly);
+    }
   });
   if(draft.destinationId==="upstairs")minutes+=draft.flights==="3+"?45:Number(draft.flights||1)*15;
-  return Math.max(60,Math.ceil(minutes/30)*30);
+  return Math.max(30,Math.ceil(minutes/15)*15);
+}
+function formatEstimatedDuration(minutes=estimatedDraftMinutes()){
+  const hours=Math.floor(minutes/60);const remainder=minutes%60;
+  if(!hours)return `${minutes} minutes`;
+  if(!remainder)return `${hours} ${hours===1?"hour":"hours"}`;
+  return `${hours} ${hours===1?"hour":"hours"} ${remainder} minutes`;
 }
 function jobInterval(job){
   const start=minutesFromTime(job.scheduledTime||job.time||"");if(start===null)return null;
@@ -1576,7 +1592,7 @@ function appointmentStep(){
   const showingTimes=draft.appointmentView==="times"&&draft.scheduledDate;
   const selectedDate=draft.scheduledDate?new Date(`${draft.scheduledDate}T12:00:00`):null;
   return `${stepHeading("Reserve Appointment","When would the customer like the appointment?")}
-    <div class="ux-price-card small"><small>Estimated Delivery Price</small><strong>$${quoteEstimate()}</strong></div>
+    <div class="ux-price-card small"><small>Estimated Delivery Price</small><strong>$${quoteEstimate()}</strong><span>Estimated time: ${formatEstimatedDuration()}</span></div>
     ${showingTimes?`
       <div class="ux-appointment-panel slide-in">
         <button type="button" class="ux-back-to-dates" data-back-to-dates>← Choose Another Date</button>

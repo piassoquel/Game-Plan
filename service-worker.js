@@ -1,8 +1,8 @@
-const CACHE_NAME = 'gameplan-v3-alpha4-screen5';
+const CACHE_NAME = 'gameplan-v3-alpha4-1-screen5-duration';
 const APP_SHELL = [
   "./","./index.html","./manifest.json",
-  "./css/app.css?v=3.0.7-alpha3-1","./js/config.js?v=3.0.7-alpha3-1",
-  "./js/app.js?v=3.0.7-alpha3-1","./js/api.js?v=3.0.7-alpha3-1",
+  "./css/app.css?v=3.0.8-alpha4-1","./js/config.js?v=3.0.8-alpha4-1",
+  "./js/app.js?v=3.0.8-alpha4-1","./js/api.js?v=3.0.8-alpha4-1",
   "./assets/logo/gameplan-logo.svg","./assets/icons/icon.svg"
 ];
 self.addEventListener("install",event=>{
