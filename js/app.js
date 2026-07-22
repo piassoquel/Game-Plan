@@ -1898,9 +1898,6 @@ function popularEquipment(){
   const favorites=state.equipmentTypes.filter(x=>x.quickAccess===true||String(x.quickAccess).toLowerCase()==="true");
   return (favorites.length?favorites:state.equipmentTypes.slice(0,4));
 }
-function equipmentCard(type){
-  return `<button type="button" class="ux-icon-card" data-add-equipment="${esc(type.id)}"><i>${gpIcon(iconNameFor(type))}</i><span>${esc(type.name)}</span><small>Tap to add</small></button>`;
-}
 function selectedJobTypeRecord(){
   return (state.jobTypes||[]).find(type=>String(type.id)===String(draft.jobTypeId))||{};
 }
