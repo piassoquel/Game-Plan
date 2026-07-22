@@ -282,3 +282,8 @@
   .pickup-response-group{grid-template-columns:repeat(3,minmax(0,1fr))}
   .pickup-response-group em{font-size:13px;padding:9px 3px}
 }
+
+/* Alpha 8 Patch 006: pickup-only items are documented at pickup inspection. */
+.pickup-detail-notice{display:grid;gap:.3rem;padding:1rem;border:1px solid rgba(255,255,255,.12);border-radius:14px;background:rgba(255,255,255,.035)}
+.pickup-detail-notice b{font-size:.95rem;color:var(--text,#f7f7f7)}
+.pickup-detail-notice span{font-size:.84rem;line-height:1.45;color:var(--muted,#aeb5bd)}

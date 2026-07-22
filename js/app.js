@@ -553,8 +553,13 @@ function productOptionsFor(item) {
 }
 
 function completeDetailsItemCard(item,index) {
+  const pickupOnly = item.pickupRequired === true && item.deliveryRequired === false;
   const isNew = String(item.condition).toLowerCase() === "new";
-  const title = `${isNew ? "New" : "Used"} ${equipmentTypeName(item)}`;
+  const title = pickupOnly ? equipmentTypeName(item) : `${isNew ? "New" : "Used"} ${equipmentTypeName(item)}`;
+  if (pickupOnly) return `<section class="complete-item-card pickup-only-detail-card" data-details-item="${index}">
+    <div class="complete-item-head"><span class="item-number">${index+1}</span><i class="equipment-reference-icon">${detailsItemIcon(item)}</i><div><h3>${esc(title)}</h3><p>Quantity: ${Math.max(1,Number(item.quantity||1))}</p></div></div>
+    <div class="pickup-detail-notice"><b>No equipment details required</b><span>Manufacturer, model, condition, and photos will be recorded during the Pickup Item Checklist.</span></div>
+  </section>`;
   if (isNew) return `<section class="complete-item-card" data-details-item="${index}">
     <div class="complete-item-head"><span class="item-number">${index+1}</span><i class="equipment-reference-icon">${detailsItemIcon(item)}</i><div><h3>${esc(title)}</h3><p>Quantity: ${Math.max(1,Number(item.quantity||1))}</p></div></div>
     <label class="details-field"><span>Model</span><select data-detail-product><option value="">Select model…</option>${productOptionsFor(item)}</select></label>
@@ -580,7 +585,7 @@ function openCompleteDetails(jobId) {
   const allItems = [...deliveryItems,...pickupItems];
   drawerContent.innerHTML = `<div class="complete-details-screen" data-details-job="${esc(job.id)}">
     <section class="complete-job-summary"><div><b>${esc(job.customer)}</b><span>${esc(job.date)} at ${esc(job.time)}</span><small>${esc(job.address)}</small></div><span class="badge ${badgeClass(job.status)}">${esc(job.status)}</span><footer><span>Job #${esc(job.number||job.id)}<br>${allItems.length} Items</span><span>${esc(job.type)}<br>${esc(job.duration||"")}</span></footer></section>
-    <p class="complete-instruction">Add the equipment details below. All fields are required.</p>
+    <p class="complete-instruction">Complete the required details for delivery items. Pickup items will be documented during the Pickup Item Checklist.</p>
     ${deliveryItems.length?`<h2 class="complete-section-title">DELIVERY ITEMS (${deliveryItems.length})</h2>${deliveryItems.map((item,i)=>completeDetailsItemCard(item,i)).join("")}`:""}
     ${pickupItems.length?`<h2 class="complete-section-title">PICKUP ITEMS (${pickupItems.length})</h2>${pickupItems.map((item,i)=>completeDetailsItemCard(item,deliveryItems.length+i)).join("")}`:""}
     ${job.hasPickup?`<h2 class="complete-section-title">PICKUP DETAILS</h2><section class="pickup-details-card"><fieldset><legend>Pickup Type <small>(Required)</small></legend><label><input type="radio" name="pickupType" value="Sale" ${job.pickupType==="Sale"?"checked":""}> Pickup for Sale</label><label><input type="radio" name="pickupType" value="Disposal" ${job.pickupType==="Disposal"?"checked":""}> Pickup for Disposal</label></fieldset><label class="details-field stacked"><span>Pickup Notes <small>(Optional)</small></span><textarea name="pickupNotes" placeholder="Add any notes about the pickup…">${esc(job.pickupNotes||"")}</textarea></label></section>`:""}
@@ -609,10 +614,30 @@ function bindCompleteDetails(job, items) {
   });
   screen.querySelector("[data-save-details]").onclick = async event => {
     const button=event.currentTarget; const errorBox=screen.querySelector("[data-details-error]"); errorBox.textContent="";
-    const payloadItems=items.map((item,index)=>{const card=screen.querySelector(`[data-details-item="${index}"]`); const isNew=String(item.condition).toLowerCase()==="new"; return {jobEquipmentId:item.id,condition:item.condition,equipmentTypeId:item.equipmentTypeId,productId:isNew?card.querySelector("[data-detail-product]").value:"",manufacturer:isNew?item.brand:card.querySelector("[data-detail-manufacturer]").value.trim(),equipmentTypeText:isNew?equipmentTypeName(item):card.querySelector("[data-detail-equipment-type]").value.trim(),model:isNew?item.model:card.querySelector("[data-detail-model]").value.trim(),photoDataUrl:item.photoDataUrl||"",photoName:item.photoName||""};});
-    const missing=payloadItems.find((item,index)=>String(item.condition).toLowerCase()==="new"?!item.productId:!item.manufacturer||!item.model||(!item.photoDataUrl&&!items[index].imageUrl));
+    const payloadItems=items.map((item,index)=>{
+      const card=screen.querySelector(`[data-details-item="${index}"]`);
+      const pickupOnly=item.pickupRequired===true&&item.deliveryRequired===false;
+      const isNew=String(item.condition).toLowerCase()==="new";
+      return {
+        jobEquipmentId:item.id, condition:item.condition, equipmentTypeId:item.equipmentTypeId,
+        deliveryRequired:item.deliveryRequired!==false, pickupRequired:item.pickupRequired===true,
+        productId:!pickupOnly&&isNew?(card.querySelector("[data-detail-product]")?.value||""):"",
+        manufacturer:pickupOnly?"":(isNew?item.brand:(card.querySelector("[data-detail-manufacturer]")?.value.trim()||"")),
+        equipmentTypeText:pickupOnly?equipmentTypeName(item):(isNew?equipmentTypeName(item):(card.querySelector("[data-detail-equipment-type]")?.value.trim()||"")),
+        model:pickupOnly?"":(isNew?item.model:(card.querySelector("[data-detail-model]")?.value.trim()||"")),
+        photoDataUrl:pickupOnly?"":(item.photoDataUrl||""), photoName:pickupOnly?"":(item.photoName||"")
+      };
+    });
+    const missing=payloadItems.find((detail,index)=>{
+      const source=items[index];
+      const pickupOnly=source.pickupRequired===true&&source.deliveryRequired===false;
+      if(pickupOnly)return false;
+      return String(detail.condition).toLowerCase()==="new"
+        ? !detail.productId
+        : !detail.manufacturer||!detail.model||(!detail.photoDataUrl&&!source.imageUrl);
+    });
     const pickupType=screen.querySelector('[name="pickupType"]:checked')?.value||"";
-    if(missing){errorBox.textContent="Choose a model for every new item and add a manufacturer, equipment type, model, and photo for every used item.";return;}
+    if(missing){errorBox.textContent="Choose a model for every new delivery item and add a manufacturer, equipment type, model, and photo for every used delivery item.";return;}
     if(job.hasPickup&&!pickupType){errorBox.textContent="Choose Pickup for Sale or Pickup for Disposal.";return;}
     button.disabled=true;button.textContent="Saving…";
     try{const pinToken=await requestPin("canCreateQuote","Enter your employee PIN to save equipment details.");await api.updateJobDetails(job.id,payloadItems,pickupType,screen.querySelector('[name="pickupNotes"]')?.value||"",pinToken);touchPinSession();toast("Job details saved.");closeJob();await loadLiveData();go("today");}

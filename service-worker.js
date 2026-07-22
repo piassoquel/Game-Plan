@@ -1,9 +1,9 @@
-const CACHE_NAME = 'gameplan-v3.2.4-alpha8-module-syntax-fix';
+const CACHE_NAME = 'gameplan-v3.2.5-alpha8-p006-details-validation';
 const APP_SHELL = [
   "./","./index.html","./manifest.json",
-  "./css/app.css?v=3.2.1-alpha8-pickup-items",
+  "./css/app.css?v=3.2.4-alpha8-p006",
   "./js/config.js?v=3.0.5-alpha2-3",
-  "./js/app.js?v=3.2.4-alpha8-signin-fix",
+  "./js/app.js?v=3.2.5-alpha8-p006",
   "./js/api.js?v=3.1.0-alpha6",
   "./assets/logo/gameplan-logo.svg","./assets/icons/icon.svg"
 ];
