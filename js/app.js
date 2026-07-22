@@ -584,7 +584,7 @@ function openCompleteDetails(jobId) {
   const pickupItems = (job.equipment || []).filter(item => item.pickupRequired);
   const allItems = [...deliveryItems,...pickupItems];
   drawerContent.innerHTML = `<div class="complete-details-screen" data-details-job="${esc(job.id)}">
-    <section class="complete-job-summary"><div><b>${esc(job.customer)}</b><span>${esc(job.date)} at ${esc(job.time)}</span><small>${esc(job.address)}</small></div><span class="badge ${badgeClass(job.status)}">${esc(job.status)}</span><footer><span>Job #${esc(job.number||job.id)}<br>${allItems.length} Items</span><span>${esc(job.type)}<br>${esc(job.duration||"")}</span></footer></section>
+    <section class="complete-job-summary"><div><b>${esc(job.customer)}</b><span>${esc(job.date)} at ${esc(job.time)}</span><small>${esc(job.address)}</small><small class="complete-created-by"><b>Set up by:</b> ${esc(job.createdBy||"Unknown employee")}</small></div><span class="badge ${badgeClass(job.status)}">${esc(job.status)}</span><footer><span>Job #${esc(job.number||job.id)}<br>${allItems.length} Items</span><span>${esc(job.type)}<br>${esc(job.duration||"")}</span></footer></section>
     <p class="complete-instruction">Complete the required details for delivery items. Pickup items will be documented during the Pickup Item Checklist.</p>
     ${deliveryItems.length?`<h2 class="complete-section-title">DELIVERY ITEMS (${deliveryItems.length})</h2>${deliveryItems.map((item,i)=>completeDetailsItemCard(item,i)).join("")}`:""}
     ${pickupItems.length?`<h2 class="complete-section-title">PICKUP ITEMS (${pickupItems.length})</h2>${pickupItems.map((item,i)=>completeDetailsItemCard(item,deliveryItems.length+i)).join("")}`:""}
@@ -807,6 +807,13 @@ function setupSignaturePad(screen) {
   };
 }
 
+function normalizedPickupType(value) {
+  const type = String(value || "").trim().toLowerCase();
+  if (type === "sale" || type === "trade-in" || type === "trade in") return "Trade-In";
+  if (type === "disposal") return "Disposal";
+  return "";
+}
+
 function openPickupInspection(jobId) {
   const job = state.jobs.find(item => item.id === jobId);
   if (!job) return;
@@ -817,10 +824,7 @@ function openPickupInspection(jobId) {
     <section class="complete-job-summary"><div><b>${esc(job.customer)}</b><span>${esc(job.date)} at ${esc(job.time)}</span><small>${esc(job.address)}</small></div><span class="badge ${badgeClass(job.status)}">${esc(job.status)}</span><footer><span>Job #${esc(job.number||job.id)}<br>${pickupItems.length} Pickup Item${pickupItems.length===1?"":"s"}</span><span>${esc(job.type)}<br>${esc(job.duration||"")}</span></footer></section>
     <p class="complete-instruction">Inspect each pickup item, document its condition, attach a current photo, and obtain the customer’s signature.</p>
     <h2 class="complete-section-title">PICKUP FOR</h2>
-    <section class="pickup-details-card"><fieldset><legend>Pickup Type <small>(Required)</small></legend>
-      <label><input type="radio" name="inspectionPickupType" value="Trade-In" ${job.pickupType==="Trade-In"||job.pickupType==="Sale"?"checked":""}> Trade-In</label>
-      <label><input type="radio" name="inspectionPickupType" value="Disposal" ${job.pickupType==="Disposal"?"checked":""}> Disposal</label>
-    </fieldset></section>
+    <section class="pickup-details-card pickup-type-readonly"><span>Pickup Type</span><strong>${esc(normalizedPickupType(job.pickupType)||"Not selected")}</strong><small>Set when the appointment details were completed.</small></section>
     <h2 class="complete-section-title">EQUIPMENT INSPECTION (${pickupItems.length})</h2>
     ${pickupItems.map(pickupInspectionItemCard).join("")}
     <h2 class="complete-section-title">OVERALL CONDITION</h2>
@@ -878,9 +882,9 @@ function openPickupInspection(jobId) {
     const button = event.currentTarget;
     const errorBox = screen.querySelector("[data-pickup-error]");
     errorBox.textContent = "";
-    const pickupType = screen.querySelector('[name="inspectionPickupType"]:checked')?.value || "";
+    const pickupType = normalizedPickupType(job.pickupType);
     const overallCondition = screen.querySelector('[name="overallCondition"]:checked')?.value || "";
-    if (!pickupType) return void(errorBox.textContent = "Choose Trade-In or Disposal.");
+    if (!pickupType) return void(errorBox.textContent = "Pickup type is missing. Complete the job details before beginning the inspection.");
     if (!overallCondition) return void(errorBox.textContent = "Choose an overall condition.");
     if (!signature.hasSignature()) return void(errorBox.textContent = "Customer signature is required.");
 
