@@ -287,3 +287,15 @@
 .pickup-detail-notice{display:grid;gap:.3rem;padding:1rem;border:1px solid rgba(255,255,255,.12);border-radius:14px;background:rgba(255,255,255,.035)}
 .pickup-detail-notice b{font-size:.95rem;color:var(--text,#f7f7f7)}
 .pickup-detail-notice span{font-size:.84rem;line-height:1.45;color:var(--muted,#aeb5bd)}
+
+/* Alpha 8 Patch 010: distinguish the two office-workflow stages. */
+.attention-job-card.details-needed{border-color:rgba(255,113,0,.42)}
+.attention-job-card.details-needed .attention-rail{background:#ff7100}
+.attention-job-card.details-needed .attention-symbol{border-color:#ff7100;color:#ff7100}
+.attention-job-card.details-needed .attention-copy strong{color:#ff7100}
+.attention-job-card.details-needed .attention-complete{border-color:#ff7100!important;color:#ff7a00!important}
+.attention-job-card.awaiting-approval{border-color:rgba(59,156,255,.42);background:rgba(16,49,78,.22)}
+.attention-job-card.awaiting-approval .attention-rail{background:#4b9cff}
+.attention-job-card.awaiting-approval .attention-symbol{clip-path:none;border-radius:50%;padding-top:0;border-color:#4b9cff;color:#4b9cff}
+.attention-job-card.awaiting-approval .attention-copy strong{color:#69adff}
+.attention-job-card.awaiting-approval .attention-complete{border-color:#4b9cff!important;color:#69adff!important}

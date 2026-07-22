@@ -514,10 +514,15 @@ function jobNeedsDetails(job) {
   return !jobDetailsComplete(job);
 }
 
+function jobHasFutureAppointment(job) {
+  if (!job || !job.dateTime) return false;
+  const appointment = new Date(job.dateTime);
+  return !Number.isNaN(appointment.getTime()) && appointment.getTime() >= Date.now();
+}
+
 function jobNeedsOfficeAttention(job) {
   const status = String(job.status || "").toLowerCase();
-  if (["completed", "cancelled"].includes(status)) return false;
-  return status === "tentative" || jobNeedsDetails(job);
+  return status === "tentative" && jobHasFutureAppointment(job);
 }
 
 function statusCount(status) {
@@ -544,7 +549,8 @@ function needsAttentionCard(job) {
   const action = detailsComplete
     ? `<button class="button attention-complete" type="button" data-review-job="${esc(job.id)}">Review Appointment</button>`
     : `<button class="button attention-complete" type="button" data-complete-details="${esc(job.id)}">Complete Details</button>`;
-  return `<article class="attention-job-card" data-job-id="${esc(job.id)}">
+  const stageClass = detailsComplete ? "awaiting-approval" : "details-needed";
+  return `<article class="attention-job-card ${stageClass}" data-job-id="${esc(job.id)}">
     <div class="attention-rail"></div><div class="attention-symbol">${detailsComplete ? "✓" : "!"}</div>
     <div class="attention-copy"><strong>${label}</strong><h3>${esc(job.customer)}</h3>
       <p>${esc(job.date)} · ${esc(job.time)}<br>${itemCount} Item${itemCount===1?"":"s"} · ${esc(job.type)}<br><span class="attention-created-by">Set up by: ${esc(job.createdBy || "Unknown employee")}</span></p>
