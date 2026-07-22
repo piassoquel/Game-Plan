@@ -1905,9 +1905,9 @@ function selectedEquipmentChip(item,index){
 }
 function equipmentStep(){
   const popular=popularEquipment();const popularIds=new Set(popular.map(x=>x.id));const more=state.equipmentTypes.filter(x=>!popularIds.has(x.id));
-  return `${stepHeading("Equipment","What are we moving?")}
-    <div class="ux-condition" role="radiogroup" aria-label="Condition"><button type="button" class="ux-segment ${draft.pendingCondition==="New"?"selected":""}" data-condition="New">New</button><button type="button" class="ux-segment ${draft.pendingCondition==="Used"?"selected":""}" data-condition="Used">Used</button></div>
-    <p class="ux-helper">Choose New or Used, then tap an equipment type.</p>
+  const isPickup=(draft.jobType&&/pickup|disposal/i.test(draft.jobType.name||""));
+  return `${stepHeading(isPickup?"Pickup Items":"Equipment",isPickup?"What equipment are we picking up?":"What are we moving?")}
+    ${isPickup?"":"<div class=\"ux-condition\" role=\"radiogroup\" aria-label=\"Condition\"><button type=\"button\" class=\"ux-segment ${draft.pendingCondition===\"New\"?\"selected\":\"\"}\" data-condition=\"New\">New</button><button type=\"button\" class=\"ux-segment ${draft.pendingCondition===\"Used\"?\"selected\":\"\"}\" data-condition=\"Used\">Used</button></div><p class=\"ux-helper\">Choose New or Used, then tap an equipment type.</p>"}
     <h3 class="ux-section-label">Popular Equipment</h3>
     <div class="ux-card-grid">${popular.map(equipmentCard).join("")}</div>
     ${more.length?`<details class="ux-more"><summary>More Equipment <span>⌄</span></summary><div class="ux-card-grid">${more.map(equipmentCard).join("")}</div></details>`:""}
