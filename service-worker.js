@@ -1,8 +1,8 @@
-const CACHE_NAME = 'gameplan-v3.2.1-alpha8-pickup-items';
+const CACHE_NAME = 'gameplan-v3.2.2-alpha8-delivery-pickup';
 const APP_SHELL = [
   "./","./index.html","./manifest.json",
-  "./css/app.css?v=3.2.1-alpha8-pickup-items","./js/config.js?v=3.2.1-alpha8-pickup-items",
-  "./js/app.js?v=3.2.1-alpha8-pickup-items","./js/api.js?v=3.2.1-alpha8-pickup-items",
+  "./css/app.css?v=3.2.2-alpha8-delivery-pickup","./js/config.js?v=3.2.2-alpha8-delivery-pickup",
+  "./js/app.js?v=3.2.2-alpha8-delivery-pickup","./js/api.js?v=3.2.2-alpha8-delivery-pickup",
   "./assets/logo/gameplan-logo.svg","./assets/icons/icon.svg"
 ];
 self.addEventListener("install",event=>{

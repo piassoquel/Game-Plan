@@ -1551,7 +1551,8 @@ const blankItem = () => ({
   productId: "",
   model: "",
   fulfillmentConditionId: "NIB",
-  notes: ""
+  notes: "",
+  movement: "delivery"
 });
 const blankDraft = () => ({
   mode: "job",
@@ -1903,33 +1904,73 @@ function equipmentCard(type){
 function selectedJobTypeRecord(){
   return (state.jobTypes||[]).find(type=>String(type.id)===String(draft.jobTypeId))||{};
 }
-function isPickupOnlyDraft(){
+function selectedJobTypeSearch(){
   const type=selectedJobTypeRecord();
-  const search=`${type.id||""} ${type.name||""}`.toLowerCase();
+  return `${type.id||""} ${type.name||""}`.toLowerCase();
+}
+function isDeliveryPickupDraft(){
+  const search=selectedJobTypeSearch();
+  return /delivery/.test(search)&&/pickup|pick up/.test(search);
+}
+function isPickupOnlyDraft(){
+  const search=selectedJobTypeSearch();
   return /pickup|pick up/.test(search)&&!/delivery/.test(search);
+}
+function itemMovement(item){
+  if(String(item?.movement||"").toLowerCase()==="pickup"||item?.pickupRequired===true)return "pickup";
+  return "delivery";
+}
+function equipmentCard(type,movement="delivery"){
+  return `<button type="button" class="ux-icon-card" data-add-equipment="${esc(type.id)}" data-equipment-movement="${movement}"><i>${gpIcon(iconNameFor(type))}</i><span>${esc(type.name)}</span><small>Tap to add</small></button>`;
+}
+function equipmentChooser(movement,popular,more){
+  return `<h3 class="ux-section-label">Popular Equipment</h3>
+    <div class="ux-card-grid">${popular.map(type=>equipmentCard(type,movement)).join("")}</div>
+    ${more.length?`<details class="ux-more"><summary>More Equipment <span>⌄</span></summary><div class="ux-card-grid">${more.map(type=>equipmentCard(type,movement)).join("")}</div></details>`:""}`;
 }
 function selectedEquipmentChip(item,index){
   const type=selectedType(item);
-  if(isPickupOnlyDraft()){
+  if(itemMovement(item)==="pickup"){
     return `<button type="button" class="ux-selected-item" data-edit-equipment="${index}"><i>${gpIcon(iconNameFor(type))}</i><span><b>${esc(type.name||"Equipment")}</b><small>Pickup item · Tap to remove</small></span><strong>✓</strong></button>`;
   }
-  return `<button type="button" class="ux-selected-item" data-edit-equipment="${index}"><i>${gpIcon(iconNameFor(type))}</i><span><b>${esc(item.condition)} ${esc(type.name||"Equipment")}</b><small>Quantity ${Math.max(1,Number(item.quantity||1))} · Tap to edit</small></span><strong>✓</strong></button>`;
+  return `<button type="button" class="ux-selected-item" data-edit-equipment="${index}"><i>${gpIcon(iconNameFor(type))}</i><span><b>${esc(item.condition)} ${esc(type.name||"Equipment")}</b><small>Delivery item · Quantity ${Math.max(1,Number(item.quantity||1))} · Tap to edit</small></span><strong>✓</strong></button>`;
 }
 function equipmentStep(){
   const pickupOnly=isPickupOnlyDraft();
+  const combined=isDeliveryPickupDraft();
   const popular=popularEquipment();const popularIds=new Set(popular.map(x=>x.id));const more=state.equipmentTypes.filter(x=>!popularIds.has(x.id));
+  const deliveryItems=draft.equipment.map((item,index)=>({item,index})).filter(entry=>itemMovement(entry.item)==="delivery");
+  const pickupItems=draft.equipment.map((item,index)=>({item,index})).filter(entry=>itemMovement(entry.item)==="pickup");
+
+  if(combined){
+    return `${stepHeading("Delivery & Pickup Items","What are we delivering and picking up?")}
+      <section class="ux-combined-equipment-section">
+        <h3 class="ux-section-label">Delivery Items</h3>
+        <p class="ux-helper">Choose New or Used, then tap each equipment type being delivered.</p>
+        <div class="ux-condition" role="radiogroup" aria-label="Delivery item condition"><button type="button" class="ux-segment ${draft.pendingCondition==="New"?"selected":""}" data-condition="New" aria-pressed="${draft.pendingCondition==="New"}">New</button><button type="button" class="ux-segment ${draft.pendingCondition==="Used"?"selected":""}" data-condition="Used" aria-pressed="${draft.pendingCondition==="Used"}">Used</button></div>
+        ${equipmentChooser("delivery",popular,more)}
+        <section class="ux-selected-list"><h3>Delivery Items</h3>${deliveryItems.length?deliveryItems.map(entry=>selectedEquipmentChip(entry.item,entry.index)).join(""):`<div class="ux-empty-selection">No delivery items added yet</div>`}</section>
+      </section>
+      <section class="ux-combined-equipment-section">
+        <h3 class="ux-section-label">Pickup Items</h3>
+        <p class="ux-helper">Tap each equipment type being picked up. Used is assumed.</p>
+        ${equipmentChooser("pickup",popular,more)}
+        <section class="ux-selected-list"><h3>Pickup Items</h3>${pickupItems.length?pickupItems.map(entry=>selectedEquipmentChip(entry.item,entry.index)).join(""):`<div class="ux-empty-selection">No pickup items added yet</div>`}</section>
+      </section>
+      <div id="equipmentEditMount"></div>
+    </div>`;
+  }
+
   return `${stepHeading(pickupOnly?"Pickup Items":"Equipment",pickupOnly?"What equipment are we picking up?":"What are we moving?")}
     ${pickupOnly?`<p class="ux-helper">Tap each equipment type to add it. Add as many pickup items as needed.</p>`:`<div class="ux-condition" role="radiogroup" aria-label="Condition"><button type="button" class="ux-segment ${draft.pendingCondition==="New"?"selected":""}" data-condition="New" aria-pressed="${draft.pendingCondition==="New"}">New</button><button type="button" class="ux-segment ${draft.pendingCondition==="Used"?"selected":""}" data-condition="Used" aria-pressed="${draft.pendingCondition==="Used"}">Used</button></div><p class="ux-helper">Choose New or Used, then tap an equipment type.</p>`}
-    <h3 class="ux-section-label">Popular Equipment</h3>
-    <div class="ux-card-grid">${popular.map(equipmentCard).join("")}</div>
-    ${more.length?`<details class="ux-more"><summary>More Equipment <span>⌄</span></summary><div class="ux-card-grid">${more.map(equipmentCard).join("")}</div></details>`:""}
+    ${equipmentChooser(pickupOnly?"pickup":"delivery",popular,more)}
     <section class="ux-selected-list"><h3>${pickupOnly?"Pickup Items":"Selected Equipment"}</h3>${draft.equipment.length?draft.equipment.map(selectedEquipmentChip).join(""):`<div class="ux-empty-selection">Nothing added yet</div>`}</section>
     <div id="equipmentEditMount"></div>
   </div>`;
 }
 function equipmentEditSheet(index){
   const item=draft.equipment[index];if(!item)return "";const type=selectedType(item);
-  if(isPickupOnlyDraft()){
+  if(itemMovement(item)==="pickup"){
     return `<div class="ux-sheet-backdrop open" id="equipmentEditSheet"><section class="ux-sheet" role="dialog" aria-modal="true"><div class="ux-sheet-handle"></div><h3>${esc(type.name||"Pickup Item")}</h3><p class="ux-helper">Equipment details will be completed later on the Pickup Details Sheet.</p><button type="button" class="button danger" id="removeEditedEquipment">Remove Item</button><button type="button" class="button neutral" id="closeEquipmentEdit">Done</button></section></div>`;
   }
   return `<div class="ux-sheet-backdrop open" id="equipmentEditSheet"><section class="ux-sheet" role="dialog" aria-modal="true"><div class="ux-sheet-handle"></div><h3>Edit ${esc(type.name||"Equipment")}</h3><div class="ux-condition"><button type="button" class="ux-segment ${item.condition==="New"?"selected":""}" data-edit-condition="New">New</button><button type="button" class="ux-segment ${item.condition==="Used"?"selected":""}" data-edit-condition="Used">Used</button></div><label class="ux-field"><span>Quantity</span><div class="ux-quantity"><button type="button" data-qty-change="-1">−</button><b>${Math.max(1,Number(item.quantity||1))}</b><button type="button" data-qty-change="1">＋</button></div></label><button type="button" class="button danger" id="removeEditedEquipment">Remove Item</button><button type="button" class="button neutral" id="closeEquipmentEdit">Done</button></section></div>`;
@@ -2016,7 +2057,9 @@ function appointmentStep(){
 function customerName(){const c=selectedCustomer();return c?.name||`${draft.firstName} ${draft.lastName}`.trim();}
 function summaryCard(key,title,body,icon){return `<button type="button" class="ux-summary-card" data-edit-step="${key}"><i>${gpIcon(icon)}</i><span><small>${title}</small><b>${body}</b></span><em>›</em></button>`;}
 function summaryStep(){
-  const items=draft.equipment.map(i=>`${Math.max(1,Number(i.quantity||1))}× ${i.condition} ${selectedType(i).name||"Equipment"}`).join(" · ");
+  const deliveryItems=draft.equipment.filter(item=>itemMovement(item)==="delivery").map(i=>`${Math.max(1,Number(i.quantity||1))}× ${i.condition} ${selectedType(i).name||"Equipment"}`);
+  const pickupItems=draft.equipment.filter(item=>itemMovement(item)==="pickup").map(i=>`${Math.max(1,Number(i.quantity||1))}× ${selectedType(i).name||"Equipment"}`);
+  const items=[deliveryItems.length?`Delivery: ${deliveryItems.join(" · ")}`:"",pickupItems.length?`Pickup: ${pickupItems.join(" · ")}`:""].filter(Boolean).join("<br>");
   const access=[destinationLabel(),draft.destinationId==="upstairs"&&draft.flights?`${draft.flights} flight${draft.flights==="1"?"":"s"}`:""].filter(Boolean).join(" · ");
   const specialCondition=String(draft.internalNotes||"").trim();
   const date=draft.scheduledDate?new Intl.DateTimeFormat("en-US",{weekday:"short",month:"short",day:"numeric"}).format(new Date(`${draft.scheduledDate}T12:00:00`)):"Not selected";
@@ -2047,6 +2090,10 @@ function validate(){
   if(draft.step===0&&!draft.jobTypeId)return "Choose a job type.";
   if(draft.step===1){if(!draft.firstName.trim())return "Enter the customer's first name.";if(draft.phone.replace(/\D/g,"").length!==10)return "Enter a valid 10-digit phone number.";if(!draft.address.trim())return "Enter the customer address.";}
   if(draft.step===2&&draft.equipment.length<1)return "Add at least one equipment item.";
+  if(draft.step===2&&isDeliveryPickupDraft()){
+    if(!draft.equipment.some(item=>itemMovement(item)==="delivery"))return "Add at least one delivery item.";
+    if(!draft.equipment.some(item=>itemMovement(item)==="pickup"))return "Add at least one pickup item.";
+  }
   if(draft.step===3&&!draft.destinationId)return "Choose where the equipment is going.";
   if(draft.step===3&&draft.destinationId==="upstairs"&&!draft.flights)return "Choose the number of flights.";
   if(draft.step===4&&(!draft.scheduledDate||!draft.scheduledTime))return "Choose an available date and time.";
@@ -2084,9 +2131,17 @@ function bindStep(){
   }
   wizardForm.querySelectorAll("[data-condition]").forEach(el=>el.onclick=()=>{draft.pendingCondition=el.dataset.condition;saveDraft(false);renderWizard();});
   wizardForm.querySelectorAll("[data-add-equipment]").forEach(el=>el.onclick=()=>{
-    const pickupOnly=isPickupOnlyDraft();
-    if(!pickupOnly&&!draft.pendingCondition){toast("Choose New or Used first.");return;}
-    draft.equipment.push({...blankItem(),condition:pickupOnly?"Used":draft.pendingCondition,equipmentTypeId:el.dataset.addEquipment,quantity:1});
+    const movement=el.dataset.equipmentMovement|| (isPickupOnlyDraft()?"pickup":"delivery");
+    if(movement==="delivery"&&!draft.pendingCondition){toast("Choose New or Used first.");return;}
+    draft.equipment.push({
+      ...blankItem(),
+      condition:movement==="pickup"?"Used":draft.pendingCondition,
+      movement,
+      deliveryRequired:movement==="delivery",
+      pickupRequired:movement==="pickup",
+      equipmentTypeId:el.dataset.addEquipment,
+      quantity:1
+    });
     saveDraft(false);renderWizard();
   });
   wizardForm.querySelectorAll("[data-edit-equipment]").forEach(el=>el.onclick=()=>openEquipmentEditor(Number(el.dataset.editEquipment)));
@@ -2144,6 +2199,12 @@ wizardNext.onclick=async()=>{
     const pinToken=await requestPin("canCreateQuote","Enter your employee PIN to save this tentative appointment and stamp your name into its history.");
     const payload={
       ...draft,
+      equipment:draft.equipment.map(item=>({
+        ...item,
+        movement:itemMovement(item),
+        deliveryRequired:itemMovement(item)==="delivery",
+        pickupRequired:itemMovement(item)==="pickup"
+      })),
       status:"Tentative",
       estimatedPrice:quoteEstimate(),
       estimatedDurationMinutes:estimatedDraftMinutes(),
