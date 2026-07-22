@@ -504,14 +504,24 @@ function badgeClass(status) {
 }
 
 
+function jobDetailsComplete(job) {
+  return String(job.detailsStatus || "").toLowerCase() === "complete";
+}
+
 function jobNeedsDetails(job) {
   const status = String(job.status || "").toLowerCase();
   if (["completed", "cancelled"].includes(status)) return false;
-  return String(job.detailsStatus || "").toLowerCase() !== "complete";
+  return !jobDetailsComplete(job);
+}
+
+function jobNeedsOfficeAttention(job) {
+  const status = String(job.status || "").toLowerCase();
+  if (["completed", "cancelled"].includes(status)) return false;
+  return status === "tentative" || jobNeedsDetails(job);
 }
 
 function statusCount(status) {
-  if (status === "Needs Attention") return state.jobs.filter(jobNeedsDetails).length;
+  if (status === "Needs Attention") return state.jobs.filter(jobNeedsOfficeAttention).length;
   return state.jobs.filter(job => job.status === status).length;
 }
 
@@ -529,12 +539,17 @@ function homeStatusButtons() {
 
 function needsAttentionCard(job) {
   const itemCount = (job.equipment || []).reduce((sum,item)=>sum + Math.max(1,Number(item.quantity || 1)),0);
+  const detailsComplete = jobDetailsComplete(job);
+  const label = detailsComplete ? "AWAITING MANAGER APPROVAL" : "DETAILS NEEDED";
+  const action = detailsComplete
+    ? `<button class="button attention-complete" type="button" data-review-job="${esc(job.id)}">Review Appointment</button>`
+    : `<button class="button attention-complete" type="button" data-complete-details="${esc(job.id)}">Complete Details</button>`;
   return `<article class="attention-job-card" data-job-id="${esc(job.id)}">
-    <div class="attention-rail"></div><div class="attention-symbol">!</div>
-    <div class="attention-copy"><strong>DETAILS NEEDED</strong><h3>${esc(job.customer)}</h3>
+    <div class="attention-rail"></div><div class="attention-symbol">${detailsComplete ? "✓" : "!"}</div>
+    <div class="attention-copy"><strong>${label}</strong><h3>${esc(job.customer)}</h3>
       <p>${esc(job.date)} · ${esc(job.time)}<br>${itemCount} Item${itemCount===1?"":"s"} · ${esc(job.type)}</p>
       <span class="badge tentative">${esc(job.status)}</span></div>
-    <button class="button attention-complete" type="button" data-complete-details="${esc(job.id)}">Complete Details</button>
+    ${action}
   </article>`;
 }
 
@@ -978,6 +993,12 @@ function pickupSummaryMarkup(job) {
 function workflowActions(job) {
   const today = isTodayJob(job) && job.status === "Scheduled";
   if (job.status === "Tentative") {
+    if (!jobDetailsComplete(job)) {
+      return `<button class="button primary-action" data-complete-details="${esc(job.id)}">Complete Job Details</button>
+        ${permissionNotice("Complete the required job details before manager approval.")}
+        <button class="button neutral" data-demo-action="Edit / Reschedule">Edit / Reschedule</button>
+        <button class="button red" data-status-action="Cancelled" data-job-id="${esc(job.id)}">Cancel Job</button>`;
+    }
     const confirm = (isManager() || state.currentUser?.sharedAccount)
       ? `<button class="button primary-action" data-status-action="Scheduled" data-job-id="${esc(job.id)}">✓ Confirm Appointment</button>`
       : permissionNotice("This appointment is awaiting manager confirmation before it is added to the finalized schedule.");
@@ -1262,9 +1283,9 @@ function renderEmployees() {
 const views = {
   today: {
     title:"Today's GamePlan", sub:todayDate,
-    html:()=>{const attention=state.jobs.filter(jobNeedsDetails);return `<div class="home-dashboard">
+    html:()=>{const attention=state.jobs.filter(jobNeedsOfficeAttention);return `<div class="home-dashboard">
       ${homeStatusButtons()}
-      <section class="card needs-attention-card"><div class="head"><div><h2>Needs Attention</h2><span class="attention-count">${attention.length}</span></div></div><div class="body attention-list">${attention.length?attention.map(needsAttentionCard).join(""):`<div class="empty-agenda"><b>Nothing needs attention</b><span>Incomplete reservations will stay here until their equipment details are saved.</span></div>`}</div></section>
+      <section class="card needs-attention-card"><div class="head"><div><h2>Needs Attention</h2><span class="attention-count">${attention.length}</span></div></div><div class="body attention-list">${attention.length?attention.map(needsAttentionCard).join(""):`<div class="empty-agenda"><b>Nothing needs attention</b><span>Tentative jobs remain here until details are complete and a manager confirms the appointment.</span></div>`}</div></section>
       <div class="grid two"><section class="card"><div class="head"><h2>Today's Schedule</h2></div><div class="body queue">${state.jobs.filter(isTodayJob).length?state.jobs.filter(isTodayJob).map(queueItem).join(""):`<div class="empty-agenda"><b>No scheduled jobs today</b><span>Confirmed work scheduled for today will appear here.</span></div>`}</div></section>
       <section class="card mobile-workflow-card"><div class="head"><div><h2>Start Here</h2><span class="agenda-subtitle">New Job Workflow</span></div></div><div class="body v3-actions"><button class="v3-primary-action" data-demo-action="New Job"><span class="v3-action-icon">＋</span><span><b>New Job</b><small>Delivery, Pickup, or Delivery &amp; Pickup</small></span><em>›</em></button><div class="v3-secondary-actions single-action"><button data-route="schedule"><b>Schedule</b><small>View the weekly plan</small></button></div></div></section></div>
     </div>`;}
@@ -1304,6 +1325,10 @@ const views = {
         filteredJobs = state.jobs.filter(isScheduledBuildAlert);
         heading = "Build Alerts";
         subtitle = "Scheduled jobs with unfinished equipment builds";
+      } else if (jobsViewFilter === "attention") {
+        filteredJobs = state.jobs.filter(jobNeedsOfficeAttention);
+        heading = "Needs Attention";
+        subtitle = "Jobs awaiting details or manager approval";
       } else {
         filteredJobs = state.jobs.filter(job => jobStatusFilters.has(job.status));
       }
@@ -1345,7 +1370,8 @@ const views = {
 
 function bindDynamic() {
   view.querySelectorAll("[data-complete-details]").forEach(el => el.onclick = () => openCompleteDetails(el.dataset.completeDetails));
-  view.querySelectorAll("[data-home-status]").forEach(el => el.onclick = () => { const status=el.dataset.homeStatus; if(status==="Needs Attention"){const matches=state.jobs.filter(jobNeedsDetails); if(matches.length===1)return openCompleteDetails(matches[0].id); jobsViewFilter="attention";} else {jobsViewFilter=status.toLowerCase();} go("jobs"); });
+  view.querySelectorAll("[data-review-job]").forEach(el => el.onclick = () => openJob(el.dataset.reviewJob));
+  view.querySelectorAll("[data-home-status]").forEach(el => el.onclick = () => { const status=el.dataset.homeStatus; if(status==="Needs Attention"){const matches=state.jobs.filter(jobNeedsOfficeAttention); if(matches.length===1){return jobDetailsComplete(matches[0]) ? openJob(matches[0].id) : openCompleteDetails(matches[0].id);} jobsViewFilter="attention";} else {jobsViewFilter=status.toLowerCase();} go("jobs"); });
   document.querySelectorAll("[data-open-job]").forEach(el => {
     el.onclick = (event) => {
       event.stopPropagation();

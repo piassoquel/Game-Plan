@@ -1,9 +1,9 @@
-const CACHE_NAME = 'gameplan-v3.2.6-alpha8-p007-created-by-pickup-type';
+const CACHE_NAME = 'gameplan-v3.2.7-alpha8-p008-created-by-pickup-type';
 const APP_SHELL = [
   "./","./index.html","./manifest.json",
-  "./css/app.css?v=3.2.6-alpha8-p007",
+  "./css/app.css?v=3.2.7-alpha8-p008",
   "./js/config.js?v=3.0.5-alpha2-3",
-  "./js/app.js?v=3.2.6-alpha8-p007",
+  "./js/app.js?v=3.2.7-alpha8-p008",
   "./js/api.js?v=3.1.0-alpha6",
   "./assets/logo/gameplan-logo.svg","./assets/icons/icon.svg"
 ];
