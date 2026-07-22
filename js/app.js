@@ -547,7 +547,7 @@ function needsAttentionCard(job) {
   return `<article class="attention-job-card" data-job-id="${esc(job.id)}">
     <div class="attention-rail"></div><div class="attention-symbol">${detailsComplete ? "✓" : "!"}</div>
     <div class="attention-copy"><strong>${label}</strong><h3>${esc(job.customer)}</h3>
-      <p>${esc(job.date)} · ${esc(job.time)}<br>${itemCount} Item${itemCount===1?"":"s"} · ${esc(job.type)}</p>
+      <p>${esc(job.date)} · ${esc(job.time)}<br>${itemCount} Item${itemCount===1?"":"s"} · ${esc(job.type)}<br><span class="attention-created-by">Set up by: ${esc(job.createdBy || "Unknown employee")}</span></p>
       <span class="badge tentative">${esc(job.status)}</span></div>
     ${action}
   </article>`;
@@ -1375,6 +1375,11 @@ function bindDynamic() {
   document.querySelectorAll("[data-open-job]").forEach(el => {
     el.onclick = (event) => {
       event.stopPropagation();
+      const job = state.jobs.find(item => item.id === el.dataset.openJob);
+      if (jobsViewFilter === "attention" && job && !jobDetailsComplete(job)) {
+        openCompleteDetails(job.id);
+        return;
+      }
       openJob(el.dataset.openJob);
     };
   });
