@@ -542,8 +542,19 @@ function homeStatusButtons() {
   ).join("")}</section>`;
 }
 
+function employeeDisplayName(value) {
+  return String(value || "").replace(/\s*\[[^\]]+\]\s*$/, "").trim();
+}
+
 function needsAttentionCard(job) {
-  const itemCount = (job.equipment || []).reduce((sum,item)=>sum + Math.max(1,Number(item.quantity || 1)),0);
+  const equipment = job.equipment || [];
+  const deliveryCount = equipment.reduce((sum,item) => item.deliveryRequired === false ? sum : sum + Math.max(1,Number(item.quantity || 1)), 0);
+  const pickupCount = equipment.reduce((sum,item) => item.pickupRequired === true ? sum + Math.max(1,Number(item.quantity || 1)) : sum, 0);
+  const itemLines = [
+    deliveryCount ? `${deliveryCount} Item${deliveryCount === 1 ? "" : "s"} Delivery` : "",
+    pickupCount ? `${pickupCount} Item${pickupCount === 1 ? "" : "s"} Pickup` : ""
+  ].filter(Boolean).join("<br>");
+  const createdByName = employeeDisplayName(job.createdBy) || "Unknown employee";
   const detailsComplete = jobDetailsComplete(job);
   const label = detailsComplete ? "AWAITING MANAGER APPROVAL" : "DETAILS NEEDED";
   const action = detailsComplete
@@ -553,7 +564,7 @@ function needsAttentionCard(job) {
   return `<article class="attention-job-card ${stageClass}" data-job-id="${esc(job.id)}">
     <div class="attention-rail"></div><div class="attention-symbol">${detailsComplete ? "✓" : "!"}</div>
     <div class="attention-copy"><strong>${label}</strong><h3>${esc(job.customer)}</h3>
-      <p>${esc(job.date)} · ${esc(job.time)}<br>${itemCount} Item${itemCount===1?"":"s"} · ${esc(job.type)}<br><span class="attention-created-by">Set up by: ${esc(job.createdBy || "Unknown employee")}</span></p>
+      <p>${esc(job.date)} · ${esc(job.time)}<br>${itemLines || esc(job.type)}<br><span class="attention-created-by">Set up by: ${esc(createdByName)}</span></p>
       <span class="badge tentative">${esc(job.status)}</span></div>
     ${action}
   </article>`;
