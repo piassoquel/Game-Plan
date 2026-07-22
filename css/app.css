@@ -299,3 +299,8 @@
 .attention-job-card.awaiting-approval .attention-symbol{clip-path:none;border-radius:50%;padding-top:0;border-color:#4b9cff;color:#4b9cff}
 .attention-job-card.awaiting-approval .attention-copy strong{color:#69adff}
 .attention-job-card.awaiting-approval .attention-complete{border-color:#4b9cff!important;color:#69adff!important}
+
+/* Alpha 8 Patch 012 — shared job summary and Complete Job Details consistency */
+.complete-details-screen>.lifecycle-wrap{margin:2px 0 4px}
+.complete-details-screen>.job-summary-card{margin:0}
+.summary-created-by strong{font-weight:700}

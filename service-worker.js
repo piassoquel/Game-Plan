@@ -1,9 +1,9 @@
-const CACHE_NAME = 'gameplan-v3.2.8-alpha8-p011-future-attention-stages';
+const CACHE_NAME = 'gameplan-v3.2.8-alpha8-p012-future-attention-stages';
 const APP_SHELL = [
   "./","./index.html","./manifest.json",
-  "./css/app.css?v=3.2.8-alpha8-p011",
+  "./css/app.css?v=3.2.8-alpha8-p012",
   "./js/config.js?v=3.0.5-alpha2-3",
-  "./js/app.js?v=3.2.8-alpha8-p011",
+  "./js/app.js?v=3.2.8-alpha8-p012",
   "./js/api.js?v=3.1.0-alpha6",
   "./assets/logo/gameplan-logo.svg","./assets/icons/icon.svg"
 ];

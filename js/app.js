@@ -616,7 +616,8 @@ function openCompleteDetails(jobId) {
   const pickupItems = (job.equipment || []).filter(item => item.pickupRequired);
   const allItems = [...deliveryItems,...pickupItems];
   drawerContent.innerHTML = `<div class="complete-details-screen" data-details-job="${esc(job.id)}">
-    <section class="complete-job-summary"><div><b>${esc(job.customer)}</b><span>${esc(job.date)} at ${esc(job.time)}</span><small>${esc(job.address)}</small><small class="complete-created-by"><b>Set up by:</b> ${esc(job.createdBy||"Unknown employee")}</small></div><span class="badge ${badgeClass(job.status)}">${esc(job.status)}</span><footer><span>Job #${esc(job.number||job.id)}<br>${allItems.length} Items</span><span>${esc(job.type)}<br>${esc(job.duration||"")}</span></footer></section>
+    ${renderLifecycle(job.status)}
+    ${renderJobSummaryCard(job, { showItemCounts: true })}
     <p class="complete-instruction">Complete the required details for delivery items. Pickup items will be documented during the Pickup Item Checklist.</p>
     ${deliveryItems.length?`<h2 class="complete-section-title">DELIVERY ITEMS (${deliveryItems.length})</h2>${deliveryItems.map((item,i)=>completeDetailsItemCard(item,i)).join("")}`:""}
     ${pickupItems.length?`<h2 class="complete-section-title">PICKUP ITEMS (${pickupItems.length})</h2>${pickupItems.map((item,i)=>completeDetailsItemCard(item,deliveryItems.length+i)).join("")}`:""}
@@ -704,6 +705,31 @@ function renderLifecycle(status) {
     const cls = index < currentIndex ? "done" : index === currentIndex && !cancelled ? "current" : "";
     return `<div class="life-step ${cls} life-${step.toLowerCase()}"><div class="life-icon">${lifecycleIcon(step)}</div><span>${step}</span>${index < order.length - 1 ? '<i class="life-arrow">→</i>' : ''}</div>`;
   }).join("")}</div>${cancelled ? `<div class="cancel-branch"><span>↘</span><strong>Cancelled</strong></div>` : ""}</div>`;
+}
+
+
+function jobItemCounts(job) {
+  const equipment = job?.equipment || [];
+  return {
+    delivery: equipment.reduce((sum, item) => item.deliveryRequired === false ? sum : sum + Math.max(1, Number(item.quantity || 1)), 0),
+    pickup: equipment.reduce((sum, item) => item.pickupRequired === true ? sum + Math.max(1, Number(item.quantity || 1)) : sum, 0)
+  };
+}
+
+function renderJobSummaryCard(job, options = {}) {
+  const counts = jobItemCounts(job);
+  const createdByName = employeeDisplayName(job.createdBy) || "Unknown employee";
+  const countLines = options.showItemCounts ? `
+      ${counts.delivery ? `<div class="detail-line"><span>Delivery</span><strong>${counts.delivery} Item${counts.delivery === 1 ? "" : "s"}</strong></div>` : ""}
+      ${counts.pickup ? `<div class="detail-line"><span>Pickup</span><strong>${counts.pickup} Item${counts.pickup === 1 ? "" : "s"}</strong></div>` : ""}` : "";
+  return `<section class="detail-card job-summary-card">
+      <div class="job-summary-top"><span>Job #${esc(job.number || job.id)}</span><span class="badge ${badgeClass(job.status)}">${esc(job.status)}</span></div>
+      <h3>${esc(job.customer)}</h3>
+      <div class="customer-address">${esc(job.address)}</div>
+      <div class="detail-line"><span>Appointment</span><strong>${esc(job.date)}, ${esc(job.time)}</strong></div>
+      <div class="detail-line"><span>Estimated duration</span><strong>${esc(job.duration || "—")}</strong></div>${countLines}
+      <div class="detail-line summary-created-by"><span>Set up by</span><strong>${esc(createdByName)}</strong></div>
+    </section>`;
 }
 
 function equipmentImage(item) {
@@ -1064,13 +1090,7 @@ function openJob(jobId) {
   if (!job) return;
   drawerContent.innerHTML = `
     ${renderLifecycle(job.status)}
-    <section class="detail-card job-summary-card">
-      <div class="job-summary-top"><span>Job #${esc(job.number || job.id)}</span><span class="badge ${badgeClass(job.status)}">${esc(job.status)}</span></div>
-      <h3>${esc(job.customer)}</h3>
-      <div class="customer-address">${esc(job.address)}</div>
-      <div class="detail-line"><span>Appointment</span><strong>${esc(job.date)}, ${esc(job.time)}</strong></div>
-      <div class="detail-line"><span>Estimated duration</span><strong>${esc(job.duration || "—")}</strong></div>
-    </section>
+    ${renderJobSummaryCard(job)}
 
     <section class="detail-card">
       <h3>Equipment (${job.equipment?.length || 0})</h3>
