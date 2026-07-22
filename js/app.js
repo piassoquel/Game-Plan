@@ -667,6 +667,285 @@ function permissionNotice(text) {
   return `<div class="permission-notice"><strong>Manager approval required</strong><span>${esc(text)}</span></div>`;
 }
 
+
+const PICKUP_APPEARANCE_QUESTIONS = [
+  ["covers", "Covers and end caps are intact"],
+  ["upholstery", "Upholstery is acceptable"],
+  ["wheels", "Transport wheels are intact and work"]
+];
+
+const PICKUP_FUNCTION_QUESTIONS = [
+  ["sound", "Machine sounds appropriate"],
+  ["console", "Console display works fully"],
+  ["buttons", "All buttons function properly"],
+  ["heartRate", "Heart rate monitor works"],
+  ["fans", "Fans work"],
+  ["folds", "Unit folds and locks"]
+];
+
+function pickupInspectionComplete(job) {
+  return String(job.pickupInspectionStatus || "").toLowerCase() === "complete";
+}
+
+function pickupQuestionRow(key, label) {
+  return `<div class="pickup-question" data-pickup-question="${esc(key)}">
+    <span>${esc(label)}</span>
+    <div class="pickup-response-group" role="radiogroup" aria-label="${esc(label)}">
+      ${["Pass","Issue","N/A"].map(value => `<label><input type="radio" name="pickup-${esc(key)}" value="${value}"><em>${value}</em></label>`).join("")}
+    </div>
+    <label class="pickup-issue-note"><span>Issue notes</span><textarea placeholder="Describe the issue…"></textarea></label>
+  </div>`;
+}
+
+function pickupInspectionItemCard(item, index) {
+  const title = [item.brand, item.model].filter(Boolean).join(" ") || `Used ${equipmentTypeName(item)}`;
+  return `<section class="pickup-inspection-item" data-pickup-item="${index}">
+    <div class="complete-item-head"><span class="item-number">${index + 1}</span><i class="equipment-reference-icon">${detailsItemIcon(item)}</i><div><h3>${esc(title)}</h3><p>${esc(equipmentTypeName(item))} · Quantity: ${Math.max(1, Number(item.quantity || 1))}</p></div></div>
+    <h3 class="pickup-card-title">Appearance</h3>
+    <div class="pickup-question-list">${PICKUP_APPEARANCE_QUESTIONS.map(([key,label]) => pickupQuestionRow(`${index}-appearance-${key}`, label)).join("")}</div>
+    <h3 class="pickup-card-title">Function</h3>
+    <div class="pickup-question-list">${PICKUP_FUNCTION_QUESTIONS.map(([key,label]) => pickupQuestionRow(`${index}-function-${key}`, label)).join("")}</div>
+    <label class="details-photo-field"><span>Pickup Photo <small>(Required)</small></span><div class="details-photo-control" data-pickup-photo-control>
+      <b>▣</b><em>Tap to take photo</em>
+      <input type="file" accept="image/*" capture="environment" data-pickup-photo aria-label="Take pickup equipment photo">
+    </div></label>
+    <fieldset class="pickup-disassembly"><legend>Disassembled?</legend>
+      <label><input type="radio" name="disassembled-${index}" value="No" checked> No</label>
+      <label><input type="radio" name="disassembled-${index}" value="Yes"> Yes</label>
+    </fieldset>
+    <label class="details-field stacked pickup-disassembly-notes"><span>Description of disassembly</span><textarea placeholder="Describe what was removed or disassembled…"></textarea></label>
+    <label class="details-field stacked"><span>Item Notes <small>(Optional)</small></span><textarea data-pickup-item-notes placeholder="Add any additional notes…"></textarea></label>
+  </section>`;
+}
+
+function signatureCanvasMarkup() {
+  return `<div class="signature-wrap">
+    <canvas data-customer-signature width="900" height="300" aria-label="Customer signature pad"></canvas>
+    <div class="signature-placeholder">Customer signs here</div>
+    <button type="button" class="button neutral signature-clear" data-clear-signature>Clear Signature</button>
+  </div>`;
+}
+
+function setupSignaturePad(screen) {
+  const canvas = screen.querySelector("[data-customer-signature]");
+  const placeholder = screen.querySelector(".signature-placeholder");
+  if (!canvas) return { hasSignature: () => false, dataUrl: () => "" };
+  const ctx = canvas.getContext("2d");
+  ctx.lineWidth = 5;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  let drawing = false;
+  let signed = false;
+
+  const position = event => {
+    const rect = canvas.getBoundingClientRect();
+    const point = event.touches?.[0] || event;
+    return {
+      x: (point.clientX - rect.left) * (canvas.width / rect.width),
+      y: (point.clientY - rect.top) * (canvas.height / rect.height)
+    };
+  };
+  const start = event => {
+    event.preventDefault();
+    drawing = true;
+    const p = position(event);
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y);
+  };
+  const move = event => {
+    if (!drawing) return;
+    event.preventDefault();
+    const p = position(event);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+    signed = true;
+    placeholder?.classList.add("hidden");
+  };
+  const end = () => { drawing = false; };
+
+  canvas.addEventListener("pointerdown", start);
+  canvas.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", end);
+  canvas.addEventListener("touchstart", start, { passive:false });
+  canvas.addEventListener("touchmove", move, { passive:false });
+  canvas.addEventListener("touchend", end);
+
+  screen.querySelector("[data-clear-signature]")?.addEventListener("click", () => {
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    signed = false;
+    placeholder?.classList.remove("hidden");
+  });
+
+  return {
+    hasSignature: () => signed,
+    dataUrl: () => signed ? canvas.toDataURL("image/png") : ""
+  };
+}
+
+function openPickupInspection(jobId) {
+  const job = state.jobs.find(item => item.id === jobId);
+  if (!job) return;
+  const pickupItems = (job.equipment || []).filter(item => item.pickupRequired);
+  if (!pickupItems.length) return toast("This job has no pickup items.");
+
+  drawerContent.innerHTML = `<div class="complete-details-screen pickup-inspection-screen" data-pickup-job="${esc(job.id)}">
+    <section class="complete-job-summary"><div><b>${esc(job.customer)}</b><span>${esc(job.date)} at ${esc(job.time)}</span><small>${esc(job.address)}</small></div><span class="badge ${badgeClass(job.status)}">${esc(job.status)}</span><footer><span>Job #${esc(job.number||job.id)}<br>${pickupItems.length} Pickup Item${pickupItems.length===1?"":"s"}</span><span>${esc(job.type)}<br>${esc(job.duration||"")}</span></footer></section>
+    <p class="complete-instruction">Inspect each pickup item, document its condition, attach a current photo, and obtain the customer’s signature.</p>
+    <h2 class="complete-section-title">PICKUP FOR</h2>
+    <section class="pickup-details-card"><fieldset><legend>Pickup Type <small>(Required)</small></legend>
+      <label><input type="radio" name="inspectionPickupType" value="Trade-In" ${job.pickupType==="Trade-In"||job.pickupType==="Sale"?"checked":""}> Trade-In</label>
+      <label><input type="radio" name="inspectionPickupType" value="Disposal" ${job.pickupType==="Disposal"?"checked":""}> Disposal</label>
+    </fieldset></section>
+    <h2 class="complete-section-title">EQUIPMENT INSPECTION (${pickupItems.length})</h2>
+    ${pickupItems.map(pickupInspectionItemCard).join("")}
+    <h2 class="complete-section-title">OVERALL CONDITION</h2>
+    <section class="pickup-details-card overall-condition-card"><fieldset><legend>Overall Condition <small>(Required)</small></legend>
+      ${["Excellent","Good","Fair","Poor"].map(value=>`<label><input type="radio" name="overallCondition" value="${value}"> ${value}</label>`).join("")}
+    </fieldset>
+    <label class="details-field stacked"><span>Additional Notes <small>(Optional)</small></span><textarea name="pickupInspectionNotes" placeholder="Add any final notes about the pickup…"></textarea></label></section>
+    <h2 class="complete-section-title">CUSTOMER ACKNOWLEDGMENT</h2>
+    <section class="pickup-details-card signature-card"><p>I confirm that the equipment listed above was picked up and that the condition notes shown are an accurate record of the employee’s assessment at the time of pickup.</p>
+      <label class="details-field"><span>Customer Name</span><input name="signatureName" value="${esc(job.customer)}" placeholder="Customer name"></label>
+      ${signatureCanvasMarkup()}
+    </section>
+    <div class="complete-details-error" data-pickup-error></div>
+    <button class="button save-details-button" type="button" data-finalize-pickup>✓ &nbsp; Finalize Pickup</button>
+  </div>`;
+
+  drawer.classList.add("open","complete-details-open");
+  drawerBackdrop.classList.add("open");
+  drawer.setAttribute("aria-hidden","false");
+
+  const screen = drawerContent.querySelector(".pickup-inspection-screen");
+  const signature = setupSignaturePad(screen);
+
+  screen.querySelectorAll("[data-pickup-question]").forEach(row => {
+    row.querySelectorAll('input[type="radio"]').forEach(input => {
+      input.addEventListener("change", () => row.classList.toggle("has-issue", input.value === "Issue" && input.checked));
+    });
+  });
+
+  screen.querySelectorAll('[name^="disassembled-"]').forEach(input => {
+    input.addEventListener("change", () => {
+      const card = input.closest("[data-pickup-item]");
+      card?.classList.toggle("is-disassembled", input.value === "Yes" && input.checked);
+    });
+  });
+
+  screen.querySelectorAll("[data-pickup-photo]").forEach(input => {
+    input.addEventListener("change", async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      const card = input.closest("[data-pickup-item]");
+      const index = Number(card.dataset.pickupItem);
+      const dataUrl = await fileToDataUrl(file);
+      pickupItems[index].inspectionPhotoDataUrl = dataUrl;
+      pickupItems[index].inspectionPhotoName = file.name || "pickup-photo.jpg";
+      const control = card.querySelector("[data-pickup-photo-control]");
+      control.classList.add("has-photo");
+      control.innerHTML = `<img src="${esc(dataUrl)}" alt="Pickup equipment photo"><input type="file" accept="image/*" capture="environment" data-pickup-photo aria-label="Retake pickup equipment photo">`;
+      control.querySelector("input").addEventListener("change", input.onchange || (()=>{}));
+      openPickupPhotoRebind(control, pickupItems[index]);
+    });
+  });
+
+  screen.querySelector("[data-finalize-pickup]").onclick = async event => {
+    const button = event.currentTarget;
+    const errorBox = screen.querySelector("[data-pickup-error]");
+    errorBox.textContent = "";
+    const pickupType = screen.querySelector('[name="inspectionPickupType"]:checked')?.value || "";
+    const overallCondition = screen.querySelector('[name="overallCondition"]:checked')?.value || "";
+    if (!pickupType) return void(errorBox.textContent = "Choose Trade-In or Disposal.");
+    if (!overallCondition) return void(errorBox.textContent = "Choose an overall condition.");
+    if (!signature.hasSignature()) return void(errorBox.textContent = "Customer signature is required.");
+
+    const items = [];
+    for (let index=0; index<pickupItems.length; index++) {
+      const card = screen.querySelector(`[data-pickup-item="${index}"]`);
+      const responses = {};
+      let missing = false;
+      card.querySelectorAll("[data-pickup-question]").forEach(row => {
+        const selected = row.querySelector('input[type="radio"]:checked');
+        if (!selected) { missing = true; return; }
+        const key = row.dataset.pickupQuestion.split("-").slice(1).join("-");
+        const note = row.querySelector("textarea")?.value.trim() || "";
+        if (selected.value === "Issue" && !note) missing = true;
+        responses[key] = { result:selected.value, note };
+      });
+      if (missing) return void(errorBox.textContent = `Complete every inspection response and add notes for issues on item ${index+1}.`);
+      if (!pickupItems[index].inspectionPhotoDataUrl) return void(errorBox.textContent = `Add a current pickup photo for item ${index+1}.`);
+      const disassembled = card.querySelector(`[name="disassembled-${index}"]:checked`)?.value === "Yes";
+      const disassemblyNotes = card.querySelector(".pickup-disassembly-notes textarea")?.value.trim() || "";
+      if (disassembled && !disassemblyNotes) return void(errorBox.textContent = `Describe the disassembly for item ${index+1}.`);
+      items.push({
+        jobEquipmentId: pickupItems[index].id,
+        responses,
+        photoDataUrl: pickupItems[index].inspectionPhotoDataUrl,
+        photoName: pickupItems[index].inspectionPhotoName,
+        disassembled,
+        disassemblyNotes,
+        notes: card.querySelector("[data-pickup-item-notes]")?.value.trim() || ""
+      });
+    }
+
+    const signatureName = screen.querySelector('[name="signatureName"]').value.trim();
+    if (!signatureName) return void(errorBox.textContent = "Enter the customer name for the signature.");
+
+    button.disabled = true;
+    button.textContent = "Finalizing…";
+    try {
+      const pinToken = await requestPin("canCreateQuote","Enter your employee PIN to finalize this pickup.");
+      await api.finalizePickupInspection(job.id, {
+        pickupType,
+        overallCondition,
+        notes: screen.querySelector('[name="pickupInspectionNotes"]').value.trim(),
+        signatureName,
+        signatureDataUrl: signature.dataUrl(),
+        items
+      }, pinToken);
+      touchPinSession();
+      toast("Pickup inspection finalized.");
+      closeJob();
+      await loadLiveData();
+      openJob(job.id);
+    } catch (error) {
+      console.error(error);
+      errorBox.textContent = error.message || "The pickup inspection could not be finalized.";
+      button.disabled = false;
+      button.textContent = "✓  Finalize Pickup";
+    }
+  };
+}
+
+function openPickupPhotoRebind(control, item) {
+  const input = control.querySelector("[data-pickup-photo]");
+  if (!input) return;
+  input.addEventListener("change", async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    item.inspectionPhotoDataUrl = await fileToDataUrl(file);
+    item.inspectionPhotoName = file.name || "pickup-photo.jpg";
+    control.classList.add("has-photo");
+    const img = control.querySelector("img");
+    if (img) img.src = item.inspectionPhotoDataUrl;
+  });
+}
+
+function pickupSummaryMarkup(job) {
+  if (!pickupInspectionComplete(job)) return "";
+  const summary = job.pickupSummary || {};
+  return `<section class="detail-card pickup-summary-card">
+    <div class="job-summary-top"><h3>Pickup Summary</h3><span class="badge completed">Complete</span></div>
+    <div class="detail-line"><span>Pickup for</span><strong>${esc(summary.pickupType || job.pickupType || "—")}</strong></div>
+    <div class="detail-line"><span>Overall condition</span><strong>${esc(summary.overallCondition || "—")}</strong></div>
+    <div class="detail-line"><span>Issues found</span><strong>${Number(summary.issueCount || 0)}</strong></div>
+    <div class="detail-line"><span>Photos</span><strong>${Number(summary.photoCount || 0)} Attached</strong></div>
+    <div class="detail-line"><span>Customer signature</span><strong>Received ✓</strong></div>
+    <div class="detail-line"><span>Completed by</span><strong>${esc(summary.completedBy || "—")}</strong></div>
+    ${summary.notes ? `<p class="pickup-summary-notes">${esc(summary.notes)}</p>` : ""}
+  </section>`;
+}
+
 function workflowActions(job) {
   const today = isTodayJob(job) && job.status === "Scheduled";
   if (job.status === "Tentative") {
@@ -677,13 +956,28 @@ function workflowActions(job) {
       <button class="button neutral" data-demo-action="Edit / Reschedule">Edit / Reschedule</button>
       <button class="button red" data-status-action="Cancelled" data-job-id="${esc(job.id)}">Cancel Job</button>`;
   }
-  if (job.status === "Scheduled" && today) return `
-    <a class="button call-action" href="tel:${esc(job.phone)}">Call Customer</a>
-    <a class="button neutral map-action" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(job.address || "")}" target="_blank" rel="noopener">View on Map</a>
-    <button class="button green primary-action" data-status-action="Completed" data-job-id="${esc(job.id)}">✓ Complete Job</button>`;
-  if (job.status === "Scheduled") {
-    if (!isManager() && !state.currentUser?.sharedAccount) return permissionNotice("This appointment is finalized. A manager must reschedule or cancel it.");
+  if (job.status === "Scheduled" && today) {
+    const pickupAction = job.hasPickup
+      ? (pickupInspectionComplete(job)
+          ? `<span class="pickup-ready-note">Pickup inspection complete ✓</span>`
+          : `<button class="button pickup-inspection-action" data-pickup-inspection="${esc(job.id)}">Begin Pickup Inspection</button>`)
+      : "";
+    const completeAction = job.hasPickup && !pickupInspectionComplete(job)
+      ? `<button class="button green primary-action" disabled title="Finalize the pickup inspection first">✓ Complete Job</button>`
+      : `<button class="button green primary-action" data-status-action="Completed" data-job-id="${esc(job.id)}">✓ Complete Job</button>`;
     return `
+      <a class="button call-action" href="tel:${esc(job.phone)}">Call Customer</a>
+      <a class="button neutral map-action" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(job.address || "")}" target="_blank" rel="noopener">View on Map</a>
+      ${pickupAction}
+      ${completeAction}`;
+  }
+  if (job.status === "Scheduled") {
+    const pickupAction = job.hasPickup && !pickupInspectionComplete(job)
+      ? `<button class="button pickup-inspection-action" data-pickup-inspection="${esc(job.id)}">Begin Pickup Inspection</button>`
+      : "";
+    if (!isManager() && !state.currentUser?.sharedAccount) return `${pickupAction}${permissionNotice("This appointment is finalized. A manager must reschedule or cancel it.")}`;
+    return `
+      ${pickupAction}
       <button class="button neutral" data-demo-action="Edit / Reschedule">Edit / Reschedule</button>
       <button class="button red" data-status-action="Cancelled" data-job-id="${esc(job.id)}">Cancel Job</button>`;
   }
@@ -719,6 +1013,8 @@ function openJob(jobId) {
         <div class="equipment-build-action">${equipmentBuildControl(job, item)}</div>
       </div>`).join("")}
     </section>
+
+    ${pickupSummaryMarkup(job)}
 
     <section class="detail-card">
       <div class="detail-line"><span>Crew</span><strong>${esc(job.crewSize || "—")} Person Crew</strong></div>
@@ -795,7 +1091,7 @@ async function markBuildComplete(jobId, jobEquipmentId) {
 }
 
 function closeJob() {
-  drawer.classList.remove("open","complete-details-open");
+  drawer.classList.remove("open","complete-details-open","pickup-inspection-open");
   drawerBackdrop.classList.remove("open");
   drawer.setAttribute("aria-hidden","true");
 }
@@ -1032,6 +1328,9 @@ function bindDynamic() {
       if (["New Job","New Tentative"].includes(el.dataset.demoAction)) openWizard("job");
       else toast(`${el.dataset.demoAction} becomes active in a later version.`);
     };
+  });
+  document.querySelectorAll("[data-pickup-inspection]").forEach(el => {
+    el.onclick = () => openPickupInspection(el.dataset.pickupInspection);
   });
   document.querySelectorAll("[data-status-action]").forEach(el => {
     el.onclick = () => changeJobStatus(el.dataset.jobId, el.dataset.statusAction);

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'gameplan-v3-1-alpha6-2';
+const CACHE_NAME = 'gameplan-v3.2-alpha7';
 const APP_SHELL = [
   "./","./index.html","./manifest.json",
   "./css/app.css?v=3.1.2-alpha6-2","./js/config.js?v=3.1.2-alpha6-2",
