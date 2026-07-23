@@ -2022,7 +2022,7 @@ function customerStep(){
     <div class="ux-form-stack">
       <label class="ux-field"><span>Customer Name</span><div class="ux-name-grid"><input name="firstName" autocomplete="given-name" placeholder="First name" value="${esc(draft.firstName)}"><input name="lastName" autocomplete="family-name" placeholder="Last name" value="${esc(draft.lastName)}"></div></label>
       <label class="ux-field"><span>Phone Number</span><input name="phone" inputmode="tel" autocomplete="tel" placeholder="(831) 555-1234" value="${esc(phone)}"></label>
-      <label class="ux-field"><span>Delivery Address</span><div class="gameplan-address-control" data-address-autocomplete><input name="address" autocomplete="off" placeholder="Loading Google addresses…" value="${esc(draft.address)}" disabled></div><small>${draft.routeLoading?"Calculating round-trip distance and time…":draft.route?`${Number(draft.route.roundTripDistanceMiles||0).toFixed(1)} round-trip miles · ${draft.route.roundTripTravelMinutes} travel minutes`:draft.routeError?esc(draft.routeError):"Select a Google address to calculate travel."}</small></label>
+      <label class="ux-field"><span>Delivery Address</span><div class="gameplan-address-control" data-address-autocomplete><input name="address" autocomplete="off" autocapitalize="words" enterkeyhint="search" placeholder="Start typing an address" value="${esc(draft.address)}"><div class="gameplan-address-suggestions" data-address-suggestions hidden></div></div><small>${draft.routeLoading?"Calculating round-trip distance and time…":draft.route?`${Number(draft.route.roundTripDistanceMiles||0).toFixed(1)} round-trip miles · ${draft.route.roundTripTravelMinutes} travel minutes`:draft.routeError?esc(draft.routeError):"Select a Google address to calculate travel."}</small></label>
     </div>
   </div>`;
 }
@@ -2091,27 +2091,102 @@ async function calculateDraftRoute(){
 async function bindAddressAutocomplete(){
   const mount=wizardForm.querySelector("[data-address-autocomplete]");
   if(!mount)return;
+  const input=mount.querySelector('input[name="address"]');
+  const suggestionsMount=mount.querySelector("[data-address-suggestions]");
+  if(!input||!suggestionsMount)return;
+  let debounceTimer=0;
+  let requestNumber=0;
+  let predictions=[];
+  const hideSuggestions=()=>{suggestionsMount.hidden=true;suggestionsMount.replaceChildren();};
+  const predictionText=value=>{
+    if(!value)return "";
+    if(typeof value==="string")return value;
+    if(typeof value.toString==="function"){
+      const text=value.toString();
+      if(text&&text!=="[object Object]")return text;
+    }
+    return String(value.text||"");
+  };
+  const renderSuggestions=()=>{
+    if(!predictions.length){
+      suggestionsMount.innerHTML='<div class="gameplan-address-empty">No matching addresses found.</div>';
+    }else{
+      suggestionsMount.innerHTML=predictions.map((prediction,index)=>{
+        const main=predictionText(prediction.structuredFormat?.mainText);
+        const secondary=predictionText(prediction.structuredFormat?.secondaryText);
+        const full=predictionText(prediction.text);
+        return `<button type="button" class="gameplan-address-suggestion" data-address-suggestion="${index}"><b>${esc(main||full)}</b>${secondary?`<small>${esc(secondary)}</small>`:""}</button>`;
+      }).join("");
+    }
+    suggestionsMount.hidden=false;
+  };
   try{
     await loadPlacesLibrary();
     if(!document.body.contains(mount))return;
-    const {PlaceAutocompleteElement}=await google.maps.importLibrary("places");
-    const autocomplete=new PlaceAutocompleteElement({includedRegionCodes:["us"]});
-    autocomplete.placeholder="Start typing an address";
-    autocomplete.value=draft.address||"";
-    mount.replaceChildren(autocomplete);
-    autocomplete.addEventListener("gmp-select",async event=>{
-      const prediction=event.placePrediction||event.detail?.placePrediction;
-      if(!prediction)return;
-      const place=prediction.toPlace();
-      await place.fetchFields({fields:["id","formattedAddress"]});
-      if(!place.formattedAddress)return;
-      draft.address=place.formattedAddress;draft.destinationPlaceId=place.id||"";calculateDraftRoute();
+    const {AutocompleteSessionToken,AutocompleteSuggestion}=await google.maps.importLibrary("places");
+    let sessionToken=new AutocompleteSessionToken();
+    input.addEventListener("input",()=>{
+      draft.address=input.value;
+      draft.destinationPlaceId="";
+      draft.route=null;
+      draft.routeError="";
+      clearTimeout(debounceTimer);
+      const query=input.value.trim();
+      const thisRequest=++requestNumber;
+      if(query.length<3){predictions=[];hideSuggestions();return;}
+      suggestionsMount.innerHTML='<div class="gameplan-address-loading">Finding addresses…</div>';
+      suggestionsMount.hidden=false;
+      debounceTimer=setTimeout(async()=>{
+        try{
+          const response=await AutocompleteSuggestion.fetchAutocompleteSuggestions({
+            input:query,
+            includedRegionCodes:["us"],
+            sessionToken
+          });
+          if(thisRequest!==requestNumber||input.value.trim()!==query)return;
+          predictions=(response.suggestions||[]).map(item=>item.placePrediction).filter(Boolean);
+          renderSuggestions();
+        }catch(error){
+          if(thisRequest!==requestNumber)return;
+          predictions=[];
+          suggestionsMount.innerHTML='<div class="gameplan-address-empty">Google addresses are temporarily unavailable. You can still enter the full address.</div>';
+          suggestionsMount.hidden=false;
+        }
+      },250);
     });
+    suggestionsMount.addEventListener("pointerdown",event=>event.preventDefault());
+    suggestionsMount.addEventListener("click",async event=>{
+      const button=event.target.closest("[data-address-suggestion]");
+      if(!button)return;
+      const prediction=predictions[Number(button.dataset.addressSuggestion)];
+      if(!prediction)return;
+      input.disabled=true;
+      suggestionsMount.innerHTML='<div class="gameplan-address-loading">Selecting address…</div>';
+      try{
+        const place=prediction.toPlace();
+        await place.fetchFields({fields:["id","formattedAddress"]});
+        if(!place.formattedAddress)throw new Error("Google did not return a complete address.");
+        draft.address=place.formattedAddress;
+        draft.destinationPlaceId=place.id||"";
+        input.value=draft.address;
+        sessionToken=new AutocompleteSessionToken();
+        hideSuggestions();
+        await calculateDraftRoute();
+      }catch(error){
+        input.disabled=false;
+        draft.routeError=error.message||"That address could not be selected.";
+        const help=mount.parentElement?.querySelector("small");
+        if(help)help.textContent=draft.routeError;
+        hideSuggestions();
+      }
+    });
+    input.addEventListener("blur",()=>setTimeout(hideSuggestions,180));
+    input.addEventListener("focus",()=>{if(predictions.length&&input.value.trim().length>=3)renderSuggestions();});
   }catch(error){
     draft.routeError=error.message||"Google address autocomplete is unavailable.";
-    mount.innerHTML=`<input name="address" autocomplete="street-address" placeholder="Enter the full address" value="${esc(draft.address)}">`;
-    const input=mount.querySelector("input");
-    input?.addEventListener("input",()=>{draft.address=input.value;draft.destinationPlaceId="";draft.route=null;});
+    input.autocomplete="street-address";
+    input.placeholder="Enter the full address";
+    input.addEventListener("input",()=>{draft.address=input.value;draft.destinationPlaceId="";draft.route=null;});
     const help=mount.parentElement?.querySelector("small");if(help)help.textContent=draft.routeError;
   }
 }

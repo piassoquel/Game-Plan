@@ -329,8 +329,14 @@
   .employee-modal>h2{padding-top:20px}
 }
 
-/* Fix 03A.1: mobile-safe Google Place Autocomplete (New). */
-.gameplan-address-control{width:100%;min-height:52px}
-.gameplan-address-control gmp-place-autocomplete{display:block;width:100%;color-scheme:dark;--gmp-mat-color-surface:#171c21;--gmp-mat-color-on-surface:#f5f7fa;--gmp-mat-color-primary:#ff8a2a}
+/* Fix 03A.2: render Google address suggestions inside GamePlan on mobile. */
+.gameplan-address-control{position:relative;width:100%;min-height:52px}
 .gameplan-address-control>input{width:100%;min-height:52px}
-body>.pac-container{display:none!important}
+.gameplan-address-suggestions{position:absolute;top:calc(100% + 6px);left:0;right:0;z-index:500;max-height:min(330px,45vh);overflow:auto;border:1px solid #3b4650;border-radius:13px;background:#fff;color:#17202a;box-shadow:0 18px 48px rgba(0,0,0,.45);overscroll-behavior:contain}
+.gameplan-address-suggestions[hidden]{display:none}
+.gameplan-address-suggestion{display:block;width:100%;min-height:52px;padding:12px 14px;border:0;border-top:1px solid #e2e7eb;border-radius:0;background:#fff;color:#17202a;text-align:left;font:inherit;line-height:1.35}
+.gameplan-address-suggestion:first-child{border-top:0}
+.gameplan-address-suggestion:active,.gameplan-address-suggestion:focus{background:#eef5ff;outline:none}
+.gameplan-address-suggestion b{display:block;color:#17202a;font-size:15px}
+.gameplan-address-suggestion small{display:block;margin-top:3px;color:#64748b;font-size:13px}
+.gameplan-address-loading,.gameplan-address-empty{padding:13px 14px;background:#fff;color:#64748b;font-size:14px}
