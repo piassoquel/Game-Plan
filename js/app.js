@@ -1,4 +1,4 @@
-import { GamePlanApi } from "./api.js?v=3.2.8-alpha8-p013-fix01";
+import { GamePlanApi } from "./api.js?v=3.2.8-alpha8-p013-fix011";
 
 const CACHE_KEY = "gameplan-live-bootstrap-v2";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -584,6 +584,12 @@ function productOptionsFor(item) {
     .map(product => `<option value="${esc(product.id)}" ${product.id===item.productId?"selected":""}>${esc([product.brand,product.model].filter(Boolean).join(" "))}</option>`).join("");
 }
 
+function productImageHtml(imageUrl, altText = "Selected equipment") {
+  const unavailable = `<span>▧<small>Product image is not available</small></span>`;
+  if (!imageUrl) return unavailable;
+  return `<img src="${esc(imageUrl)}" alt="${esc(altText)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span hidden>▧<small>Product image is not available</small></span>`;
+}
+
 function completeDetailsItemCard(item,index) {
   const pickupOnly = item.pickupRequired === true && item.deliveryRequired === false;
   const isNew = String(item.condition).toLowerCase() === "new";
@@ -595,7 +601,7 @@ function completeDetailsItemCard(item,index) {
   if (isNew) return `<section class="complete-item-card" data-details-item="${index}">
     <div class="complete-item-head"><span class="item-number">${index+1}</span><i class="equipment-reference-icon">${detailsItemIcon(item)}</i><div><h3>${esc(title)}</h3><p>Quantity: ${Math.max(1,Number(item.quantity||1))}</p></div></div>
     <label class="details-field"><span>Model</span><select data-detail-product><option value="">Select model…</option>${productOptionsFor(item)}</select></label>
-    <div class="details-product-image" data-product-image>${item.imageUrl?`<img src="${esc(item.imageUrl)}" alt="Selected equipment">`:`<span>▧<small>Image will appear when<br>model is selected</small></span>`}</div>
+    <div class="details-product-image" data-product-image>${item.imageUrl?productImageHtml(item.imageUrl,[item.brand,item.model].filter(Boolean).join(" ")||"Selected equipment"):`<span>▧<small>Image will appear when<br>model is selected</small></span>`}</div>
   </section>`;
   return `<section class="complete-item-card" data-details-item="${index}">
     <div class="complete-item-head"><span class="item-number">${index+1}</span><i class="equipment-reference-icon">${detailsItemIcon(item)}</i><div><h3>${esc(title)}</h3><p>Quantity: ${Math.max(1,Number(item.quantity||1))}</p></div></div>
@@ -638,7 +644,7 @@ function bindCompleteDetails(job, items) {
   screen.querySelectorAll("[data-detail-product]").forEach(select => select.onchange = () => {
     const card=select.closest("[data-details-item]"); const item=items[Number(card.dataset.detailsItem)]; const product=state.products.find(value=>value.id===select.value);
     item.productId=select.value; item.brand=product?.brand||""; item.model=product?.model||""; item.imageUrl=product?.imageUrl||"";
-    const image=card.querySelector("[data-product-image]"); image.innerHTML=item.imageUrl?`<img src="${esc(item.imageUrl)}" alt="${esc(item.model)}">`:`<span>▧<small>Product image is not available</small></span>`;
+    const image=card.querySelector("[data-product-image]"); image.innerHTML=productImageHtml(item.imageUrl,item.model||"Selected equipment");
   });
   screen.querySelectorAll("[data-detail-photo]").forEach(input => input.onchange = async () => {
     const file=input.files?.[0]; if(!file)return; const card=input.closest("[data-details-item]"); const item=items[Number(card.dataset.detailsItem)];
@@ -2246,6 +2252,8 @@ function renderWizard(){
   wizardNext.style.visibility=draft.step===0?"hidden":"visible";
   wizardBack.textContent=draft.editingFromSummary?"Cancel Edit":"Back";
   wizardNext.textContent=draft.mode==="reschedule"?(draft.step===4?"Review Change":"Save & Return"):draft.editingFromSummary?"Save Edit":draft.step===steps.length-1?"Save & Return":draft.step===4?"Reserve Appointment":"Continue";
+  wizardBack.disabled=false;
+  wizardNext.disabled=false;
   wizardNext.classList.add("primary-action");
   bindStep();
 }
