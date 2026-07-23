@@ -1,4 +1,4 @@
-import { GamePlanApi } from "./api.js?v=3.1.0-alpha6";
+import { GamePlanApi } from "./api.js?v=3.2.8-alpha8-p013-fix01";
 
 const CACHE_KEY = "gameplan-live-bootstrap-v2";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;

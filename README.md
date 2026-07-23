@@ -1,8 +1,9 @@
-# GamePlan — Milestone 1
+# GamePlan frontend — v3.2.8 Fix 01
 
-Responsive Summit Dark PWA shell with demo data.
+Static Summit Dark PWA connected to the GamePlan Apps Script API and CMS.
 
-Open `index.html` with VS Code Live Server.
+For local development, serve this directory through VS Code Live Server. Opening `index.html` directly may prevent module and service-worker behavior from working correctly.
 
-Future API and Places configuration belongs in `js/config.js`.
-Do not place server credentials or customer data in GitHub.
+Public deployment configuration belongs in `js/config.js`. Do not place server credentials, PINs, customer exports, or private operational data in GitHub.
+
+This release requires the matching Fix 01 Apps Script backend and a CMS with `JobEquipment.ProductID`.

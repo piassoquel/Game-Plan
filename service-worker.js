@@ -1,10 +1,10 @@
-const CACHE_NAME = 'gameplan-v3.2.8-alpha8-p013-future-attention-stages';
+const CACHE_NAME = 'gameplan-v3.2.8-alpha8-p013-fix01-contracts';
 const APP_SHELL = [
   "./","./index.html","./manifest.json",
   "./css/app.css?v=3.2.8-alpha8-p013",
   "./js/config.js?v=3.0.5-alpha2-3",
-  "./js/app.js?v=3.2.8-alpha8-p013",
-  "./js/api.js?v=3.2.8-alpha8-p013",
+  "./js/app.js?v=3.2.8-alpha8-p013-fix01",
+  "./js/api.js?v=3.2.8-alpha8-p013-fix01",
   "./assets/logo/gameplan-logo.svg","./assets/icons/icon.svg"
 ];
 self.addEventListener("install",event=>{

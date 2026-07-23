@@ -58,4 +58,10 @@ export class GamePlanApi {
   finalizePickupInspection(jobId, inspection, pinToken = "") {
     return this.post("finalizePickupInspection", { jobId, inspection, pinToken });
   }
+  getStaffManagement(pinToken = "") {
+    return this.post("getStaffManagement", { pinToken });
+  }
+  saveStaffProfile(staffData, pinToken = "") {
+    return this.post("saveStaffProfile", { ...staffData, pinToken });
+  }
 }
