@@ -1,10 +1,10 @@
-const CACHE_NAME = 'gameplan-v3.2.8-alpha8-p013-fix011-ui-images';
+const CACHE_NAME = 'gameplan-v3.3.0-fix03a-pricing-maps';
 const APP_SHELL = [
   "./","./index.html","./manifest.json",
   "./css/app.css?v=3.2.8-alpha8-p013",
   "./js/config.js?v=3.0.5-alpha2-3",
-  "./js/app.js?v=3.2.8-alpha8-p013-fix011",
-  "./js/api.js?v=3.2.8-alpha8-p013-fix011",
+  "./js/app.js?v=3.3.0-fix03a",
+  "./js/api.js?v=3.3.0-fix03a",
   "./assets/logo/gameplan-logo.svg","./assets/icons/icon.svg"
 ];
 self.addEventListener("install",event=>{

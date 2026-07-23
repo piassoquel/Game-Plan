@@ -36,6 +36,9 @@ export class GamePlanApi {
 
   authenticate() { return this.post("authCheck"); }
   getBootstrap() { return this.post("bootstrap"); }
+  calculateRoute(destinationAddress, destinationPlaceId = "") {
+    return this.post("calculateRoute", { destinationAddress, destinationPlaceId });
+  }
   verifyPin(pin, requiredPermission = "") {
     return this.post("verifyPin", { pin, requiredPermission });
   }

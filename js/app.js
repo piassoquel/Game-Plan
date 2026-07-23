@@ -1,4 +1,4 @@
-import { GamePlanApi } from "./api.js?v=3.2.8-alpha8-p013-fix011";
+import { GamePlanApi } from "./api.js?v=3.3.0-fix03a";
 
 const CACHE_KEY = "gameplan-live-bootstrap-v2";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -13,6 +13,7 @@ const state = {
   products: [],
   brands: [],
   fulfillmentConditions: [],
+  pricingSettings: {},
   live: false,
   ready: false,
   cached: false,
@@ -1556,6 +1557,7 @@ function applyBootstrapData(data, {cached = false, timestamp = new Date().toISOS
   state.products = Array.isArray(data.products) ? data.products : [];
   state.brands = Array.isArray(data.brands) ? data.brands : [];
   state.fulfillmentConditions = Array.isArray(data.fulfillmentConditions) ? data.fulfillmentConditions : [];
+  state.pricingSettings = data.pricingSettings || {};
   state.currentUser = cached
     ? (state.currentUser || { displayName: "", email: "", roleName: "Employee", permissions: {} })
     : (data.currentUser || { displayName: "", email: "", roleName: "Employee", permissions: {} });
@@ -1677,6 +1679,10 @@ const blankDraft = () => ({
   email: "",
   addressId: "",
   address: "",
+  destinationPlaceId: "",
+  route: null,
+  routeLoading: false,
+  routeError: "",
   jobTypeId: "",
   equipment: [],
   access: [],
@@ -1839,16 +1845,40 @@ function availableSlotsForDate(dateKey){
   });
 }
 function timeSlotsForSelectedDate(){return draft.scheduledDate?availableSlotsForDate(draft.scheduledDate):[];}
-function quoteEstimate(){
-  let total=30;
+function quoteBreakdown(){
+  const settings=state.pricingSettings||{};const crew=crewSize();
+  const roundTripMiles=Number(draft.route?.roundTripDistanceMiles||0);
+  const travelMinutes=Number(draft.route?.roundTripTravelMinutes||0);
+  let serviceMinutes=0,assemblyCharge=0,disposalCharge=0,usedItemCharge=0;
+  const disposal=/disposal/i.test(resolveJobType(draft.jobTypeId)?.name||"");
   draft.equipment.forEach(item=>{
     const type=selectedType(item);const qty=Math.max(1,Number(item.quantity||1));
-    total+=qty*(Number(type.defaultOnSiteCharge||0)+Number(type.defaultAssemblyCharge||0)*(item.condition==="New"?1:0));
+    if(itemMovement(item)==="pickup"){
+      serviceMinutes+=qty*Number(type.pickupMinutes||0);
+      if(disposal)disposalCharge+=qty*Number(type.defaultDisposalCharge??50);
+    }else{
+      serviceMinutes+=qty*Number(type.deliveryMinutes||0);
+      if(item.condition==="New")assemblyCharge+=qty*Number(type.defaultAssemblyCharge??50);
+      else usedItemCharge+=qty*Number(settings.usedItemDeliveryCharge||0);
+    }
   });
-  total+=state.accessConditions.filter(a=>draft.access.includes(a.id)).reduce((n,a)=>n+Number(a.flatCharge||0),0);
-  return Math.max(30,Math.round(total/5)*5);
+  const selectedAccess=state.accessConditions.filter(a=>draft.access.includes(a.id));
+  const accessMinutes=selectedAccess.reduce((n,a)=>n+Number(a.defaultMinutes||0),0);
+  const accessFlatCharge=selectedAccess.reduce((n,a)=>n+Number(a.flatCharge||0),0);
+  const laborMinutes=travelMinutes+serviceMinutes+accessMinutes;
+  const laborCharge=laborMinutes/60*crew*Number(settings.laborRatePerEmployeeHour||0);
+  const mileageCharge=roundTripMiles*Number(settings.vehicleRatePerMile||0);
+  const baseTripCharge=Number(settings.baseTripCharge||0);
+  const subtotal=baseTripCharge+mileageCharge+laborCharge+usedItemCharge+assemblyCharge+disposalCharge+accessFlatCharge;
+  const minimum=Math.max(0,Number(settings.minimumServiceCharge||0)-subtotal);
+  const increment=Math.max(1,Number(settings.priceRoundingIncrement||5));
+  return {crew,roundTripMiles,travelMinutes,serviceMinutes,accessMinutes,laborMinutes,baseTripCharge,mileageCharge,laborCharge,usedItemCharge,assemblyCharge,disposalCharge,accessFlatCharge,subtotal,minimum,roundedTotal:Math.round((subtotal+minimum)/increment)*increment};
 }
-function crewSize(){return Math.max(1,...draft.equipment.map(i=>Number(selectedType(i).defaultCrewSize||2)));}
+function quoteEstimate(){return quoteBreakdown().roundedTotal;}
+function crewSize(){return Math.max(1,...draft.equipment.map(item=>{
+  const type=selectedType(item);const product=state.products.find(value=>value.id===item.productId);
+  return Number(product?.defaultCrewSize||type.defaultCrewSize||type.minimumCrewSize||2);
+}));}
 function openWizard(){
   // A tap on New Job always begins a new workflow. Draft data is preserved only
   // while moving between screens in the currently open wizard.
@@ -1992,7 +2022,7 @@ function customerStep(){
     <div class="ux-form-stack">
       <label class="ux-field"><span>Customer Name</span><div class="ux-name-grid"><input name="firstName" autocomplete="given-name" placeholder="First name" value="${esc(draft.firstName)}"><input name="lastName" autocomplete="family-name" placeholder="Last name" value="${esc(draft.lastName)}"></div></label>
       <label class="ux-field"><span>Phone Number</span><input name="phone" inputmode="tel" autocomplete="tel" placeholder="(831) 555-1234" value="${esc(phone)}"></label>
-      <label class="ux-field"><span>Delivery Address</span><input name="address" autocomplete="street-address" placeholder="Start typing an address" value="${esc(draft.address)}"><small>Address verification uses the existing GamePlan address service.</small></label>
+      <label class="ux-field"><span>Delivery Address</span><input name="address" autocomplete="off" placeholder="Start typing an address" value="${esc(draft.address)}" data-address-autocomplete><small>${draft.routeLoading?"Calculating round-trip distance and time…":draft.route?`${Number(draft.route.roundTripDistanceMiles||0).toFixed(1)} round-trip miles · ${draft.route.roundTripTravelMinutes} travel minutes`:draft.routeError?esc(draft.routeError):"Select a Google address to calculate travel."}</small></label>
     </div>
   </div>`;
 }
@@ -2009,9 +2039,12 @@ function bindCustomerMatchActions(){
     draft.lastName=values.lastName;
     draft.phone=values.phone;
     draft.address=values.address||draft.address;
+    draft.destinationPlaceId=c.addresses?.find(address=>address.default)?.placeId||"";
+    draft.route=null;
     draft.dismissedCustomerIds=[];
     localStorage.setItem(DRAFT_KEY,JSON.stringify(draft));
     renderWizard();
+    if(draft.address)calculateDraftRoute();
   });
   wizardForm.querySelectorAll("[data-dismiss-customer]").forEach(el=>el.onclick=()=>{
     const id=el.dataset.dismissCustomer;
@@ -2030,6 +2063,47 @@ let customerMatchTimer=0;
 function scheduleCustomerMatchUpdate(){
   clearTimeout(customerMatchTimer);
   customerMatchTimer=setTimeout(updateCustomerMatchMount,260);
+}
+let placesLibraryPromise;
+function loadPlacesLibrary(){
+  if(window.google?.maps?.places)return Promise.resolve();
+  if(placesLibraryPromise)return placesLibraryPromise;
+  const key=String(window.GAMEPLAN_CONFIG?.placesApiKey||"").trim();
+  if(!key)return Promise.reject(new Error("Google Places key is not configured."));
+  placesLibraryPromise=new Promise((resolve,reject)=>{
+    const callback=`gamePlanPlacesReady_${Date.now()}`;
+    window[callback]=()=>{delete window[callback];resolve();};
+    const script=document.createElement("script");
+    script.src=`https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&libraries=places&v=weekly&callback=${callback}`;
+    script.async=true;script.defer=true;
+    script.onerror=()=>reject(new Error("Google address autocomplete could not load."));
+    document.head.appendChild(script);
+  });
+  return placesLibraryPromise;
+}
+async function calculateDraftRoute(){
+  if(!draft.address)return;
+  draft.routeLoading=true;draft.routeError="";renderWizard();
+  try{draft.route=await api.calculateRoute(draft.address,draft.destinationPlaceId);}
+  catch(error){draft.route=null;draft.routeError=error.message||"Route calculation failed.";}
+  finally{draft.routeLoading=false;saveDraft(false);renderWizard();}
+}
+async function bindAddressAutocomplete(){
+  const input=wizardForm.querySelector("[data-address-autocomplete]");
+  if(!input)return;
+  input.addEventListener("input",()=>{draft.address=input.value;draft.destinationPlaceId="";draft.route=null;draft.routeError="";});
+  try{
+    await loadPlacesLibrary();
+    if(!document.body.contains(input))return;
+    const autocomplete=new google.maps.places.Autocomplete(input,{fields:["formatted_address","place_id"],componentRestrictions:{country:"us"},types:["address"]});
+    autocomplete.addListener("place_changed",()=>{
+      const place=autocomplete.getPlace();if(!place?.formatted_address)return;
+      draft.address=place.formatted_address;draft.destinationPlaceId=place.place_id||"";input.value=draft.address;calculateDraftRoute();
+    });
+  }catch(error){
+    draft.routeError=error.message||"Google address autocomplete is unavailable.";
+    const help=input.parentElement?.querySelector("small");if(help)help.textContent=draft.routeError;
+  }
 }
 function popularEquipment(){
   const favorites=state.equipmentTypes.filter(x=>x.quickAccess===true||String(x.quickAccess).toLowerCase()==="true");
@@ -2231,7 +2305,7 @@ function sync(){
 function validate(){
   sync();
   if(draft.step===0&&!draft.jobTypeId)return "Choose a job type.";
-  if(draft.step===1){if(!draft.firstName.trim())return "Enter the customer's first name.";if(draft.phone.replace(/\D/g,"").length!==10)return "Enter a valid 10-digit phone number.";if(!draft.address.trim())return "Enter the customer address.";}
+  if(draft.step===1){if(!draft.firstName.trim())return "Enter the customer's first name.";if(draft.phone.replace(/\D/g,"").length!==10)return "Enter a valid 10-digit phone number.";if(!draft.address.trim())return "Enter the customer address.";if(!draft.route)return "Select a Google address and wait for the route calculation.";}
   if(draft.step===2&&draft.equipment.length<1)return "Add at least one equipment item.";
   if(draft.step===2&&isDeliveryPickupDraft()){
     if(!draft.equipment.some(item=>itemMovement(item)==="delivery"))return "Add at least one delivery item.";
@@ -2273,6 +2347,7 @@ function bindStep(){
       scheduleCustomerMatchUpdate();
     }));
     bindCustomerMatchActions();
+    bindAddressAutocomplete();
   }
   wizardForm.querySelectorAll("[data-condition]").forEach(el=>el.onclick=()=>{draft.pendingCondition=el.dataset.condition;saveDraft(false);renderWizard();});
   wizardForm.querySelectorAll("[data-add-equipment]").forEach(el=>el.onclick=()=>{
