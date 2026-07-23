@@ -328,3 +328,9 @@
   .employee-modal{width:100%;max-height:calc(100dvh - env(safe-area-inset-top));border-radius:18px 18px 0 0}
   .employee-modal>h2{padding-top:20px}
 }
+
+/* Fix 03A.1: mobile-safe Google Place Autocomplete (New). */
+.gameplan-address-control{width:100%;min-height:52px}
+.gameplan-address-control gmp-place-autocomplete{display:block;width:100%;color-scheme:dark;--gmp-mat-color-surface:#171c21;--gmp-mat-color-on-surface:#f5f7fa;--gmp-mat-color-primary:#ff8a2a}
+.gameplan-address-control>input{width:100%;min-height:52px}
+body>.pac-container{display:none!important}

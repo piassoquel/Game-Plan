@@ -2022,7 +2022,7 @@ function customerStep(){
     <div class="ux-form-stack">
       <label class="ux-field"><span>Customer Name</span><div class="ux-name-grid"><input name="firstName" autocomplete="given-name" placeholder="First name" value="${esc(draft.firstName)}"><input name="lastName" autocomplete="family-name" placeholder="Last name" value="${esc(draft.lastName)}"></div></label>
       <label class="ux-field"><span>Phone Number</span><input name="phone" inputmode="tel" autocomplete="tel" placeholder="(831) 555-1234" value="${esc(phone)}"></label>
-      <label class="ux-field"><span>Delivery Address</span><input name="address" autocomplete="off" placeholder="Start typing an address" value="${esc(draft.address)}" data-address-autocomplete><small>${draft.routeLoading?"Calculating round-trip distance and time…":draft.route?`${Number(draft.route.roundTripDistanceMiles||0).toFixed(1)} round-trip miles · ${draft.route.roundTripTravelMinutes} travel minutes`:draft.routeError?esc(draft.routeError):"Select a Google address to calculate travel."}</small></label>
+      <label class="ux-field"><span>Delivery Address</span><div class="gameplan-address-control" data-address-autocomplete><input name="address" autocomplete="off" placeholder="Loading Google addresses…" value="${esc(draft.address)}" disabled></div><small>${draft.routeLoading?"Calculating round-trip distance and time…":draft.route?`${Number(draft.route.roundTripDistanceMiles||0).toFixed(1)} round-trip miles · ${draft.route.roundTripTravelMinutes} travel minutes`:draft.routeError?esc(draft.routeError):"Select a Google address to calculate travel."}</small></label>
     </div>
   </div>`;
 }
@@ -2066,13 +2066,13 @@ function scheduleCustomerMatchUpdate(){
 }
 let placesLibraryPromise;
 function loadPlacesLibrary(){
-  if(window.google?.maps?.places)return Promise.resolve();
+  if(window.google?.maps?.importLibrary)return window.google.maps.importLibrary("places");
   if(placesLibraryPromise)return placesLibraryPromise;
   const key=String(window.GAMEPLAN_CONFIG?.placesApiKey||"").trim();
   if(!key)return Promise.reject(new Error("Google Places key is not configured."));
   placesLibraryPromise=new Promise((resolve,reject)=>{
     const callback=`gamePlanPlacesReady_${Date.now()}`;
-    window[callback]=()=>{delete window[callback];resolve();};
+    window[callback]=async()=>{delete window[callback];try{await google.maps.importLibrary("places");resolve();}catch(error){reject(error);}};
     const script=document.createElement("script");
     script.src=`https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&libraries=places&v=weekly&callback=${callback}`;
     script.async=true;script.defer=true;
@@ -2089,20 +2089,30 @@ async function calculateDraftRoute(){
   finally{draft.routeLoading=false;saveDraft(false);renderWizard();}
 }
 async function bindAddressAutocomplete(){
-  const input=wizardForm.querySelector("[data-address-autocomplete]");
-  if(!input)return;
-  input.addEventListener("input",()=>{draft.address=input.value;draft.destinationPlaceId="";draft.route=null;draft.routeError="";});
+  const mount=wizardForm.querySelector("[data-address-autocomplete]");
+  if(!mount)return;
   try{
     await loadPlacesLibrary();
-    if(!document.body.contains(input))return;
-    const autocomplete=new google.maps.places.Autocomplete(input,{fields:["formatted_address","place_id"],componentRestrictions:{country:"us"},types:["address"]});
-    autocomplete.addListener("place_changed",()=>{
-      const place=autocomplete.getPlace();if(!place?.formatted_address)return;
-      draft.address=place.formatted_address;draft.destinationPlaceId=place.place_id||"";input.value=draft.address;calculateDraftRoute();
+    if(!document.body.contains(mount))return;
+    const {PlaceAutocompleteElement}=await google.maps.importLibrary("places");
+    const autocomplete=new PlaceAutocompleteElement({includedRegionCodes:["us"]});
+    autocomplete.placeholder="Start typing an address";
+    autocomplete.value=draft.address||"";
+    mount.replaceChildren(autocomplete);
+    autocomplete.addEventListener("gmp-select",async event=>{
+      const prediction=event.placePrediction||event.detail?.placePrediction;
+      if(!prediction)return;
+      const place=prediction.toPlace();
+      await place.fetchFields({fields:["id","formattedAddress"]});
+      if(!place.formattedAddress)return;
+      draft.address=place.formattedAddress;draft.destinationPlaceId=place.id||"";calculateDraftRoute();
     });
   }catch(error){
     draft.routeError=error.message||"Google address autocomplete is unavailable.";
-    const help=input.parentElement?.querySelector("small");if(help)help.textContent=draft.routeError;
+    mount.innerHTML=`<input name="address" autocomplete="street-address" placeholder="Enter the full address" value="${esc(draft.address)}">`;
+    const input=mount.querySelector("input");
+    input?.addEventListener("input",()=>{draft.address=input.value;draft.destinationPlaceId="";draft.route=null;});
+    const help=mount.parentElement?.querySelector("small");if(help)help.textContent=draft.routeError;
   }
 }
 function popularEquipment(){
