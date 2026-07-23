@@ -52,6 +52,9 @@ export class GamePlanApi {
   updateJobDetails(jobId, equipment, pickupType = "", pickupNotes = "", pinToken = "") {
     return this.post("updateJobDetails", { jobId, equipment, pickupType, pickupNotes, pinToken });
   }
+  updateJobSchedule(jobId, scheduledDate, scheduledTime, pinToken = "", approvalToken = "") {
+    return this.post("updateJobSchedule", { jobId, scheduledDate, scheduledTime, pinToken, approvalToken });
+  }
   finalizePickupInspection(jobId, inspection, pinToken = "") {
     return this.post("finalizePickupInspection", { jobId, inspection, pinToken });
   }

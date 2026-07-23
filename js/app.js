@@ -733,9 +733,14 @@ function renderJobSummaryCard(job, options = {}) {
 }
 
 function equipmentImage(item) {
-  return item.imageUrl
-    ? `<img class="equipment-photo" src="${item.imageUrl}" alt="${item.brand} ${item.model}">`
-    : `<div class="equipment-photo">Equipment</div>`;
+  const pickupOnly = item?.pickupRequired === true && item?.deliveryRequired === false;
+  if (pickupOnly) {
+    return `<div class="equipment-photo equipment-photo--generic" aria-label="Pickup item">${gpIcon(iconNameFor(item))}</div>`;
+  }
+  if (item?.imageUrl) {
+    return `<img class="equipment-photo" src="${esc(item.imageUrl)}" alt="${esc([item.brand, item.model].filter(Boolean).join(" ") || "Equipment")}" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'equipment-photo equipment-photo--generic',textContent:'Equipment'}))">`;
+  }
+  return `<div class="equipment-photo equipment-photo--generic" aria-label="Equipment image unavailable">${gpIcon(iconNameFor(item))}</div>`;
 }
 
 function can(permission) {
@@ -1039,14 +1044,14 @@ function workflowActions(job) {
     if (!jobDetailsComplete(job)) {
       return `<button class="button primary-action" data-complete-details="${esc(job.id)}">Complete Job Details</button>
         ${permissionNotice("Complete the required job details before manager approval.")}
-        <button class="button neutral" data-demo-action="Edit / Reschedule">Edit / Reschedule</button>
+        <button class="button neutral" data-reschedule-job="${esc(job.id)}">Edit / Reschedule</button>
         <button class="button red" data-status-action="Cancelled" data-job-id="${esc(job.id)}">Cancel Job</button>`;
     }
     const confirm = (isManager() || state.currentUser?.sharedAccount)
       ? `<button class="button primary-action" data-status-action="Scheduled" data-job-id="${esc(job.id)}">✓ Confirm Appointment</button>`
       : permissionNotice("This appointment is awaiting manager confirmation before it is added to the finalized schedule.");
     return `${confirm}
-      <button class="button neutral" data-demo-action="Edit / Reschedule">Edit / Reschedule</button>
+      <button class="button neutral" data-reschedule-job="${esc(job.id)}">Edit / Reschedule</button>
       <button class="button red" data-status-action="Cancelled" data-job-id="${esc(job.id)}">Cancel Job</button>`;
   }
   if (job.status === "Scheduled" && today) {
@@ -1071,7 +1076,7 @@ function workflowActions(job) {
     if (!isManager() && !state.currentUser?.sharedAccount) return `${pickupAction}${permissionNotice("This appointment is finalized. A manager must reschedule or cancel it.")}`;
     return `
       ${pickupAction}
-      <button class="button neutral" data-demo-action="Edit / Reschedule">Edit / Reschedule</button>
+      <button class="button neutral" data-reschedule-job="${esc(job.id)}">Edit / Reschedule</button>
       <button class="button red" data-status-action="Cancelled" data-job-id="${esc(job.id)}">Cancel Job</button>`;
   }
   if (job.status === "Quote") return `<button class="button primary-action" data-status-action="Tentative" data-job-id="${esc(job.id)}">Schedule Appointment</button>`;
@@ -1420,6 +1425,9 @@ function bindDynamic() {
       openJob(el.dataset.openJob);
     };
   });
+  document.querySelectorAll("[data-reschedule-job]").forEach(el => {
+    el.onclick = () => openReschedule(el.dataset.rescheduleJob);
+  });
   document.querySelectorAll("[data-demo-action]").forEach(el => {
     el.onclick = () => {
       if (["New Job","New Tentative"].includes(el.dataset.demoAction)) openWizard("job");
@@ -1677,7 +1685,9 @@ const blankDraft = () => ({
   appointmentView: "dates",
   editingFromSummary: false,
   editStep: null,
-  pendingCondition: ""
+  pendingCondition: "",
+  rescheduleJobId: "",
+  rescheduleReturnJobId: ""
 });
 let draft = blankDraft();
 function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;"}[c]));}
@@ -1741,6 +1751,7 @@ function dateKeyLocal(date){const d=new Date(date);return `${d.getFullYear()}-${
 function dateLabel(date){return new Intl.DateTimeFormat("en-US",{weekday:"short",month:"short",day:"numeric"}).format(date);}
 function jobsOnDate(key){
   return state.jobs.filter(job=>{
+    if (draft.mode === "reschedule" && job.id === draft.rescheduleJobId) return false;
     const jobKey=String(job.scheduledDate||job.dateISO||job.appointmentDate||job.dateTime||job.date||"").slice(0,10);
     const status=String(job.status||"").toLowerCase();
     return jobKey===key && /scheduled|tentative/.test(status) && !/cancel|complete/.test(status);
@@ -1841,6 +1852,29 @@ function openWizard(){
   draft.step=0;
   wizardTitle.textContent="New Job";
   renderWizard();wizard.classList.add("open");wizardBackdrop.classList.add("open");wizard.setAttribute("aria-hidden","false");
+}
+function openReschedule(jobId){
+  const job=state.jobs.find(item=>item.id===jobId);
+  if(!job)return toast("Job could not be found.");
+  localStorage.removeItem(DRAFT_KEY);
+  draft=blankDraft();
+  draft.mode="reschedule";
+  draft.rescheduleJobId=job.id;
+  draft.rescheduleReturnJobId=job.id;
+  draft.step=4;
+  const dt=job.dateTime?new Date(job.dateTime):null;
+  if(dt&&!Number.isNaN(dt.getTime())){
+    draft.scheduledDate=dateKeyLocal(dt);
+    draft.scheduledTime=`${String(dt.getHours()).padStart(2,"0")}:${String(dt.getMinutes()).padStart(2,"0")}`;
+    draft.appointmentWeekStart=draft.scheduledDate;
+  }
+  draft.appointmentView="dates";
+  wizardTitle.textContent="Reschedule Job";
+  closeJob();
+  renderWizard();
+  wizard.classList.add("open");
+  wizardBackdrop.classList.add("open");
+  wizard.setAttribute("aria-hidden","false");
 }
 function closeWizard(){wizard.classList.remove("open");wizardBackdrop.classList.remove("open");wizard.setAttribute("aria-hidden","true");}
 function saveDraft(show=true){sync();localStorage.setItem(DRAFT_KEY,JSON.stringify(draft));if(show)toast("Saved to finish later on this device.");}
@@ -2135,7 +2169,7 @@ function appointmentStep(){
   const showingTimes=draft.appointmentView==="times"&&draft.scheduledDate;
   const selectedDate=draft.scheduledDate?new Date(`${draft.scheduledDate}T12:00:00`):null;
   return `${stepHeading("Reserve Appointment","When would the customer like the appointment?")}
-    <div class="ux-price-card small"><small>Estimated Delivery Price</small><strong>$${quoteEstimate()}</strong><span>Estimated time: ${formatEstimatedDuration()}</span></div>
+    ${draft.mode==="reschedule"?`<div class="ux-price-card small"><small>Current job</small><strong>${esc(state.jobs.find(job=>job.id===draft.rescheduleJobId)?.customer||"Reschedule")}</strong><span>Select the corrected appointment date and time.</span></div>`:`<div class="ux-price-card small"><small>Estimated Delivery Price</small><strong>$${quoteEstimate()}</strong><span>Estimated time: ${formatEstimatedDuration()}</span></div>`}
     ${showingTimes?`
       <div class="ux-appointment-panel slide-in">
         <button type="button" class="ux-back-to-dates" data-back-to-dates>← Choose Another Date</button>
@@ -2151,6 +2185,15 @@ function appointmentStep(){
 function customerName(){const c=selectedCustomer();return c?.name||`${draft.firstName} ${draft.lastName}`.trim();}
 function summaryCard(key,title,body,icon){return `<button type="button" class="ux-summary-card" data-edit-step="${key}"><i>${gpIcon(icon)}</i><span><small>${title}</small><b>${body}</b></span><em>›</em></button>`;}
 function summaryStep(){
+  if(draft.mode==="reschedule"){
+    const job=state.jobs.find(item=>item.id===draft.rescheduleJobId);
+    const date=draft.scheduledDate?new Intl.DateTimeFormat("en-US",{weekday:"short",month:"short",day:"numeric"}).format(new Date(`${draft.scheduledDate}T12:00:00`)):"Not selected";
+    const time=timeSlotsForSelectedDate().find(x=>x.value===draft.scheduledTime)?.label||draft.scheduledTime||"Not selected";
+    return `${stepHeading("Review Reschedule","Confirm the corrected appointment before returning to Manager Approval.")}
+      ${job?renderJobSummaryCard({...job,date,time},{showItemCounts:true}):""}
+      <div class="ux-summary-list">${summaryCard(4,"New Appointment",`${esc(date)} at ${esc(time)}`,"equipment")}</div>
+    </div>`;
+  }
   const deliveryItems=draft.equipment.filter(item=>itemMovement(item)==="delivery").map(i=>`${Math.max(1,Number(i.quantity||1))}× ${i.condition} ${selectedType(i).name||"Equipment"}`);
   const pickupItems=draft.equipment.filter(item=>itemMovement(item)==="pickup").map(i=>`${Math.max(1,Number(i.quantity||1))}× ${selectedType(i).name||"Equipment"}`);
   const items=[deliveryItems.length?`Delivery: ${deliveryItems.join(" · ")}`:"",pickupItems.length?`Pickup: ${pickupItems.join(" · ")}`:""].filter(Boolean).join("<br>");
@@ -2195,14 +2238,14 @@ function validate(){
 }
 function renderWizard(){
   const steps=[jobTypeStep,customerStep,equipmentStep,deliveryDetailsStep,appointmentStep,summaryStep];
-  wizardStepLabel.textContent=`Step ${draft.step+1} of ${steps.length}`;
+  wizardStepLabel.textContent=draft.mode==="reschedule"?(draft.step===4?"Select Appointment":"Final Review"):`Step ${draft.step+1} of ${steps.length}`;
   wizardProgress.innerHTML=UX_STEPS.map((label,i)=>`<i class="${i<=draft.step?"active":""}" title="${label}"></i>`).join("");
   wizardProgress.style.gridTemplateColumns=`repeat(${steps.length},1fr)`;
   wizardForm.innerHTML=steps[draft.step]();
-  wizardBack.style.visibility=draft.step?"visible":"hidden";
+  wizardBack.style.visibility=draft.mode==="reschedule"?"visible":(draft.step?"visible":"hidden");
   wizardNext.style.visibility=draft.step===0?"hidden":"visible";
   wizardBack.textContent=draft.editingFromSummary?"Cancel Edit":"Back";
-  wizardNext.textContent=draft.editingFromSummary?"Save Edit":draft.step===steps.length-1?"Save & Return":draft.step===4?"Reserve Appointment":"Continue";
+  wizardNext.textContent=draft.mode==="reschedule"?(draft.step===4?"Review Change":"Save & Return"):draft.editingFromSummary?"Save Edit":draft.step===steps.length-1?"Save & Return":draft.step===4?"Reserve Appointment":"Continue";
   wizardNext.classList.add("primary-action");
   bindStep();
 }
@@ -2270,6 +2313,22 @@ function openEquipmentEditor(index){
 wizardNext.onclick=async()=>{
   const err=validate();if(err)return toast(err);
 
+  if(draft.mode==="reschedule"){
+    if(draft.step===4){draft.step=5;renderWizard();return;}
+    wizardNext.disabled=true;wizardBack.disabled=true;wizardNext.textContent="Saving…";
+    try{
+      const pinToken=await requestPin("canCreateQuote","Enter your employee PIN to save the corrected appointment.");
+      await api.updateJobSchedule(draft.rescheduleJobId,draft.scheduledDate,draft.scheduledTime,pinToken);
+      touchPinSession();
+      const returnJobId=draft.rescheduleReturnJobId;
+      localStorage.removeItem(DRAFT_KEY);draft=blankDraft();closeWizard();
+      await loadLiveData();
+      openJob(returnJobId);
+      toast("Appointment rescheduled. Review the job before manager approval.");
+    }catch(error){console.error(error);toast(error.message||"The appointment could not be rescheduled.");wizardNext.disabled=false;wizardBack.disabled=false;renderWizard();}
+    return;
+  }
+
   // Edits launched from Screen 6 are saved directly back to Screen 6.
   if(draft.editingFromSummary){
     sync();
@@ -2329,6 +2388,11 @@ wizardNext.onclick=async()=>{
 };
 wizardBack.onclick=()=>{
   sync();
+  if(draft.mode==="reschedule"){
+    if(draft.step===5){draft.step=4;renderWizard();return;}
+    const returnJobId=draft.rescheduleReturnJobId;
+    draft=blankDraft();closeWizard();openJob(returnJobId);return;
+  }
   if(draft.editingFromSummary){
     draft.editingFromSummary=false;
     draft.editStep=null;

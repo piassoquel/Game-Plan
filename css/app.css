@@ -304,3 +304,8 @@
 .complete-details-screen>.lifecycle-wrap{margin:2px 0 4px}
 .complete-details-screen>.job-summary-card{margin:0}
 .summary-created-by strong{font-weight:700}
+
+
+/* Patch 013: reliable equipment thumbnails */
+.equipment-photo--generic{display:grid;place-items:center;color:var(--muted,#8d98a3);background:#20272d}
+.equipment-photo--generic svg{width:42px;height:42px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
