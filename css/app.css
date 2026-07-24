@@ -340,3 +340,22 @@
 .gameplan-address-suggestion b{display:block;color:#17202a;font-size:15px}
 .gameplan-address-suggestion small{display:block;margin-top:3px;color:#64748b;font-size:13px}
 .gameplan-address-loading,.gameplan-address-empty{padding:13px 14px;background:#fff;color:#64748b;font-size:14px}
+.ux-summary-card.informational{cursor:default}.ux-summary-card.informational>em{color:#22c55e}
+.finish-details-later{min-height:54px;font-size:16px}
+.quote-reserved-reward,.equipment-details-choice{position:fixed;inset:0;z-index:120;background:rgba(5,9,12,.97);display:grid;place-items:center;padding:24px;opacity:0;transition:opacity .18s ease}
+.quote-reserved-reward.show,.equipment-details-choice.show{opacity:1}
+.quote-reward-card,.equipment-choice-card{width:min(420px,100%);text-align:center;display:grid;justify-items:center;gap:14px}
+.quote-reward-check{width:116px;height:116px;color:#4ae36f;filter:drop-shadow(0 0 20px rgba(34,197,94,.35))}
+.quote-reward-check svg{width:100%;height:100%;fill:none;stroke:currentColor;stroke-width:4;stroke-linecap:round;stroke-linejoin:round}
+.quote-reward-check circle{stroke-dasharray:170;stroke-dashoffset:170;animation:quote-circle .65s ease forwards}
+.quote-reward-check path{stroke-dasharray:48;stroke-dashoffset:48;animation:quote-check .38s .48s ease forwards}
+.quote-reward-card h2,.equipment-choice-card h2{margin:2px 0 0;font-size:32px}.quote-reward-card h2{color:#62e77e}
+.quote-reward-card p,.equipment-choice-card p{margin:0;color:#a1a7ae;line-height:1.55}
+.quote-reward-card strong{border:1px solid #303840;border-radius:12px;padding:12px 18px;background:#171c21}
+.quote-reward-card small{color:#727d87;margin-top:20px}
+.equipment-choice-icon{width:86px;height:86px;border:1px solid rgba(255,122,0,.7);border-radius:50%;display:grid;place-items:center;color:#ff7a00;background:rgba(255,122,0,.08)}
+.equipment-choice-icon svg{width:52px;height:52px;fill:none;stroke:currentColor;stroke-width:1.5}
+.equipment-choice-card>small{color:#ff7a00;font-weight:800;letter-spacing:.12em}
+.equipment-choice-card .button{width:100%;min-height:58px;font-size:17px}.equipment-choice-card .equipment-now{margin-top:10px;background:#ff7a00;color:#fff}
+@keyframes quote-circle{to{stroke-dashoffset:0}}@keyframes quote-check{to{stroke-dashoffset:0}}
+@media(prefers-reduced-motion:reduce){.quote-reserved-reward,.equipment-details-choice{transition:none}.quote-reward-check circle,.quote-reward-check path{animation:none;stroke-dashoffset:0}}

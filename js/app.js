@@ -1,4 +1,4 @@
-import { GamePlanApi } from "./api.js?v=3.3.0-fix03a";
+import { GamePlanApi } from "./api.js?v=3.4.1-fix04b";
 
 const CACHE_KEY = "gameplan-live-bootstrap-v2";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -13,6 +13,8 @@ const state = {
   products: [],
   brands: [],
   fulfillmentConditions: [],
+  availabilityRules: [],
+  blackoutDates: [],
   pricingSettings: {},
   live: false,
   ready: false,
@@ -636,6 +638,7 @@ function openCompleteDetails(jobId) {
     ${job.hasPickup?`<h2 class="complete-section-title">PICKUP DETAILS</h2><section class="pickup-details-card"><fieldset><legend>Pickup Type <small>(Required)</small></legend><label><input type="radio" name="pickupType" value="Sale" ${job.pickupType==="Sale"?"checked":""}> Pickup for Sale</label><label><input type="radio" name="pickupType" value="Disposal" ${job.pickupType==="Disposal"?"checked":""}> Pickup for Disposal</label></fieldset><label class="details-field stacked"><span>Pickup Notes <small>(Optional)</small></span><textarea name="pickupNotes" placeholder="Add any notes about the pickup…">${esc(job.pickupNotes||"")}</textarea></label></section>`:""}
     <div class="complete-details-error" data-details-error></div>
     <button class="button save-details-button" type="button" data-save-details>▣ &nbsp; Save Details</button>
+    <button class="button neutral finish-details-later" type="button" data-finish-details-later>Enter Details Later</button>
   </div>`;
   drawer.classList.add("open","complete-details-open"); drawerBackdrop.classList.add("open"); drawer.setAttribute("aria-hidden","false");
   bindCompleteDetails(job, allItems);
@@ -647,6 +650,11 @@ function fileToDataUrl(file) {
 
 function bindCompleteDetails(job, items) {
   const screen = drawerContent.querySelector(".complete-details-screen");
+  screen.querySelector("[data-finish-details-later]")?.addEventListener("click",()=>{
+    closeJob();
+    go("today");
+    toast("Equipment details remain in Needs Attention for later.");
+  });
   screen.querySelectorAll("[data-detail-product]").forEach(select => select.onchange = () => {
     const card=select.closest("[data-details-item]"); const item=items[Number(card.dataset.detailsItem)]; const product=state.products.find(value=>value.id===select.value);
     item.productId=select.value; item.brand=product?.brand||""; item.model=product?.model||""; item.imageUrl=product?.imageUrl||"";
@@ -1148,6 +1156,23 @@ async function changeJobStatus(jobId, newStatus) {
     Tentative: `Move this quote to Tentative?`
   };
   if (!window.confirm(messages[newStatus] || `Change status to ${newStatus}?`)) return;
+  let overrideSchedule=false;
+  if(newStatus==="Scheduled"){
+    const start=job.dateTime?new Date(job.dateTime):null;
+    const policy=start&&!Number.isNaN(start.getTime())?schedulePolicyFor(start):{normal:true};
+    const interval=jobInterval(job);
+    const dateKey=start&&!Number.isNaN(start.getTime())?dateKeyLocal(start):"";
+    const conflict=interval&&jobsOnDate(dateKey).some(other=>{
+      if(String(other.id)===String(job.id))return false;
+      const otherInterval=jobInterval(other);
+      return otherInterval&&interval.start<otherInterval.end&&interval.end>otherInterval.start;
+    });
+    if(!policy.normal||conflict){
+      const reasons=[!policy.normal?policy.detail:"",conflict?"This overlaps another approved job.":""].filter(Boolean).join("\n");
+      if(!window.confirm(`${reasons}\n\nApprove this manager override and mark the appointment as Scheduled?`))return;
+      overrideSchedule=true;
+    }
+  }
   const buttons = drawerContent.querySelectorAll("[data-status-action]");
   buttons.forEach(button => button.disabled = true);
   try {
@@ -1155,7 +1180,7 @@ async function changeJobStatus(jobId, newStatus) {
     const approvalToken = managerOnly
       ? await requestManagerApproval("A manager PIN is required to finalize or change the schedule. The active employee will remain signed in.")
       : "";
-    await api.updateJobStatus(jobId, newStatus, "Updated from Job Details", pinToken, approvalToken);
+    await api.updateJobStatus(jobId, newStatus, "Updated from Job Details", pinToken, approvalToken, overrideSchedule);
     touchPinSession();
     toast(newStatus === "Scheduled" ? "Appointment confirmed and added to the Weekly Planner." : `Job marked ${newStatus}.`);
     closeJob();
@@ -1562,6 +1587,8 @@ function applyBootstrapData(data, {cached = false, timestamp = new Date().toISOS
   state.products = Array.isArray(data.products) ? data.products : [];
   state.brands = Array.isArray(data.brands) ? data.brands : [];
   state.fulfillmentConditions = Array.isArray(data.fulfillmentConditions) ? data.fulfillmentConditions : [];
+  state.availabilityRules = Array.isArray(data.availabilityRules) ? data.availabilityRules : [];
+  state.blackoutDates = Array.isArray(data.blackoutDates) ? data.blackoutDates : [];
   state.pricingSettings = data.pricingSettings || {};
   state.currentUser = cached
     ? (state.currentUser || { displayName: "", email: "", roleName: "Employee", permissions: {} })
@@ -1771,8 +1798,38 @@ function jobsOnDate(key){
     if (draft.mode === "reschedule" && job.id === draft.rescheduleJobId) return false;
     const jobKey=String(job.scheduledDate||job.dateISO||job.appointmentDate||job.dateTime||job.date||"").slice(0,10);
     const status=String(job.status||"").toLowerCase();
-    return jobKey===key && /scheduled|tentative/.test(status) && !/cancel|complete/.test(status);
+    // A tentative quote is only a request. It must not consume the one-crew
+    // schedule until a manager approves it as Scheduled.
+    return jobKey===key && /scheduled/.test(status) && !/cancel|complete/.test(status);
   });
+}
+function normalizedWeekday(value){
+  return String(value||"").trim().slice(0,3).toLowerCase();
+}
+function availabilityRuleFor(date){
+  const weekday=normalizedWeekday(new Intl.DateTimeFormat("en-US",{weekday:"long"}).format(date));
+  return state.availabilityRules.find(rule=>normalizedWeekday(rule.day||rule.dayOfWeek||rule.weekday)===weekday)||null;
+}
+function blackoutFor(dateKey){
+  return state.blackoutDates.find(item=>{
+    const start=String(item.startDate||item.date||"").slice(0,10);
+    const end=String(item.endDate||item.startDate||item.date||"").slice(0,10);
+    return start&&dateKey>=start&&dateKey<=end;
+  })||null;
+}
+function schedulePolicyFor(date){
+  const key=dateKeyLocal(date);
+  const blackout=blackoutFor(key);
+  if(blackout)return {normal:false,overrideAllowed:blackout.overrideAllowed!==false,label:"Manager Discretion",detail:blackout.reason||"Blackout date"};
+  const rule=availabilityRuleFor(date);
+  if(rule)return {
+    normal:rule.available!==false,
+    overrideAllowed:rule.overrideAllowed===true,
+    label:rule.available!==false?"Open":"Manager Discretion",
+    detail:rule.available!==false?"Normal delivery day":"Manager override required"
+  };
+  const weekend=date.getDay()===0||date.getDay()===6;
+  return {normal:!weekend,overrideAllowed:weekend,label:weekend?"Manager Discretion":"Open",detail:weekend?"Manager override required":"Normal delivery day"};
 }
 function minutesFromTime(value){
   const raw=String(value||"").trim();
@@ -1832,7 +1889,13 @@ function slotConflicts(dateKey,startMinutes,durationMinutes){
 function dayAvailability(date){
   const today=startOfLocalDay(new Date());
   if(date<today)return {tone:"past",label:"Past",detail:"Not selectable",disabled:true};
-  if(date.getDay()===0)return {tone:"closed",label:"Closed",detail:"Store rule",disabled:true};
+  const policy=schedulePolicyFor(date);
+  if(!policy.normal)return {
+    tone:policy.overrideAllowed?"approval":"closed",
+    label:policy.label,
+    detail:policy.detail,
+    disabled:!policy.overrideAllowed
+  };
   const slots=availableSlotsForDate(dateKeyLocal(date));const open=slots.filter(slot=>!slot.disabled).length;
   if(open===0)return {tone:"full",label:"Full",detail:"No availability",disabled:true};
   if(open<=2)return {tone:"nearly",label:"Nearly Full",detail:`${open} open ${open===1?"slot":"slots"}`};
@@ -1841,12 +1904,20 @@ function dayAvailability(date){
 }
 function availableSlotsForDate(dateKey){
   const duration=estimatedDraftMinutes();
-  return ["10:00","10:30","11:00","11:30","12:00","12:30","13:00","13:30","14:00"].map(value=>{
+  const date=new Date(`${dateKey}T12:00:00`);
+  const policy=schedulePolicyFor(date);
+  const rule=availabilityRuleFor(date);
+  const opening=minutesFromTime(rule?.startTime)||600;
+  const closing=minutesFromTime(rule?.endTime)||840;
+  const increment=Math.max(15,Number(rule?.slotIntervalMinutes)||30);
+  const values=[];
+  for(let minute=opening;minute<=closing;minute+=increment)values.push(`${String(Math.floor(minute/60)).padStart(2,"0")}:${String(minute%60).padStart(2,"0")}`);
+  return values.map(value=>{
     const mins=minutesFromTime(value);const disabled=slotConflicts(dateKey,mins,duration);
-    const tone=disabled?"unavailable":mins<720?"preferred":mins<780?"limited":mins<840?"approval":"rare";
+    const tone=disabled?"unavailable":!policy.normal?"approval":mins<720?"preferred":mins<780?"limited":mins<840?"approval":"rare";
     const [h,m]=value.split(":").map(Number);
     const label=new Intl.DateTimeFormat("en-US",{hour:"numeric",minute:"2-digit"}).format(new Date(2026,0,1,h,m));
-    return {value,label,tone,disabled};
+    return {value,label,tone,disabled,managerOverride:!policy.normal};
   });
 }
 function timeSlotsForSelectedDate(){return draft.scheduledDate?availableSlotsForDate(draft.scheduledDate):[];}
@@ -1918,6 +1989,55 @@ function openReschedule(jobId){
   wizard.setAttribute("aria-hidden","false");
 }
 function closeWizard(){wizard.classList.remove("open");wizardBackdrop.classList.remove("open");wizard.setAttribute("aria-hidden","true");}
+function waitForReward(ms){
+  return new Promise(resolve=>window.setTimeout(resolve,ms));
+}
+async function showQuoteReserved(result, savedJob){
+  const existing=document.querySelector("#quoteReservedReward");
+  existing?.remove();
+  const reward=document.createElement("section");
+  reward.id="quoteReservedReward";
+  reward.className="quote-reserved-reward";
+  reward.tabIndex=0;
+  const appointment=savedJob?.dateTime?new Date(savedJob.dateTime):null;
+  const appointmentLabel=appointment&&!Number.isNaN(appointment.getTime())
+    ?new Intl.DateTimeFormat("en-US",{weekday:"short",month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}).format(appointment)
+    :"Tentative appointment saved";
+  reward.innerHTML=`<div class="quote-reward-card" role="status" aria-live="polite">
+    <div class="quote-reward-check"><svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="27"></circle><path d="m19 33 9 9 18-21"></path></svg></div>
+    <h2>Quote Reserved!</h2>
+    <p>${esc(appointmentLabel)}</p>
+    <strong>Quote #${esc(result.jobNumber||savedJob?.number||result.jobId||"Saved")}</strong>
+    <small>Tap anywhere to continue</small>
+  </div>`;
+  document.body.appendChild(reward);
+  requestAnimationFrame(()=>reward.classList.add("show"));
+  await Promise.race([
+    waitForReward(window.matchMedia("(prefers-reduced-motion: reduce)").matches?400:1800),
+    new Promise(resolve=>reward.addEventListener("click",resolve,{once:true}))
+  ]);
+  reward.classList.remove("show");
+  await waitForReward(180);
+  reward.remove();
+}
+function showEquipmentDetailsChoice(job){
+  const existing=document.querySelector("#equipmentDetailsChoice");
+  existing?.remove();
+  const choice=document.createElement("section");
+  choice.id="equipmentDetailsChoice";
+  choice.className="equipment-details-choice show";
+  choice.innerHTML=`<div class="equipment-choice-card" role="dialog" aria-modal="true" aria-labelledby="equipmentChoiceTitle">
+    <div class="equipment-choice-icon">${gpIcon("assembly")}</div>
+    <small>QUOTE RESERVED</small>
+    <h2 id="equipmentChoiceTitle">Add Equipment Details</h2>
+    <p>Add make, model, notes, and photos now, or safely finish later from Needs Attention.</p>
+    <button type="button" class="button equipment-now">Add Details Now</button>
+    <button type="button" class="button neutral equipment-later">Skip for Later</button>
+  </div>`;
+  document.body.appendChild(choice);
+  choice.querySelector(".equipment-now").onclick=()=>{choice.remove();openCompleteDetails(job.id);};
+  choice.querySelector(".equipment-later").onclick=()=>{choice.remove();go("today");toast("Equipment details are saved in Needs Attention for later.");};
+}
 function saveDraft(show=true){sync();localStorage.setItem(DRAFT_KEY,JSON.stringify(draft));if(show)toast("Saved to finish later on this device.");}
 function stepHeading(title,subtitle){return `<div class="ux-step"><div class="ux-step__heading"><h2>${title}</h2><p>${subtitle}</p></div>`;}
 function resolveJobType(kind){
@@ -2378,7 +2498,7 @@ function summaryStep(){
       ${summaryCard(2,"Equipment",esc(items),iconNameFor(selectedType(draft.equipment[0])))}
       ${summaryCard(3,"Delivery Details",`${esc(access)}${specialCondition?`<br><small>${esc(specialCondition)}</small>`:""}`,"stairs")}
       ${summaryCard(4,"Appointment",`${esc(date)} at ${esc(time)}`,"equipment")}
-      <button type="button" class="ux-summary-card optional" id="equipmentDetailsLater"><i>${gpIcon("assembly")}</i><span><small>Equipment Details</small><b>Add make, model, notes, and photos later</b></span><em>›</em></button>
+      <div class="ux-summary-card optional informational"><i>${gpIcon("assembly")}</i><span><small>Equipment Details</small><b>After reserving, choose whether to add make, model, notes, and photos now or later.</b></span><em>✓</em></div>
     </div>
     <section class="ux-review-price" aria-label="Estimated delivery price">
       <span>Estimated Delivery Price</span>
@@ -2471,7 +2591,6 @@ function bindStep(){
     saveDraft(false);
     renderWizard();
   });
-  wizardForm.querySelector("#equipmentDetailsLater")?.addEventListener("click",()=>toast("Equipment details will remain available from the Job Summary after creation."));
 }
 function openEquipmentEditor(index){
   const mount=wizardForm.querySelector("#equipmentEditMount");if(!mount)return;mount.innerHTML=equipmentEditSheet(index);
@@ -2539,6 +2658,7 @@ wizardNext.onclick=async()=>{
     delete payload.editingFromSummary;
     delete payload.editStep;
 
+    const savedDraft=structuredClone(payload);
     const result=await api.createJob(payload,pinToken);
     if(!result)throw new Error("The CMS did not confirm that the job was saved.");
 
@@ -2548,13 +2668,26 @@ wizardNext.onclick=async()=>{
     closeWizard();
 
     const jobLabel=result.jobNumber||result.jobId||result.id||"New job";
-    toast(`✓ ${jobLabel} saved as Tentative.`);
-    await loadLiveData();
     const savedJobId=result.jobId||result.id;
-    const savedJob=state.jobs.find(job=>String(job.id)===String(savedJobId));
+    const optimisticJob=result.job||{
+      id:savedJobId,number:result.jobNumber||savedJobId,customerId:result.customerId,
+      customer:savedDraft.customerName,phone:savedDraft.phone,address:savedDraft.address,
+      dateTime:`${savedDraft.scheduledDate}T${savedDraft.scheduledTime}:00`,
+      date:new Intl.DateTimeFormat("en-US",{weekday:"short",month:"short",day:"numeric"}).format(new Date(`${savedDraft.scheduledDate}T12:00:00`)),
+      time:new Intl.DateTimeFormat("en-US",{hour:"numeric",minute:"2-digit"}).format(new Date(`${savedDraft.scheduledDate}T${savedDraft.scheduledTime}:00`)),
+      type:resolveJobType(savedDraft.jobTypeId)?.name||savedDraft.jobTypeId,status:"Tentative",
+      total:savedDraft.estimatedPrice,
+      crewSize:Math.max(1,...savedDraft.equipment.map(item=>Number(state.products.find(product=>product.id===item.productId)?.defaultCrewSize||state.equipmentTypes.find(type=>type.id===item.equipmentTypeId)?.defaultCrewSize||2))),
+      duration:formatEstimatedDuration(savedDraft.estimatedDurationMinutes),
+      detailsStatus:"Needed",hasPickup:/pickup/i.test(resolveJobType(savedDraft.jobTypeId)?.name||savedDraft.jobTypeId),
+      equipment:savedDraft.equipment.map((item,index)=>({...item,id:result.jobEquipmentIds?.[index]||`pending-${index}`}))
+    };
+    state.jobs=[...state.jobs.filter(job=>String(job.id)!==String(savedJobId)),optimisticJob];
+    const savedJob=optimisticJob;
     if(savedJob){
-      if(jobDetailsComplete(savedJob))openJob(savedJob.id);
-      else openCompleteDetails(savedJob.id);
+      await showQuoteReserved(result,savedJob);
+      showEquipmentDetailsChoice(savedJob);
+      loadLiveData().catch(error=>console.error("Background refresh failed.",error));
     }else{
       go("today");
       toast(`✓ ${jobLabel} saved. Open it from Needs Attention to continue.`);
