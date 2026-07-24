@@ -75,7 +75,7 @@
 /* Employee PIN verification v2.5 */
 .profile-action{cursor:pointer;border-radius:12px;transition:background .18s}
 .profile-action:hover{background:rgba(255,138,42,.08)}
-.pin-backdrop{position:fixed;inset:0;z-index:90;display:grid;place-items:center;padding:18px;background:rgba(0,0,0,.72);backdrop-filter:blur(6px)}
+.pin-backdrop{position:fixed;inset:0;z-index:180;display:grid;place-items:center;padding:18px;background:rgba(0,0,0,.72);backdrop-filter:blur(6px)}
 .pin-modal{position:relative;width:min(420px,100%);padding:26px;background:#171c21;border:1px solid #303840;border-radius:20px;box-shadow:0 24px 80px rgba(0,0,0,.55)}
 .pin-modal h2{margin:8px 0 6px;text-align:center}
 .pin-modal>p{margin:0 0 20px;color:#9ca3af;text-align:center;line-height:1.45}
