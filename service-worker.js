@@ -1,11 +1,14 @@
-const CACHE_NAME = 'gameplan-v3.4.0-fix04a-workflow';
+const CACHE_NAME = "gameplan-v3.4.4-fix04b3-cache";
 const APP_SHELL = [
-  "./","./index.html","./manifest.json",
-  "./css/app.css?v=3.3.2-fix03a2",
+  "./",
+  "./index.html",
+  "./manifest.json",
+  "./css/app.css?v=3.4.4-fix04b3",
   "./js/config.js?v=3.0.5-alpha2-3",
-  "./js/app.js?v=3.4.0-fix04a",
-  "./js/api.js?v=3.3.0-fix03a",
-  "./assets/logo/gameplan-logo.svg","./assets/icons/icon.svg"
+  "./js/app.js?v=3.4.4-fix04b3",
+  "./js/api.js?v=3.4.2-fix04b1",
+  "./assets/logo/gameplan-logo.svg",
+  "./assets/icons/icon.svg"
 ];
 self.addEventListener("install",event=>{
   event.waitUntil(caches.open(CACHE_NAME).then(cache=>cache.addAll(APP_SHELL)));
