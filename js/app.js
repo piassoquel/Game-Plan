@@ -1,4 +1,4 @@
-import { GamePlanApi } from "./api.js?v=3.5.0-fix04c";
+import { GamePlanApi } from "./api.js?v=3.5.1-fix04c1";
 
 const CACHE_KEY = "gameplan-live-bootstrap-v2";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -2126,13 +2126,28 @@ function customerText(value){
 }
 function customerPhoneDigits(value){return String(value||"").replace(/\D/g,"");}
 function customerAddresses(customer){return Array.isArray(customer?.addresses)?customer.addresses:[];}
+function customerAddressKey(value){
+  return customerText(value).replace(/\b(united states|usa)\b/g,"")
+    .replace(/\b(street)\b/g,"st").replace(/\b(avenue)\b/g,"ave").replace(/\b(road)\b/g,"rd")
+    .replace(/\b(drive)\b/g,"dr").replace(/\b(boulevard)\b/g,"blvd").replace(/\s+/g," ").trim();
+}
+function uniqueCustomerAddresses(customer){
+  const unique=new Map();
+  customerAddresses(customer).forEach(address=>{
+    const key=String(address?.placeId||"").trim()||customerAddressKey(address?.address||address?.formattedAddress);
+    if(!key)return;
+    const existing=unique.get(key);
+    if(!existing||address?.default)unique.set(key,address);
+  });
+  return [...unique.values()];
+}
 function customerAutofillValues(customer){
   const fullName=String(customer?.name||customer?.customerName||"").trim();
   const nameParts=fullName.split(/\s+/).filter(Boolean);
   const firstName=String(customer?.firstName||customer?.givenName||nameParts.shift()||"").trim();
   const lastName=String(customer?.lastName||customer?.familyName||nameParts.join(" ")||"").trim();
   const phone=String(customer?.phone||customer?.phoneNumber||customer?.mobile||"").trim();
-  const addresses=customerAddresses(customer);
+  const addresses=uniqueCustomerAddresses(customer);
   const preferred=addresses.find(item=>item?.default===true||String(item?.default).toLowerCase()==="true")||addresses[0]||{};
   const address=String(preferred?.address||preferred?.formattedAddress||customer?.address||customer?.deliveryAddress||"").trim();
   return {firstName,lastName,phone:normalizePhone(phone),address};
@@ -2154,7 +2169,7 @@ function rankCustomerMatches(){
     const cFirst=customerText(values.firstName);
     const cLast=customerText(values.lastName);
     const cPhone=customerPhoneDigits(values.phone);
-    const addresses=[...customerAddresses(customer).map(a=>customerText(a.address||a.formattedAddress)),customerText(values.address)].filter(Boolean);
+    const addresses=[...uniqueCustomerAddresses(customer).map(a=>customerText(a.address||a.formattedAddress)),customerText(values.address)].filter(Boolean);
 
     const exactFirst=hasName&&cFirst===first;
     const exactLast=hasName&&cLast===last;
@@ -2225,7 +2240,9 @@ function bindCustomerMatchActions(){
     draft.lastName=values.lastName;
     draft.phone=values.phone;
     draft.address=values.address||draft.address;
-    draft.destinationPlaceId=c.addresses?.find(address=>address.default)?.placeId||"";
+    const preferredAddress=uniqueCustomerAddresses(c).find(address=>address.default)||uniqueCustomerAddresses(c)[0];
+    draft.addressId=preferredAddress?.id||"";
+    draft.destinationPlaceId=preferredAddress?.placeId||"";
     draft.route=null;
     draft.dismissedCustomerIds=[];
     localStorage.setItem(DRAFT_KEY,JSON.stringify(draft));
@@ -2238,15 +2255,69 @@ function bindCustomerMatchActions(){
     updateCustomerMatchMount();
   });
   wizardForm.querySelector("[data-clear-customer]")?.addEventListener("click",()=>{
-    draft.customerId="";draft.dismissedCustomerIds=[];updateCustomerMatchMount();
+    draft.customerId="";draft.addressId="";draft.dismissedCustomerIds=[];updateCustomerMatchMount();
   });
+}
+
+async function bindCustomerEditorAddressAutocomplete(editor){
+  const mount=editor.querySelector("[data-customer-editor-address]");
+  const input=mount?.querySelector('input[name="newAddress"]');
+  const suggestionsMount=mount?.querySelector("[data-address-suggestions]");
+  if(!mount||!input||!suggestionsMount)return()=>({address:input?.value.trim()||"",placeId:""});
+  let selectedPlaceId="",predictions=[],debounceTimer=0,requestNumber=0;
+  const hide=()=>{suggestionsMount.hidden=true;suggestionsMount.replaceChildren();};
+  const predictionText=value=>typeof value==="string"?value:(value?.toString?.()!=="[object Object]"?value?.toString?.():String(value?.text||""));
+  try{
+    await loadPlacesLibrary();
+    if(!document.body.contains(editor))return()=>({address:input.value.trim(),placeId:selectedPlaceId});
+    const {AutocompleteSessionToken,AutocompleteSuggestion}=await google.maps.importLibrary("places");
+    let sessionToken=new AutocompleteSessionToken();
+    input.addEventListener("input",()=>{
+      selectedPlaceId="";
+      clearTimeout(debounceTimer);
+      const query=input.value.trim(),thisRequest=++requestNumber;
+      if(query.length<3){predictions=[];hide();return;}
+      suggestionsMount.innerHTML='<div class="gameplan-address-loading">Finding addresses…</div>';suggestionsMount.hidden=false;
+      debounceTimer=setTimeout(async()=>{
+        try{
+          const response=await AutocompleteSuggestion.fetchAutocompleteSuggestions({input:query,includedRegionCodes:["us"],sessionToken});
+          if(thisRequest!==requestNumber||input.value.trim()!==query)return;
+          predictions=(response.suggestions||[]).map(item=>item.placePrediction).filter(Boolean);
+          suggestionsMount.innerHTML=predictions.length?predictions.map((prediction,index)=>{
+            const main=predictionText(prediction.structuredFormat?.mainText),secondary=predictionText(prediction.structuredFormat?.secondaryText),full=predictionText(prediction.text);
+            return `<button type="button" class="gameplan-address-suggestion" data-customer-address-suggestion="${index}"><b>${esc(main||full)}</b>${secondary?`<small>${esc(secondary)}</small>`:""}</button>`;
+          }).join(""):'<div class="gameplan-address-empty">No matching addresses found.</div>';
+          suggestionsMount.hidden=false;
+        }catch(error){if(thisRequest===requestNumber){predictions=[];suggestionsMount.innerHTML='<div class="gameplan-address-empty">Google addresses are temporarily unavailable.</div>';}}
+      },250);
+    });
+    suggestionsMount.addEventListener("pointerdown",event=>event.preventDefault());
+    suggestionsMount.addEventListener("click",async event=>{
+      const button=event.target.closest("[data-customer-address-suggestion]");
+      const prediction=button?predictions[Number(button.dataset.customerAddressSuggestion)]:null;
+      if(!prediction)return;
+      input.disabled=true;suggestionsMount.innerHTML='<div class="gameplan-address-loading">Selecting address…</div>';
+      try{
+        const place=prediction.toPlace();
+        await place.fetchFields({fields:["id","formattedAddress"]});
+        if(!place.formattedAddress)throw new Error("Google did not return a complete address.");
+        input.value=place.formattedAddress;selectedPlaceId=place.id||"";sessionToken=new AutocompleteSessionToken();hide();
+      }catch(error){selectedPlaceId="";suggestionsMount.innerHTML=`<div class="gameplan-address-empty">${esc(error.message||"Address selection failed.")}</div>`;}
+      finally{input.disabled=false;input.focus();}
+    });
+    input.addEventListener("blur",()=>setTimeout(hide,180));
+  }catch(error){
+    input.autocomplete="street-address";
+    mount.parentElement?.querySelector("[data-editor-address-help]")?.replaceChildren(document.createTextNode("Google suggestions are unavailable; enter the complete address."));
+  }
+  return()=>({address:input.value.trim(),placeId:selectedPlaceId});
 }
 
 function openCustomerEditor(customerId){
   const customer=state.customers.find(item=>String(item.id)===String(customerId));
   if(!customer)return toast("Customer could not be found.");
   document.querySelector("#customerEditor")?.remove();
-  const addresses=customerAddresses(customer);
+  const addresses=uniqueCustomerAddresses(customer);
   const editor=document.createElement("section");
   editor.id="customerEditor";
   editor.className="customer-editor";
@@ -2256,13 +2327,15 @@ function openCustomerEditor(customerId){
     <label><span>Phone Number</span><input name="phone" inputmode="tel" value="${esc(normalizePhone(customer.phone||""))}"></label>
     <label><span>Email <small>(Optional)</small></span><input name="email" type="email" value="${esc(customer.email||"")}"></label>
     <fieldset><legend>Saved Addresses</legend>${addresses.map((address,index)=>`<div class="customer-address-row" data-customer-address-row="${esc(address.id)}"><label><input type="radio" name="defaultAddressId" value="${esc(address.id)}" ${address.default||(!addresses.some(item=>item.default)&&index===0)?"checked":""}><span><b>${esc(address.label||"Service Address")}</b><small>${esc(address.address)}</small></span></label>${(isManager()||state.currentUser?.sharedAccount)&&addresses.length>1?`<button type="button" data-deactivate-customer-address="${esc(address.id)}">Deactivate</button>`:""}</div>`).join("")}</fieldset>
-    <label><span>Add Another Address <small>(Optional)</small></span><input name="newAddress" autocomplete="street-address" placeholder="Enter the complete new service address" value=""></label>
-    <p class="customer-editor-help">Adding an address keeps previous addresses available. Select the circle beside the preferred default address.</p>
+    <label><span>Add Another Address <small>(Optional)</small></span><div class="gameplan-address-control" data-customer-editor-address><input name="newAddress" autocomplete="off" placeholder="Start typing an address" value=""><div class="gameplan-address-suggestions" data-address-suggestions hidden></div></div></label>
+    <p class="customer-editor-help" data-editor-address-help">Select a Google address so travel time and pricing can be calculated. Previous addresses remain available.</p>
     <div class="customer-editor-error" data-customer-editor-error></div>
     <footer><button type="button" class="button neutral" data-close-customer-editor>Cancel</button><button type="submit" class="button customer-save">Save Customer</button></footer>
   </form>`;
   document.body.appendChild(editor);
   const form=editor.querySelector("form");
+  let readNewAddress=()=>({address:String(form.elements.newAddress?.value||"").trim(),placeId:""});
+  bindCustomerEditorAddressAutocomplete(editor).then(reader=>{readNewAddress=reader;});
   let deactivateAddressId="";
   editor.querySelectorAll("[data-close-customer-editor]").forEach(button=>button.onclick=()=>editor.remove());
   editor.addEventListener("click",event=>{if(event.target===editor)editor.remove();});
@@ -2279,29 +2352,39 @@ function openCustomerEditor(customerId){
     const errorBox=form.querySelector("[data-customer-editor-error]");
     const saveButton=form.querySelector(".customer-save");
     const data=new FormData(form);
+    const selectedNewAddress=readNewAddress();
     const payload={
       customerId:customer.id,firstName:String(data.get("firstName")||"").trim(),lastName:String(data.get("lastName")||"").trim(),
       phone:normalizePhone(data.get("phone")),email:String(data.get("email")||"").trim(),
-      defaultAddressId:String(data.get("defaultAddressId")||""),newAddress:String(data.get("newAddress")||"").trim(),
+      defaultAddressId:String(data.get("defaultAddressId")||""),newAddress:selectedNewAddress.address,
+      newAddressPlaceId:selectedNewAddress.placeId,
       deactivateAddressId
     };
     if(!payload.firstName)return void(errorBox.textContent="First name is required.");
     if(customerPhoneDigits(payload.phone).length!==10)return void(errorBox.textContent="Enter a valid 10-digit phone number.");
+    if(payload.newAddress&&!payload.newAddressPlaceId)return void(errorBox.textContent="Select the new address from the Google suggestions.");
     saveButton.disabled=true;saveButton.textContent="Saving…";errorBox.textContent="";
     try{
       const pinToken=await requestPin("canCreateQuote","Enter your employee PIN to update this customer.");
       const approvalToken=deactivateAddressId?await requestManagerApproval("A manager PIN is required to deactivate a saved address."):"";
-      await api.saveCustomer(payload,pinToken,approvalToken);
+      const result=await api.saveCustomer(payload,pinToken,approvalToken);
       touchPinSession();editor.remove();
-      await loadLiveData();
-      const updated=state.customers.find(item=>String(item.id)===String(customer.id));
-      if(updated){
-        const values=customerAutofillValues(updated);
-        draft.customerId=updated.id;draft.firstName=values.firstName;draft.lastName=values.lastName;draft.phone=values.phone;
-        if(payload.newAddress||payload.defaultAddressId){draft.address=values.address;draft.route=null;}
-      }
+      customer.firstName=payload.firstName;customer.lastName=payload.lastName;customer.name=`${payload.firstName} ${payload.lastName}`.trim();
+      customer.phone=payload.phone;customer.email=payload.email;
+      if(payload.newAddress){
+        customer.addresses.forEach(address=>address.default=false);
+        const existing=customer.addresses.find(address=>(payload.newAddressPlaceId&&address.placeId===payload.newAddressPlaceId)||customerAddressKey(address.address)===customerAddressKey(payload.newAddress));
+        if(existing){existing.default=true;existing.placeId=existing.placeId||payload.newAddressPlaceId;}
+        else customer.addresses.push({id:result.defaultAddressId,address:payload.newAddress,placeId:payload.newAddressPlaceId,default:true,label:"Service Address"});
+      }else if(payload.defaultAddressId)customer.addresses.forEach(address=>address.default=String(address.id)===String(payload.defaultAddressId));
+      const updated=customer,values=customerAutofillValues(updated);
+      draft.customerId=updated.id;draft.firstName=values.firstName;draft.lastName=values.lastName;draft.phone=values.phone;
+      const preferred=uniqueCustomerAddresses(updated).find(address=>address.default)||uniqueCustomerAddresses(updated)[0];
+      if(payload.newAddress||payload.defaultAddressId){draft.address=values.address;draft.addressId=preferred?.id||"";draft.destinationPlaceId=preferred?.placeId||"";draft.route=null;}
+      localStorage.setItem(DRAFT_KEY,JSON.stringify(draft));
       renderWizard();toast("Customer record updated.");
       if(draft.address&&!draft.route)calculateDraftRoute();
+      loadLiveData().catch(error=>console.error("Background customer refresh failed.",error));
     }catch(error){console.error(error);errorBox.textContent=error.message||"Customer could not be updated.";saveButton.disabled=false;saveButton.textContent="Save Customer";}
   };
 }
@@ -2377,6 +2460,7 @@ async function bindAddressAutocomplete(){
     let sessionToken=new AutocompleteSessionToken();
     input.addEventListener("input",()=>{
       draft.address=input.value;
+      draft.addressId="";
       draft.destinationPlaceId="";
       draft.route=null;
       draft.routeError="";
@@ -2417,6 +2501,7 @@ async function bindAddressAutocomplete(){
         await place.fetchFields({fields:["id","formattedAddress"]});
         if(!place.formattedAddress)throw new Error("Google did not return a complete address.");
         draft.address=place.formattedAddress;
+        draft.addressId="";
         draft.destinationPlaceId=place.id||"";
         input.value=draft.address;
         sessionToken=new AutocompleteSessionToken();
@@ -2678,6 +2763,7 @@ function bindStep(){
       if(input.name==="phone")input.value=normalizePhone(input.value);
       draft[input.name]=input.value;
       draft.customerId="";
+      draft.addressId="";
       // Keep dismissed suggestions dismissed for the remainder of this draft.
       scheduleCustomerMatchUpdate();
     }));
