@@ -1,4 +1,4 @@
-import { GamePlanApi } from "./api.js?v=3.4.2-fix04b1";
+import { GamePlanApi } from "./api.js?v=3.4.3-fix04b2";
 
 const CACHE_KEY = "gameplan-live-bootstrap-v2";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -481,7 +481,7 @@ function renderSchedule() {
         ${selectedJobs.length ? selectedJobs.map(job => `<article class="agenda-job" data-open-job="${esc(job.id)}">
           <div class="agenda-time"><strong>${esc(job.time || job.scheduledTime || "Time TBD")}</strong><span>${esc(job.duration || "")}</span></div>
           <div class="agenda-line"></div>
-          <div class="agenda-main"><div class="agenda-main__top"><h3>${esc(job.customer)}</h3><span class="badge ${badgeClass(job.status)}">${esc(job.status)}</span></div><p>${esc(job.type)} · ${esc(job.address)}</p><div class="agenda-tags"><span>${esc(job.crewSize || "—")} crew</span>${job.piggyback?`<span class="piggyback-badge">Piggyback</span>`:""}${job.buildRequired && !job.buildComplete ? `<span class="build-warning">Needs Build</span>` : ""}</div></div>
+          <div class="agenda-main"><div class="agenda-main__top"><h3>${esc(job.customer)}</h3><span class="agenda-statuses"><span class="badge ${badgeClass(job.status)}">${esc(job.status)}</span>${job.piggyback?`<span class="piggyback-badge">Piggyback</span>`:""}</span></div><p>${esc(job.type)} · ${esc(job.address)}</p><div class="agenda-tags"><span>${esc(job.crewSize || "—")} crew</span>${job.buildRequired && !job.buildComplete ? `<span class="build-warning">Needs Build</span>` : ""}</div></div>
           <button class="button neutral" data-open-job="${esc(job.id)}">Open</button>
         </article>`).join("") : `<div class="empty-agenda"><b>Open day</b><span>This day currently has no scheduled work.</span><button class="button" data-demo-action="New Job">Schedule a Job</button></div>`}
       </div>
@@ -775,6 +775,28 @@ function isManager() {
 
 function permissionNotice(text) {
   return `<div class="permission-notice"><strong>Manager approval required</strong><span>${esc(text)}</span></div>`;
+}
+
+function conflictEquipmentSummary(job){
+  const items=(job?.equipment||[]).map(item=>{
+    const quantity=Math.max(1,Number(item.quantity||1));
+    const movement=item.pickupRequired===true&&item.deliveryRequired===false?"Pickup":String(item.condition||"").toLowerCase()==="new"?"New":"Used";
+    return `${quantity>1?`${quantity}× `:""}${movement} ${equipmentTypeName(item)}`;
+  });
+  return items.join(" · ")||job?.type||"Equipment details unavailable";
+}
+
+function destinationCity(address){
+  const parts=String(address||"").split(",").map(part=>part.trim()).filter(Boolean);
+  return parts.length>=2?parts[parts.length-3]||parts[1]:parts[0]||"Destination unavailable";
+}
+
+function conflictJobLink(job){
+  return `<button type="button" class="conflict-job-link" data-open-job="${esc(job.id)}">
+    <span><b>Job #${esc(job.number||job.id)} — ${esc(job.customer)}</b><em>${esc(job.time)} · ${esc(destinationCity(job.address))}</em></span>
+    <small>${esc(conflictEquipmentSummary(job))}<br>${esc(job.address)}</small>
+    <i>View Job ›</i>
+  </button>`;
 }
 
 
@@ -1072,7 +1094,7 @@ function workflowActions(job) {
     const conflicts = scheduledConflictsFor(job);
     const confirm = (isManager() || state.currentUser?.sharedAccount)
       ? conflicts.length
-        ? `<div class="schedule-conflict-panel"><strong>⚠ Appointment Time Is Taken</strong><span>${esc(conflicts.map(item=>`Job #${item.number||item.id} — ${item.customer} at ${item.time}`).join(" · "))}</span><small>Reschedule this appointment, or deliberately approve it as a piggyback delivery.</small></div>
+        ? `<div class="schedule-conflict-panel"><strong>⚠ Appointment Time Is Taken</strong><span>Review the approved appointment before deciding whether these jobs can travel together.</span>${conflicts.map(conflictJobLink).join("")}<small>Reschedule this appointment, or deliberately approve it as a piggyback delivery.</small></div>
           <button class="button primary-action" data-reschedule-job="${esc(job.id)}">Reschedule Appointment</button>
           <button class="button neutral piggyback-action" data-piggyback-job="${esc(job.id)}">Approve as Piggyback Overlap</button>`
         : `<button class="button primary-action" data-status-action="Scheduled" data-job-id="${esc(job.id)}">✓ Confirm Appointment</button>`

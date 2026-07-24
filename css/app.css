@@ -368,4 +368,9 @@
 .job-conflict-banner,.schedule-conflict-panel{border:1px solid rgba(239,68,68,.72);background:rgba(95,20,20,.25);border-radius:14px;padding:14px;display:grid;gap:6px}
 .job-conflict-banner strong,.schedule-conflict-panel strong{color:#ff7777}.job-conflict-banner span,.schedule-conflict-panel span,.schedule-conflict-panel small{color:#c9cdd2;line-height:1.45}
 .piggyback-action{border-color:#f59e0b!important;color:#ffc04d!important}
-.piggyback-badge{border:1px solid rgba(245,158,11,.6)!important;color:#ffc04d!important;background:rgba(245,158,11,.1)!important;font-weight:800}
+.agenda-statuses{display:flex;align-items:center;justify-content:flex-end;gap:6px;flex-wrap:wrap}
+.piggyback-badge{display:inline-flex;align-items:center;min-height:28px;padding:3px 9px;border:1px solid #ff3eb5!important;border-radius:999px;color:#fff!important;background:#d90087!important;box-shadow:0 0 14px rgba(255,62,181,.34);font-size:12px;font-weight:900;letter-spacing:.02em}
+.conflict-job-link{width:100%;border:1px solid rgba(255,255,255,.2);border-radius:11px;background:rgba(0,0,0,.2);color:#fff;padding:12px;text-align:left;display:grid;grid-template-columns:1fr auto;gap:7px 12px;cursor:pointer}
+.conflict-job-link:hover,.conflict-job-link:focus{border-color:#ff8b8b;background:rgba(239,68,68,.1)}
+.conflict-job-link span b,.conflict-job-link span em,.conflict-job-link small{display:block}.conflict-job-link span em{font-style:normal;color:#ffb1b1;margin-top:3px}.conflict-job-link small{grid-column:1/-1;color:#c9cdd2;line-height:1.45}.conflict-job-link i{font-style:normal;color:#ff8b8b;font-weight:800;align-self:center}
+@media(max-width:520px){.agenda-main__top{align-items:flex-start}.agenda-statuses{justify-content:flex-start}.conflict-job-link{grid-template-columns:1fr}.conflict-job-link i{grid-column:1}.conflict-job-link small{grid-column:1}}
