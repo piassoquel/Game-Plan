@@ -1,9 +1,9 @@
-const CACHE_NAME = 'gameplan-v3.3.2-fix03a2-address';
+const CACHE_NAME = 'gameplan-v3.3.3-fix03a3-job-selection';
 const APP_SHELL = [
   "./","./index.html","./manifest.json",
   "./css/app.css?v=3.3.2-fix03a2",
   "./js/config.js?v=3.0.5-alpha2-3",
-  "./js/app.js?v=3.3.2-fix03a2",
+  "./js/app.js?v=3.3.3-fix03a3",
   "./js/api.js?v=3.3.0-fix03a",
   "./assets/logo/gameplan-logo.svg","./assets/icons/icon.svg"
 ];

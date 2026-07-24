@@ -551,6 +551,11 @@ function needsAttentionCard(job) {
   const equipment = job.equipment || [];
   const deliveryCount = equipment.reduce((sum,item) => item.deliveryRequired === false ? sum : sum + Math.max(1,Number(item.quantity || 1)), 0);
   const pickupCount = equipment.reduce((sum,item) => item.pickupRequired === true ? sum + Math.max(1,Number(item.quantity || 1)) : sum, 0);
+  const equipmentLines = equipment.map(item => {
+    const quantity = Math.max(1, Number(item.quantity || 1));
+    const movement = item.pickupRequired === true && item.deliveryRequired === false ? "Pickup" : (String(item.condition || "").toLowerCase() === "new" ? "New" : "Used");
+    return `${quantity > 1 ? `${quantity}× ` : ""}${movement} ${equipmentTypeName(item)}`;
+  });
   const itemLines = [
     deliveryCount ? `${deliveryCount} Item${deliveryCount === 1 ? "" : "s"} Delivery` : "",
     pickupCount ? `${pickupCount} Item${pickupCount === 1 ? "" : "s"} Pickup` : ""
@@ -565,7 +570,7 @@ function needsAttentionCard(job) {
   return `<article class="attention-job-card ${stageClass}" data-job-id="${esc(job.id)}">
     <div class="attention-rail"></div><div class="attention-symbol">${detailsComplete ? "✓" : "!"}</div>
     <div class="attention-copy"><strong>${label}</strong><h3>${esc(job.customer)}</h3>
-      <p>${esc(job.date)} · ${esc(job.time)}<br>${itemLines || esc(job.type)}<br><span class="attention-created-by">Set up by: ${esc(createdByName)}</span></p>
+      <p>${esc(job.date)} · ${esc(job.time)}<br>${equipmentLines.length ? equipmentLines.map(esc).join("<br>") : (itemLines || esc(job.type))}<br><span class="attention-created-by">Job #${esc(job.number || job.id)} · Set up by: ${esc(createdByName)}</span></p>
       <span class="badge tentative">${esc(job.status)}</span></div>
     ${action}
   </article>`;
@@ -1108,7 +1113,7 @@ function openJob(jobId) {
       <h3>Equipment (${job.equipment?.length || 0})</h3>
       ${(job.equipment || []).map(item => `<div class="equipment-card">
         ${equipmentImage(item)}
-        <div class="equipment-copy"><strong>${esc(item.brand || "")} ${esc(item.model || "")}</strong><small>${esc(item.type || "")}</small></div>
+        <div class="equipment-copy"><strong>${esc([item.brand,item.model].filter(Boolean).join(" ") || `${String(item.condition || "").toLowerCase() === "new" ? "New" : "Used"} ${equipmentTypeName(item)}`)}</strong><small>${esc(equipmentTypeName(item))}</small></div>
         <div class="equipment-build-action">${equipmentBuildControl(job, item)}</div>
       </div>`).join("")}
     </section>
@@ -2545,7 +2550,15 @@ wizardNext.onclick=async()=>{
     const jobLabel=result.jobNumber||result.jobId||result.id||"New job";
     toast(`✓ ${jobLabel} saved as Tentative.`);
     await loadLiveData();
-    go("today");
+    const savedJobId=result.jobId||result.id;
+    const savedJob=state.jobs.find(job=>String(job.id)===String(savedJobId));
+    if(savedJob){
+      if(jobDetailsComplete(savedJob))openJob(savedJob.id);
+      else openCompleteDetails(savedJob.id);
+    }else{
+      go("today");
+      toast(`✓ ${jobLabel} saved. Open it from Needs Attention to continue.`);
+    }
   }catch(error){
     console.error(error);
     toast(error.message||"The tentative job could not be saved.");
