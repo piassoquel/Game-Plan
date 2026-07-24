@@ -612,7 +612,7 @@ function completeDetailsItemCard(item,index) {
   return `<section class="complete-item-card" data-details-item="${index}">
     <div class="complete-item-head"><span class="item-number">${index+1}</span><i class="equipment-reference-icon">${detailsItemIcon(item)}</i><div><h3>${esc(title)}</h3><p>Quantity: ${Math.max(1,Number(item.quantity||1))}</p></div></div>
     <label class="details-field"><span>Manufacturer</span><input data-detail-manufacturer value="${esc(item.brand||"")}" placeholder="Enter manufacturer"></label>
-    <label class="details-field"><span>Equipment Type</span><input data-detail-equipment-type value="${esc(equipmentTypeName(item))}" placeholder="Enter equipment type"></label>
+    <label class="details-field"><span>Equipment Type</span><input value="${esc(equipmentTypeName(item))}" readonly aria-readonly="true"></label>
     <label class="details-field"><span>Model</span><input data-detail-model value="${esc(item.model && item.model !== equipmentTypeName(item) ? item.model : "")}" placeholder="Enter model or identifying description"></label>
     <label class="details-photo-field"><span>Photo <small>(Required)</small></span><div class="details-photo-control ${item.imageUrl?"has-photo":""}" data-photo-control>
       ${item.imageUrl?`<img src="${esc(item.imageUrl)}" alt="Used equipment photo">`:`<b>▣</b><em>Tap to take photo</em>`}
@@ -668,7 +668,7 @@ function bindCompleteDetails(job, items) {
         deliveryRequired:item.deliveryRequired!==false, pickupRequired:item.pickupRequired===true,
         productId:!pickupOnly&&isNew?(card.querySelector("[data-detail-product]")?.value||""):"",
         manufacturer:pickupOnly?"":(isNew?item.brand:(card.querySelector("[data-detail-manufacturer]")?.value.trim()||"")),
-        equipmentTypeText:pickupOnly?equipmentTypeName(item):(isNew?equipmentTypeName(item):(card.querySelector("[data-detail-equipment-type]")?.value.trim()||"")),
+        equipmentTypeText:equipmentTypeName(item),
         model:pickupOnly?"":(isNew?item.model:(card.querySelector("[data-detail-model]")?.value.trim()||"")),
         photoDataUrl:pickupOnly?"":(item.photoDataUrl||""), photoName:pickupOnly?"":(item.photoName||"")
       };
@@ -682,7 +682,7 @@ function bindCompleteDetails(job, items) {
         : !detail.manufacturer||!detail.model||(!detail.photoDataUrl&&!source.imageUrl);
     });
     const pickupType=screen.querySelector('[name="pickupType"]:checked')?.value||"";
-    if(missing){errorBox.textContent="Choose a model for every new delivery item and add a manufacturer, equipment type, model, and photo for every used delivery item.";return;}
+    if(missing){errorBox.textContent="Choose a model for every new delivery item and add a manufacturer, model, and photo for every used delivery item.";return;}
     if(job.hasPickup&&!pickupType){errorBox.textContent="Choose Pickup for Sale or Pickup for Disposal.";return;}
     button.disabled=true;button.textContent="Saving…";
     try{const pinToken=await requestPin("canCreateQuote","Enter your employee PIN to save equipment details.");await api.updateJobDetails(job.id,payloadItems,pickupType,screen.querySelector('[name="pickupNotes"]')?.value||"",pinToken);touchPinSession();toast("Job details saved.");closeJob();await loadLiveData();go("today");}
