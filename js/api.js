@@ -67,4 +67,7 @@ export class GamePlanApi {
   saveStaffProfile(staffData, pinToken = "") {
     return this.post("saveStaffProfile", { ...staffData, pinToken });
   }
+  saveCustomer(customerData, pinToken = "", approvalToken = "") {
+    return this.post("saveCustomer", { ...customerData, pinToken, approvalToken });
+  }
 }

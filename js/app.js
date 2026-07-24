@@ -1,4 +1,4 @@
-import { GamePlanApi } from "./api.js?v=3.4.3-fix04b2";
+import { GamePlanApi } from "./api.js?v=3.5.0-fix04c";
 
 const CACHE_KEY = "gameplan-live-bootstrap-v2";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -2188,12 +2188,12 @@ function customerCandidateMarkup(match, secondary=false){
   const {customer,reasons,score}=match;
   const values=customerAutofillValues(customer);
   const confidence=score>=130?"Strong match":"Possible match";
-  return `<article class="ux-match__candidate${secondary?" ux-match__candidate--secondary":""}"><div><span class="ux-match__confidence">${confidence} · ${esc(reasons[0]||"Customer details match")}</span><b>${esc(customer.name||`${values.firstName} ${values.lastName}`.trim())}</b><small>${esc(values.phone||"")}${values.address?`<br>${esc(values.address)}`:""}</small></div><div class="ux-match__actions"><button type="button" class="ux-match__use" data-select-customer="${esc(customer.id)}">Use Customer</button><button type="button" class="ux-match__dismiss" data-dismiss-customer="${esc(customer.id)}">Not This One</button></div></article>`;
+  return `<article class="ux-match__candidate${secondary?" ux-match__candidate--secondary":""}"><div><span class="ux-match__confidence">${confidence} · ${esc(reasons[0]||"Customer details match")}</span><b>${esc(customer.name||`${values.firstName} ${values.lastName}`.trim())}</b><small>${esc(values.phone||"")}${values.address?`<br>${esc(values.address)}`:""}</small></div><div class="ux-match__actions"><button type="button" class="ux-match__use" data-select-customer="${esc(customer.id)}">Use Customer</button><button type="button" class="ux-match__edit" data-edit-customer="${esc(customer.id)}">Edit</button><button type="button" class="ux-match__dismiss" data-dismiss-customer="${esc(customer.id)}">Not This One</button></div></article>`;
 }
 function customerMatchMarkup(){
   if(draft.customerId){
     const customer=selectedCustomer();
-    if(customer)return `<section class="ux-match ux-match--confirmed"><div class="ux-match__title"><span><b>Existing customer selected</b><small>${esc(customer.name)}</small></span><strong>✓</strong></div><button type="button" class="ux-match__change" data-clear-customer>Change customer</button></section>`;
+    if(customer)return `<section class="ux-match ux-match--confirmed"><div class="ux-match__title"><span><b>Existing customer selected</b><small>${esc(customer.name)}</small></span><strong>✓</strong></div><div class="ux-match__confirmed-actions"><button type="button" class="ux-match__edit" data-edit-customer="${esc(customer.id)}">Edit customer</button><button type="button" class="ux-match__change" data-clear-customer>Change customer</button></div></section>`;
   }
   const matches=rankCustomerMatches();
   if(!matches.length)return "";
@@ -2212,6 +2212,7 @@ function customerStep(){
   </div>`;
 }
 function bindCustomerMatchActions(){
+  wizardForm.querySelectorAll("[data-edit-customer]").forEach(el=>el.onclick=()=>openCustomerEditor(el.dataset.editCustomer));
   wizardForm.querySelectorAll("[data-select-customer]").forEach(el=>el.onclick=()=>{
     const c=state.customers.find(x=>String(x.id)===String(el.dataset.selectCustomer));if(!c)return;
     // Capture any current form edits first, then replace them with the chosen customer.
@@ -2239,6 +2240,70 @@ function bindCustomerMatchActions(){
   wizardForm.querySelector("[data-clear-customer]")?.addEventListener("click",()=>{
     draft.customerId="";draft.dismissedCustomerIds=[];updateCustomerMatchMount();
   });
+}
+
+function openCustomerEditor(customerId){
+  const customer=state.customers.find(item=>String(item.id)===String(customerId));
+  if(!customer)return toast("Customer could not be found.");
+  document.querySelector("#customerEditor")?.remove();
+  const addresses=customerAddresses(customer);
+  const editor=document.createElement("section");
+  editor.id="customerEditor";
+  editor.className="customer-editor";
+  editor.innerHTML=`<form class="customer-editor-card" aria-labelledby="customerEditorTitle">
+    <header><div><small>EXISTING CUSTOMER</small><h2 id="customerEditorTitle">Edit Customer</h2></div><button type="button" data-close-customer-editor aria-label="Close">×</button></header>
+    <div class="customer-editor-grid"><label><span>First Name</span><input name="firstName" value="${esc(customer.firstName||"")}"></label><label><span>Last Name</span><input name="lastName" value="${esc(customer.lastName||"")}"></label></div>
+    <label><span>Phone Number</span><input name="phone" inputmode="tel" value="${esc(normalizePhone(customer.phone||""))}"></label>
+    <label><span>Email <small>(Optional)</small></span><input name="email" type="email" value="${esc(customer.email||"")}"></label>
+    <fieldset><legend>Saved Addresses</legend>${addresses.map((address,index)=>`<div class="customer-address-row" data-customer-address-row="${esc(address.id)}"><label><input type="radio" name="defaultAddressId" value="${esc(address.id)}" ${address.default||(!addresses.some(item=>item.default)&&index===0)?"checked":""}><span><b>${esc(address.label||"Service Address")}</b><small>${esc(address.address)}</small></span></label>${(isManager()||state.currentUser?.sharedAccount)&&addresses.length>1?`<button type="button" data-deactivate-customer-address="${esc(address.id)}">Deactivate</button>`:""}</div>`).join("")}</fieldset>
+    <label><span>Add Another Address <small>(Optional)</small></span><input name="newAddress" autocomplete="street-address" placeholder="Enter the complete new service address" value=""></label>
+    <p class="customer-editor-help">Adding an address keeps previous addresses available. Select the circle beside the preferred default address.</p>
+    <div class="customer-editor-error" data-customer-editor-error></div>
+    <footer><button type="button" class="button neutral" data-close-customer-editor>Cancel</button><button type="submit" class="button customer-save">Save Customer</button></footer>
+  </form>`;
+  document.body.appendChild(editor);
+  const form=editor.querySelector("form");
+  let deactivateAddressId="";
+  editor.querySelectorAll("[data-close-customer-editor]").forEach(button=>button.onclick=()=>editor.remove());
+  editor.addEventListener("click",event=>{if(event.target===editor)editor.remove();});
+  editor.querySelectorAll("[data-deactivate-customer-address]").forEach(button=>button.onclick=()=>{
+    const id=button.dataset.deactivateCustomerAddress;
+    if(!window.confirm("Deactivate this saved address? A manager PIN will be required when saving."))return;
+    deactivateAddressId=id;
+    editor.querySelector(`[data-customer-address-row="${CSS.escape(id)}"]`)?.classList.add("pending-deactivation");
+    button.disabled=true;button.textContent="Will deactivate";
+  });
+  form.querySelector('[name="phone"]').addEventListener("input",event=>event.target.value=normalizePhone(event.target.value));
+  form.onsubmit=async event=>{
+    event.preventDefault();
+    const errorBox=form.querySelector("[data-customer-editor-error]");
+    const saveButton=form.querySelector(".customer-save");
+    const data=new FormData(form);
+    const payload={
+      customerId:customer.id,firstName:String(data.get("firstName")||"").trim(),lastName:String(data.get("lastName")||"").trim(),
+      phone:normalizePhone(data.get("phone")),email:String(data.get("email")||"").trim(),
+      defaultAddressId:String(data.get("defaultAddressId")||""),newAddress:String(data.get("newAddress")||"").trim(),
+      deactivateAddressId
+    };
+    if(!payload.firstName)return void(errorBox.textContent="First name is required.");
+    if(customerPhoneDigits(payload.phone).length!==10)return void(errorBox.textContent="Enter a valid 10-digit phone number.");
+    saveButton.disabled=true;saveButton.textContent="Saving…";errorBox.textContent="";
+    try{
+      const pinToken=await requestPin("canCreateQuote","Enter your employee PIN to update this customer.");
+      const approvalToken=deactivateAddressId?await requestManagerApproval("A manager PIN is required to deactivate a saved address."):"";
+      await api.saveCustomer(payload,pinToken,approvalToken);
+      touchPinSession();editor.remove();
+      await loadLiveData();
+      const updated=state.customers.find(item=>String(item.id)===String(customer.id));
+      if(updated){
+        const values=customerAutofillValues(updated);
+        draft.customerId=updated.id;draft.firstName=values.firstName;draft.lastName=values.lastName;draft.phone=values.phone;
+        if(payload.newAddress||payload.defaultAddressId){draft.address=values.address;draft.route=null;}
+      }
+      renderWizard();toast("Customer record updated.");
+      if(draft.address&&!draft.route)calculateDraftRoute();
+    }catch(error){console.error(error);errorBox.textContent=error.message||"Customer could not be updated.";saveButton.disabled=false;saveButton.textContent="Save Customer";}
+  };
 }
 function updateCustomerMatchMount(){
   const mount=wizardForm.querySelector("#customerMatchMount");if(!mount)return;
