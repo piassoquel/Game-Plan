@@ -45,8 +45,8 @@ export class GamePlanApi {
   createJob(jobData, pinToken = "", approvalToken = "") {
     return this.post("createJob", { ...jobData, pinToken, approvalToken });
   }
-  updateJobStatus(jobId, newStatus, statusNote = "", pinToken = "", approvalToken = "", overrideSchedule = false) {
-    return this.post("updateJobStatus", { jobId, newStatus, statusNote, pinToken, approvalToken, overrideSchedule });
+  updateJobStatus(jobId, newStatus, statusNote = "", pinToken = "", approvalToken = "", overrideSchedule = false, scheduleOverrideType = "") {
+    return this.post("updateJobStatus", { jobId, newStatus, statusNote, pinToken, approvalToken, overrideSchedule, scheduleOverrideType });
   }
   updateEquipmentBuildStatus(jobId, jobEquipmentId, buildComplete = true, pinToken = "", approvalToken = "") {
     return this.post("updateEquipmentBuildStatus", { jobId, jobEquipmentId, buildComplete, pinToken, approvalToken });

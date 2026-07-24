@@ -1,4 +1,4 @@
-import { GamePlanApi } from "./api.js?v=3.4.1-fix04b";
+import { GamePlanApi } from "./api.js?v=3.4.2-fix04b1";
 
 const CACHE_KEY = "gameplan-live-bootstrap-v2";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -481,7 +481,7 @@ function renderSchedule() {
         ${selectedJobs.length ? selectedJobs.map(job => `<article class="agenda-job" data-open-job="${esc(job.id)}">
           <div class="agenda-time"><strong>${esc(job.time || job.scheduledTime || "Time TBD")}</strong><span>${esc(job.duration || "")}</span></div>
           <div class="agenda-line"></div>
-          <div class="agenda-main"><div class="agenda-main__top"><h3>${esc(job.customer)}</h3><span class="badge ${badgeClass(job.status)}">${esc(job.status)}</span></div><p>${esc(job.type)} · ${esc(job.address)}</p><div class="agenda-tags"><span>${esc(job.crewSize || "—")} crew</span>${job.buildRequired && !job.buildComplete ? `<span class="build-warning">Needs Build</span>` : ""}</div></div>
+          <div class="agenda-main"><div class="agenda-main__top"><h3>${esc(job.customer)}</h3><span class="badge ${badgeClass(job.status)}">${esc(job.status)}</span></div><p>${esc(job.type)} · ${esc(job.address)}</p><div class="agenda-tags"><span>${esc(job.crewSize || "—")} crew</span>${job.piggyback?`<span class="piggyback-badge">Piggyback</span>`:""}${job.buildRequired && !job.buildComplete ? `<span class="build-warning">Needs Build</span>` : ""}</div></div>
           <button class="button neutral" data-open-job="${esc(job.id)}">Open</button>
         </article>`).join("") : `<div class="empty-agenda"><b>Open day</b><span>This day currently has no scheduled work.</span><button class="button" data-demo-action="New Job">Schedule a Job</button></div>`}
       </div>
@@ -564,15 +564,17 @@ function needsAttentionCard(job) {
   ].filter(Boolean).join("<br>");
   const createdByName = employeeDisplayName(job.createdBy) || "Unknown employee";
   const detailsComplete = jobDetailsComplete(job);
-  const label = detailsComplete ? "AWAITING MANAGER APPROVAL" : "DETAILS NEEDED";
+  const conflicts = scheduledConflictsFor(job);
+  const hasConflict = job.status === "Tentative" && conflicts.length > 0;
+  const label = hasConflict ? "SCHEDULE CONFLICT" : detailsComplete ? "AWAITING MANAGER APPROVAL" : "DETAILS NEEDED";
   const action = detailsComplete
     ? `<button class="button attention-complete" type="button" data-review-job="${esc(job.id)}">Review Appointment</button>`
     : `<button class="button attention-complete" type="button" data-complete-details="${esc(job.id)}">Complete Details</button>`;
-  const stageClass = detailsComplete ? "awaiting-approval" : "details-needed";
+  const stageClass = hasConflict ? "schedule-conflict" : detailsComplete ? "awaiting-approval" : "details-needed";
   return `<article class="attention-job-card ${stageClass}" data-job-id="${esc(job.id)}">
-    <div class="attention-rail"></div><div class="attention-symbol">${detailsComplete ? "✓" : "!"}</div>
+    <div class="attention-rail"></div><div class="attention-symbol">${hasConflict ? "!" : detailsComplete ? "✓" : "!"}</div>
     <div class="attention-copy"><strong>${label}</strong><h3>${esc(job.customer)}</h3>
-      <p>${esc(job.date)} · ${esc(job.time)}<br>${equipmentLines.length ? equipmentLines.map(esc).join("<br>") : (itemLines || esc(job.type))}<br><span class="attention-created-by">Job #${esc(job.number || job.id)} · Set up by: ${esc(createdByName)}</span></p>
+      <p>${esc(job.date)} · ${esc(job.time)}${hasConflict?`<br><b class="attention-conflict-copy">Time taken by ${esc(conflicts.map(item=>`Job #${item.number||item.id} — ${item.customer}`).join(", "))}</b>`:""}<br>${equipmentLines.length ? equipmentLines.map(esc).join("<br>") : (itemLines || esc(job.type))}<br><span class="attention-created-by">Job #${esc(job.number || job.id)} · Set up by: ${esc(createdByName)}</span></p>
       <span class="badge tentative">${esc(job.status)}</span></div>
     ${action}
   </article>`;
@@ -1067,11 +1069,16 @@ function workflowActions(job) {
         <button class="button neutral" data-reschedule-job="${esc(job.id)}">Edit / Reschedule</button>
         <button class="button red" data-status-action="Cancelled" data-job-id="${esc(job.id)}">Cancel Job</button>`;
     }
+    const conflicts = scheduledConflictsFor(job);
     const confirm = (isManager() || state.currentUser?.sharedAccount)
-      ? `<button class="button primary-action" data-status-action="Scheduled" data-job-id="${esc(job.id)}">✓ Confirm Appointment</button>`
+      ? conflicts.length
+        ? `<div class="schedule-conflict-panel"><strong>⚠ Appointment Time Is Taken</strong><span>${esc(conflicts.map(item=>`Job #${item.number||item.id} — ${item.customer} at ${item.time}`).join(" · "))}</span><small>Reschedule this appointment, or deliberately approve it as a piggyback delivery.</small></div>
+          <button class="button primary-action" data-reschedule-job="${esc(job.id)}">Reschedule Appointment</button>
+          <button class="button neutral piggyback-action" data-piggyback-job="${esc(job.id)}">Approve as Piggyback Overlap</button>`
+        : `<button class="button primary-action" data-status-action="Scheduled" data-job-id="${esc(job.id)}">✓ Confirm Appointment</button>`
       : permissionNotice("This appointment is awaiting manager confirmation before it is added to the finalized schedule.");
     return `${confirm}
-      <button class="button neutral" data-reschedule-job="${esc(job.id)}">Edit / Reschedule</button>
+      ${conflicts.length?"":`<button class="button neutral" data-reschedule-job="${esc(job.id)}">Edit / Reschedule</button>`}
       <button class="button red" data-status-action="Cancelled" data-job-id="${esc(job.id)}">Cancel Job</button>`;
   }
   if (job.status === "Scheduled" && today) {
@@ -1115,6 +1122,7 @@ function openJob(jobId) {
   if (!job) return;
   drawerContent.innerHTML = `
     ${renderLifecycle(job.status)}
+    ${job.status==="Tentative"&&scheduledConflictsFor(job).length?`<div class="job-conflict-banner"><strong>⚠ Schedule Conflict</strong><span>This requested time now overlaps an approved appointment.</span></div>`:""}
     ${renderJobSummaryCard(job)}
 
     <section class="detail-card">
@@ -1144,7 +1152,7 @@ function openJob(jobId) {
   bindDynamic();
 }
 
-async function changeJobStatus(jobId, newStatus) {
+async function changeJobStatus(jobId, newStatus, {piggyback=false} = {}) {
   const job = state.jobs.find(item => item.id === jobId);
   if (!job) return;
   const managerOnly = newStatus === "Scheduled" || (job.status === "Scheduled" && ["Tentative", "Cancelled"].includes(newStatus));
@@ -1155,8 +1163,13 @@ async function changeJobStatus(jobId, newStatus) {
     Cancelled: `Cancel ${job.customer}'s job? It will remain in job history.` ,
     Tentative: `Move this quote to Tentative?`
   };
-  if (!window.confirm(messages[newStatus] || `Change status to ${newStatus}?`)) return;
+  if (piggyback) {
+    const conflicts=scheduledConflictsFor(job);
+    if(!conflicts.length)return toast("The schedule conflict no longer exists. Review the appointment again.");
+    if(!window.confirm(`Approve this as a PIGGYBACK overlap with ${conflicts.map(item=>`Job #${item.number||item.id}`).join(", ")}?\n\nBoth jobs will remain independently priced. The overlap will be recorded for the delivery crew.`))return;
+  } else if (!window.confirm(messages[newStatus] || `Change status to ${newStatus}?`)) return;
   let overrideSchedule=false;
+  let scheduleOverrideType="";
   if(newStatus==="Scheduled"){
     const start=job.dateTime?new Date(job.dateTime):null;
     const policy=start&&!Number.isNaN(start.getTime())?schedulePolicyFor(start):{normal:true};
@@ -1167,10 +1180,15 @@ async function changeJobStatus(jobId, newStatus) {
       const otherInterval=jobInterval(other);
       return otherInterval&&interval.start<otherInterval.end&&interval.end>otherInterval.start;
     });
-    if(!policy.normal||conflict){
+    if(piggyback){
+      overrideSchedule=true;
+      scheduleOverrideType="Piggyback";
+    }else if(!policy.normal||conflict){
       const reasons=[!policy.normal?policy.detail:"",conflict?"This overlaps another approved job.":""].filter(Boolean).join("\n");
+      if(conflict){toast("This time is already taken. Reschedule it or use Approve as Piggyback Overlap.");return;}
       if(!window.confirm(`${reasons}\n\nApprove this manager override and mark the appointment as Scheduled?`))return;
       overrideSchedule=true;
+      scheduleOverrideType="Manager Discretion";
     }
   }
   const buttons = drawerContent.querySelectorAll("[data-status-action]");
@@ -1180,7 +1198,7 @@ async function changeJobStatus(jobId, newStatus) {
     const approvalToken = managerOnly
       ? await requestManagerApproval("A manager PIN is required to finalize or change the schedule. The active employee will remain signed in.")
       : "";
-    await api.updateJobStatus(jobId, newStatus, "Updated from Job Details", pinToken, approvalToken, overrideSchedule);
+    await api.updateJobStatus(jobId, newStatus, piggyback?"Approved as manager-authorized piggyback overlap":"Updated from Job Details", pinToken, approvalToken, overrideSchedule, scheduleOverrideType);
     touchPinSession();
     toast(newStatus === "Scheduled" ? "Appointment confirmed and added to the Weekly Planner." : `Job marked ${newStatus}.`);
     closeJob();
@@ -1190,6 +1208,10 @@ async function changeJobStatus(jobId, newStatus) {
     console.error(error);
     toast(error.message || "The job status could not be updated.");
     buttons.forEach(button => button.disabled = false);
+    if(newStatus==="Scheduled"&&/overlap|conflict|time is already taken/i.test(error.message||"")){
+      await loadLiveData();
+      openJob(jobId);
+    }
   }
 }
 
@@ -1476,6 +1498,9 @@ function bindDynamic() {
   });
   document.querySelectorAll("[data-status-action]").forEach(el => {
     el.onclick = () => changeJobStatus(el.dataset.jobId, el.dataset.statusAction);
+  });
+  document.querySelectorAll("[data-piggyback-job]").forEach(el => {
+    el.onclick = () => changeJobStatus(el.dataset.piggybackJob, "Scheduled", {piggyback:true});
   });
   document.querySelectorAll("[data-build-complete]").forEach(el => {
     el.onclick = () => markBuildComplete(el.dataset.jobId, el.dataset.buildComplete);
@@ -1881,6 +1906,19 @@ function jobInterval(job){
   const start=minutesFromTime(job.scheduledTime||job.time||"");if(start===null)return null;
   const duration=Math.max(30,Math.round(parseDurationHours(job)*60));
   return {start,end:start+duration};
+}
+function scheduledConflictsFor(job){
+  if(!job)return [];
+  const date=parseJobDate(job);
+  const interval=jobInterval(job);
+  if(!date||!interval)return [];
+  const key=dateKeyLocal(date);
+  return state.jobs.filter(other=>{
+    if(String(other.id)===String(job.id)||String(other.status).toLowerCase()!=="scheduled")return false;
+    const otherDate=parseJobDate(other);
+    const otherInterval=jobInterval(other);
+    return otherDate&&dateKeyLocal(otherDate)===key&&otherInterval&&interval.start<otherInterval.end&&interval.end>otherInterval.start;
+  });
 }
 function slotConflicts(dateKey,startMinutes,durationMinutes){
   const end=startMinutes+durationMinutes;

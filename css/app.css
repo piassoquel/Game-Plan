@@ -359,3 +359,13 @@
 .equipment-choice-card .button{width:100%;min-height:58px;font-size:17px}.equipment-choice-card .equipment-now{margin-top:10px;background:#ff7a00;color:#fff}
 @keyframes quote-circle{to{stroke-dashoffset:0}}@keyframes quote-check{to{stroke-dashoffset:0}}
 @media(prefers-reduced-motion:reduce){.quote-reserved-reward,.equipment-details-choice{transition:none}.quote-reward-check circle,.quote-reward-check path{animation:none;stroke-dashoffset:0}}
+.attention-job-card.schedule-conflict{border-color:rgba(239,68,68,.72);background:rgba(95,20,20,.22);box-shadow:0 0 22px rgba(239,68,68,.08)}
+.attention-job-card.schedule-conflict .attention-rail{background:#ef4444}
+.attention-job-card.schedule-conflict .attention-symbol{border-color:#ef4444;color:#ef4444}
+.attention-job-card.schedule-conflict .attention-copy strong{color:#ff7777}
+.attention-job-card.schedule-conflict .attention-complete{border-color:#ef4444!important;color:#ff7777!important}
+.attention-conflict-copy{display:inline-block;color:#ff8b8b;margin:4px 0;font-weight:700}
+.job-conflict-banner,.schedule-conflict-panel{border:1px solid rgba(239,68,68,.72);background:rgba(95,20,20,.25);border-radius:14px;padding:14px;display:grid;gap:6px}
+.job-conflict-banner strong,.schedule-conflict-panel strong{color:#ff7777}.job-conflict-banner span,.schedule-conflict-panel span,.schedule-conflict-panel small{color:#c9cdd2;line-height:1.45}
+.piggyback-action{border-color:#f59e0b!important;color:#ffc04d!important}
+.piggyback-badge{border:1px solid rgba(245,158,11,.6)!important;color:#ffc04d!important;background:rgba(245,158,11,.1)!important;font-weight:800}
