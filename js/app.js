@@ -1,4 +1,4 @@
-import { GamePlanApi } from "./api.js?v=3.6.0-fix05a";
+import { GamePlanApi } from "./api.js?v=3.6.1-fix05a1";
 
 const CACHE_KEY = "gameplan-live-bootstrap-v2";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -36,6 +36,17 @@ const authGate = document.querySelector("#authGate");
 const authStatus = document.querySelector("#authStatus");
 const googleSignInButton = document.querySelector("#googleSignInButton");
 const googleSignOutButton = document.querySelector("#googleSignOut");
+const startupSplash = document.querySelector("#startupSplash");
+const startupSplashStartedAt = performance.now();
+
+function dismissStartupSplash() {
+  if (!startupSplash || startupSplash.classList.contains("leaving")) return;
+  const delay = Math.max(0, 650 - (performance.now() - startupSplashStartedAt));
+  setTimeout(() => {
+    startupSplash.classList.add("leaving");
+    setTimeout(() => startupSplash.remove(), 320);
+  }, delay);
+}
 
 function decodeJwtPayload(token) {
   try {
@@ -65,6 +76,7 @@ function showAuthGate(message = "Sign in with an approved Google account.", erro
   authGate?.classList.add("open");
   authGate?.setAttribute("aria-hidden", "false");
   setAuthStatus(message, error);
+  dismissStartupSplash();
 }
 
 function hideAuthGate() {
@@ -179,6 +191,7 @@ const scheduleState = {
   selectedDay: toDateKey(new Date())
 };
 const employeeHomeState = {
+  weekStart: startOfWeek(new Date()),
   selectedDay: toDateKey(new Date())
 };
 
@@ -574,7 +587,7 @@ function employeeHomeJob(job) {
 
 function renderEmployeeHome() {
   const today = new Date(); today.setHours(0,0,0,0);
-  const weekStart = startOfWeek(today);
+  const weekStart = employeeHomeState.weekStart;
   const days = Array.from({length:7},(_,index)=>addDays(weekStart,index));
   let selectedDate = days.find(day=>toDateKey(day)===employeeHomeState.selectedDay);
   if (!selectedDate) {
@@ -585,6 +598,7 @@ function renderEmployeeHome() {
   const buildAlerts = upcomingBuildAlerts();
   const selectedTitle = new Intl.DateTimeFormat("en-US",{weekday:"long",month:"long",day:"numeric"}).format(selectedDate);
   return `<div class="employee-home">
+    <div class="employee-home-brand" aria-label="GamePlan"><img src="./assets/logo/gameplan-logo.svg" alt=""><div><strong>Game<span>Plan</span></strong><small>Delivery &amp; Installation</small></div></div>
     ${buildAlerts.length ? `<section class="employee-build-alert"><div class="employee-build-icon">${gpIcon("assembly")}</div><div><h2>${buildAlerts.length===1?"Build Alert":"Build Alerts"}</h2><p>${buildAlerts.length} scheduled ${buildAlerts.length===1?"job still needs":"jobs still need"} equipment assembled within the next 48 hours.</p></div><button class="button" data-home-build-alert>View Items</button></section>` : ""}
 
     <section class="employee-date-strip" aria-label="Choose schedule date">
@@ -598,6 +612,13 @@ function renderEmployeeHome() {
           <div class="week-day__meta"><strong>${jobs.length} ${jobs.length===1?"job":"jobs"}</strong><span>${jobs.filter(isScheduledBuildAlert).length?`${jobs.filter(isScheduledBuildAlert).length} Needs Build`:load.label}</span></div>
         </button>`;
       }).join("")}
+    </section>
+
+    <section class="employee-week-selector" aria-label="Change week">
+      <button class="button neutral" data-home-week-nav="-1" aria-label="Previous week">←</button>
+      <div><small>Weekly Operations Plan</small><strong>${weekLabel(weekStart)}</strong></div>
+      <button class="button neutral" data-home-week-nav="1" aria-label="Next week">→</button>
+      <button class="button employee-this-week" data-home-this-week>This Week</button>
     </section>
 
     <section class="card employee-day-agenda">
@@ -1540,9 +1561,11 @@ const views = {
       const emptyText = jobsViewFilter.includes("builds") ? "All scheduled equipment builds are complete." : "There are no jobs in this view.";
 
       const statusOptions = ["Quote", "Tentative", "Scheduled", "Completed", "Cancelled"];
-      const filterControls = filteredMode ? `<button class="button neutral" data-clear-job-filter>Show All Jobs</button>` : `<div class="job-filter-bar" aria-label="Filter jobs by status">${statusOptions.map(status => `<button class="job-filter-chip ${jobStatusFilters.has(status) ? "active" : ""} ${badgeClass(status)}" data-toggle-job-status="${status}" aria-pressed="${jobStatusFilters.has(status)}">${status}</button>`).join("")}</div>`;
+      const focusedBuildView = jobsViewFilter === "builds-48";
+      const filterControls = focusedBuildView ? "" : filteredMode ? `<button class="button neutral" data-clear-job-filter>Show All Jobs</button>` : `<div class="job-filter-bar" aria-label="Filter jobs by status">${statusOptions.map(status => `<button class="job-filter-chip ${jobStatusFilters.has(status) ? "active" : ""} ${badgeClass(status)}" data-toggle-job-status="${status}" aria-pressed="${jobStatusFilters.has(status)}">${status}</button>`).join("")}</div>`;
+      const headActions = focusedBuildView ? "" : `<div class="head-actions">${filterControls}<button class="button" data-demo-action="New Job">New Job</button></div>`;
 
-      return `<section class="card"><div class="head jobs-head"><div><h2>${heading}</h2>${subtitle ? `<span class="agenda-subtitle">${subtitle}</span>` : ""}</div><div class="head-actions">${filterControls}<button class="button" data-demo-action="New Job">New Job</button></div></div><div class="body list">${filteredJobs.length ? filteredJobs.map(j=>`<div class="row" data-open-job="${j.id}"><div><b>${j.customer}</b><span>${j.number} · ${j.type} · ${j.date} ${j.time}</span></div><span class="badge ${badgeClass(j.status)}">${j.status}</span></div>`).join("") : `<div class="empty-agenda"><b>${emptyTitle}</b><span>${emptyText}</span></div>`}</div></section>`;
+      return `<section class="card"><div class="head jobs-head"><div><h2>${heading}</h2>${subtitle ? `<span class="agenda-subtitle">${subtitle}</span>` : ""}</div>${headActions}</div><div class="body list">${filteredJobs.length ? filteredJobs.map(j=>`<div class="row" data-open-job="${j.id}"><div><b>${j.customer}</b><span>${j.number} · ${j.type} · ${j.date} ${j.time}</span></div><span class="badge ${badgeClass(j.status)}">${j.status}</span></div>`).join("") : `<div class="empty-agenda"><b>${emptyTitle}</b><span>${emptyText}</span></div>`}</div></section>`;
     }
   },
 
@@ -1568,6 +1591,16 @@ function bindDynamic() {
   view.querySelectorAll("[data-home-status]").forEach(el => el.onclick = () => { const status=el.dataset.homeStatus; if(status==="Needs Attention"){const matches=state.jobs.filter(jobNeedsOfficeAttention); if(matches.length===1){return jobDetailsComplete(matches[0]) ? openJob(matches[0].id) : openCompleteDetails(matches[0].id);} jobsViewFilter="attention";} else {jobsViewFilter=status.toLowerCase();} go("jobs"); });
   view.querySelectorAll("[data-home-select-day]").forEach(el=>el.onclick=()=>{
     employeeHomeState.selectedDay=el.dataset.homeSelectDay;
+    go("today");
+  });
+  view.querySelectorAll("[data-home-week-nav]").forEach(el=>el.onclick=()=>{
+    employeeHomeState.weekStart=addDays(employeeHomeState.weekStart,Number(el.dataset.homeWeekNav)*7);
+    employeeHomeState.selectedDay=toDateKey(employeeHomeState.weekStart);
+    go("today");
+  });
+  view.querySelector("[data-home-this-week]")?.addEventListener("click",()=>{
+    employeeHomeState.weekStart=startOfWeek(new Date());
+    employeeHomeState.selectedDay=toDateKey(new Date());
     go("today");
   });
   view.querySelector("[data-home-build-alert]")?.addEventListener("click",()=>{
@@ -1723,6 +1756,7 @@ function applyBootstrapData(data, {cached = false, timestamp = new Date().toISOS
     : (data.currentUser || { displayName: "", email: "", roleName: "Employee", permissions: {} });
   state.staffChoices = cached ? (state.staffChoices || []) : (data.staffChoices || []);
   state.ready = true;
+  dismissStartupSplash();
   state.cached = cached;
   state.live = !cached;
   state.lastUpdated = timestamp;
@@ -1796,6 +1830,7 @@ async function loadLiveData({forceLoading = false} = {}) {
     state.refreshing = false;
     updateDataStatus();
     go(location.hash.slice(1) || "today");
+    if (!state.ready) dismissStartupSplash();
   }
 }
 
