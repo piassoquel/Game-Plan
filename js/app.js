@@ -1,4 +1,4 @@
-import { GamePlanApi } from "./api.js?v=3.5.1-fix04c1";
+import { GamePlanApi } from "./api.js?v=3.6.0-fix05a";
 
 const CACHE_KEY = "gameplan-live-bootstrap-v2";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -176,6 +176,9 @@ function signOutOfGamePlan() {
 
 const scheduleState = {
   weekStart: startOfWeek(new Date()),
+  selectedDay: toDateKey(new Date())
+};
+const employeeHomeState = {
   selectedDay: toDateKey(new Date())
 };
 
@@ -543,6 +546,70 @@ function homeStatusButtons() {
   return `<section class="home-status-grid" aria-label="Job status filters">${cards.map(([label,tone,icon]) =>
     `<button class="home-status-card ${tone}" type="button" data-home-status="${esc(label)}"><i>${icon}</i><b>${statusCount(label)}</b><span>${esc(label)}</span></button>`
   ).join("")}</section>`;
+}
+
+function upcomingBuildAlerts() {
+  const now = Date.now();
+  const cutoff = now + 48 * 60 * 60 * 1000;
+  return state.jobs.filter(job => {
+    if (!isScheduledBuildAlert(job)) return false;
+    const appointment = parseJobDate(job);
+    if (!appointment) return false;
+    const appointmentTime = appointment.getTime();
+    return appointmentTime >= now && appointmentTime <= cutoff;
+  }).sort((a,b) => parseJobDate(a)-parseJobDate(b) || timeSortValue(a)-timeSortValue(b));
+}
+
+function employeeHomeJob(job) {
+  return `<article class="agenda-job employee-home-job" data-open-job="${esc(job.id)}">
+    <div class="agenda-time"><strong>${esc(job.time || job.scheduledTime || "Time TBD")}</strong><span>${esc(job.duration || "")}</span></div>
+    <div class="agenda-line"></div>
+    <div class="agenda-main"><div class="agenda-main__top"><h3>${esc(job.customer)}</h3><span class="agenda-statuses"><span class="badge ${badgeClass(job.status)}">${esc(job.status)}</span>${job.piggyback?`<span class="piggyback-badge employee-home-piggyback">Piggyback</span>`:""}</span></div>
+      <p>${esc(job.type)} · ${esc(job.address)}</p>
+      <div class="agenda-tags"><span>${esc(job.crewSize || "—")} crew</span>${job.buildRequired && !job.buildComplete ? `<span class="build-warning">Needs Build</span>` : ""}</div>
+    </div>
+    <button class="button neutral" data-open-job="${esc(job.id)}">Open</button>
+  </article>`;
+}
+
+function renderEmployeeHome() {
+  const today = new Date(); today.setHours(0,0,0,0);
+  const weekStart = startOfWeek(today);
+  const days = Array.from({length:7},(_,index)=>addDays(weekStart,index));
+  let selectedDate = days.find(day=>toDateKey(day)===employeeHomeState.selectedDay);
+  if (!selectedDate) {
+    selectedDate = days[0];
+    employeeHomeState.selectedDay = toDateKey(selectedDate);
+  }
+  const selectedJobs = jobsForDate(selectedDate);
+  const buildAlerts = upcomingBuildAlerts();
+  const selectedTitle = new Intl.DateTimeFormat("en-US",{weekday:"long",month:"long",day:"numeric"}).format(selectedDate);
+  return `<div class="employee-home">
+    ${buildAlerts.length ? `<section class="employee-build-alert"><div class="employee-build-icon">${gpIcon("assembly")}</div><div><h2>${buildAlerts.length===1?"Build Alert":"Build Alerts"}</h2><p>${buildAlerts.length} scheduled ${buildAlerts.length===1?"job still needs":"jobs still need"} equipment assembled within the next 48 hours.</p></div><button class="button" data-home-build-alert>View Items</button></section>` : ""}
+
+    <section class="employee-date-strip" aria-label="Choose schedule date">
+      ${days.map(day=>{
+        const jobs=jobsForDate(day);
+        const load=scheduleLoadInfo(jobs);
+        const selected=toDateKey(day)===employeeHomeState.selectedDay;
+        return `<button class="employee-date-card ${selected?"selected":""}" data-home-select-day="${toDateKey(day)}" aria-pressed="${selected}">
+          <div class="week-day__top"><span>${new Intl.DateTimeFormat("en-US",{weekday:"short"}).format(day)}</span><b>${day.getDate()}</b></div>
+          <div class="capacity-track"><i class="${load.level}" style="width:${Math.min(load.percent,100)}%"></i></div>
+          <div class="week-day__meta"><strong>${jobs.length} ${jobs.length===1?"job":"jobs"}</strong><span>${jobs.filter(isScheduledBuildAlert).length?`${jobs.filter(isScheduledBuildAlert).length} Needs Build`:load.label}</span></div>
+        </button>`;
+      }).join("")}
+    </section>
+
+    <section class="card employee-day-agenda">
+      <div class="head"><div><h2>${selectedTitle}</h2><span class="agenda-subtitle">${selectedJobs.length?`${selectedJobs.length} scheduled ${selectedJobs.length===1?"job":"jobs"}`:"No jobs scheduled"}</span></div></div>
+      <div class="body agenda-list">${selectedJobs.length?selectedJobs.map(employeeHomeJob).join(""):`<div class="empty-agenda compact"><b>Open day</b><span>This day currently has no scheduled work.</span></div>`}</div>
+    </section>
+
+    <section class="card mobile-workflow-card employee-start-card"><div class="head"><div><h2>Start Here</h2><span class="agenda-subtitle">New Job Workflow</span></div></div><div class="body v3-actions">
+      <button class="v3-primary-action" data-demo-action="New Job"><span class="v3-action-icon">＋</span><span><b>New Job</b><small>Choose Delivery, Pickup, or Delivery &amp; Pickup</small></span><em>›</em></button>
+      <div class="v3-secondary-actions single-action"><button data-route="schedule"><b>Schedule</b><small>View the weekly plan</small></button></div>
+    </div></section>
+  </div>`;
 }
 
 function employeeDisplayName(value) {
@@ -1406,7 +1473,7 @@ function renderEmployees() {
 const views = {
   today: {
     title:"Today's GamePlan", sub:todayDate,
-    html:()=>{const attention=state.jobs.filter(jobNeedsOfficeAttention);return `<div class="home-dashboard">
+    html:()=>{if(!isManager())return renderEmployeeHome();const attention=state.jobs.filter(jobNeedsOfficeAttention);return `<div class="home-dashboard">
       ${homeStatusButtons()}
       <section class="card needs-attention-card"><div class="head"><div><h2>Needs Attention</h2><span class="attention-count">${attention.length}</span></div></div><div class="body attention-list">${attention.length?attention.map(needsAttentionCard).join(""):`<div class="empty-agenda"><b>Nothing needs attention</b><span>Tentative jobs remain here until details are complete and a manager confirms the appointment.</span></div>`}</div></section>
       <div class="grid two"><section class="card"><div class="head"><h2>Today's Schedule</h2></div><div class="body queue">${state.jobs.filter(isTodayJob).length?state.jobs.filter(isTodayJob).map(queueItem).join(""):`<div class="empty-agenda"><b>No scheduled jobs today</b><span>Confirmed work scheduled for today will appear here.</span></div>`}</div></section>
@@ -1448,6 +1515,10 @@ const views = {
         filteredJobs = state.jobs.filter(isScheduledBuildAlert);
         heading = "Build Alerts";
         subtitle = "Scheduled jobs with unfinished equipment builds";
+      } else if (jobsViewFilter === "builds-48") {
+        filteredJobs = upcomingBuildAlerts();
+        heading = "Build Alerts";
+        subtitle = "Unfinished builds for scheduled jobs within the next 48 hours";
       } else if (jobsViewFilter === "attention") {
         filteredJobs = state.jobs.filter(jobNeedsOfficeAttention);
         heading = "Needs Attention";
@@ -1495,6 +1566,16 @@ function bindDynamic() {
   view.querySelectorAll("[data-complete-details]").forEach(el => el.onclick = () => openCompleteDetails(el.dataset.completeDetails));
   view.querySelectorAll("[data-review-job]").forEach(el => el.onclick = () => openJob(el.dataset.reviewJob));
   view.querySelectorAll("[data-home-status]").forEach(el => el.onclick = () => { const status=el.dataset.homeStatus; if(status==="Needs Attention"){const matches=state.jobs.filter(jobNeedsOfficeAttention); if(matches.length===1){return jobDetailsComplete(matches[0]) ? openJob(matches[0].id) : openCompleteDetails(matches[0].id);} jobsViewFilter="attention";} else {jobsViewFilter=status.toLowerCase();} go("jobs"); });
+  view.querySelectorAll("[data-home-select-day]").forEach(el=>el.onclick=()=>{
+    employeeHomeState.selectedDay=el.dataset.homeSelectDay;
+    go("today");
+  });
+  view.querySelector("[data-home-build-alert]")?.addEventListener("click",()=>{
+    const alerts=upcomingBuildAlerts();
+    if(alerts.length===1)return openJob(alerts[0].id);
+    jobsViewFilter="builds-48";
+    go("jobs");
+  });
   document.querySelectorAll("[data-open-job]").forEach(el => {
     el.onclick = (event) => {
       event.stopPropagation();
