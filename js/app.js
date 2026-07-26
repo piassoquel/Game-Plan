@@ -138,7 +138,7 @@ async function initializeGoogleAuthentication() {
           await authorizeGoogleCredential(response.credential);
           const hasCachedBootstrap = loadCachedBootstrap();
           updateDataStatus();
-          go(location.hash.slice(1) || "today");
+          go("today");
           await loadLiveData({ forceLoading: !hasCachedBootstrap });
         } catch (error) {
           console.error(error);
@@ -158,7 +158,7 @@ async function initializeGoogleAuthentication() {
       await authorizeGoogleCredential(saved);
       const hasCachedBootstrap = loadCachedBootstrap();
       updateDataStatus();
-      go(location.hash.slice(1) || "today");
+      go("today");
       await loadLiveData({ forceLoading: !hasCachedBootstrap });
     } else {
       sessionStorage.removeItem(GOOGLE_TOKEN_KEY);
@@ -2098,7 +2098,7 @@ function availableSlotsForDate(dateKey){
   return values.map(value=>{
     const mins=minutesFromTime(value);
     const conflicts=slotConflictJobs(dateKey,mins,duration);
-    const managerPiggyback=draft.mode==="reschedule"&&conflicts.length>0&&(can("canOverrideConflict")||state.currentUser?.sharedAccount);
+    const managerPiggyback=draft.mode==="reschedule"&&conflicts.length>0&&can("canOverrideConflict");
     const disabled=conflicts.length>0&&!managerPiggyback;
     const tone=managerPiggyback?"piggyback":disabled?"unavailable":!policy.normal?"approval":mins<720?"preferred":mins<780?"limited":mins<840?"approval":"rare";
     const [h,m]=value.split(":").map(Number);
