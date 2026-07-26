@@ -37,15 +37,26 @@ const authStatus = document.querySelector("#authStatus");
 const googleSignInButton = document.querySelector("#googleSignInButton");
 const googleSignOutButton = document.querySelector("#googleSignOut");
 const startupSplash = document.querySelector("#startupSplash");
-const startupSplashStartedAt = performance.now();
+let startupSplashStartedAt = performance.now();
+let startupSplashCycle = 0;
 
 function dismissStartupSplash() {
   if (!startupSplash || startupSplash.classList.contains("leaving")) return;
+  const cycle = startupSplashCycle;
   const delay = Math.max(0, 650 - (performance.now() - startupSplashStartedAt));
   setTimeout(() => {
+    if (cycle !== startupSplashCycle) return;
     startupSplash.classList.add("leaving");
-    setTimeout(() => startupSplash.remove(), 320);
   }, delay);
+}
+
+function showStartupSplash(message = "Preparing today's plan…") {
+  if (!startupSplash) return;
+  startupSplashCycle += 1;
+  startupSplashStartedAt = performance.now();
+  const copy = startupSplash.querySelector("p");
+  if (copy) copy.textContent = message;
+  startupSplash.classList.remove("leaving");
 }
 
 function decodeJwtPayload(token) {
@@ -136,6 +147,7 @@ async function initializeGoogleAuthentication() {
         try {
           setAuthStatus("Verifying your account…");
           await authorizeGoogleCredential(response.credential);
+          showStartupSplash("Loading today's GamePlan…");
           const hasCachedBootstrap = loadCachedBootstrap();
           updateDataStatus();
           go("today");
@@ -156,6 +168,7 @@ async function initializeGoogleAuthentication() {
     const saved = sessionStorage.getItem(GOOGLE_TOKEN_KEY) || "";
     if (tokenIsUsable(saved)) {
       await authorizeGoogleCredential(saved);
+      showStartupSplash("Loading today's GamePlan…");
       const hasCachedBootstrap = loadCachedBootstrap();
       updateDataStatus();
       go("today");
@@ -1802,6 +1815,7 @@ async function loadLiveData({forceLoading = false} = {}) {
     state.refreshing = false;
     updateDataStatus();
     go(location.hash.slice(1) || "today");
+    dismissStartupSplash();
     return;
   }
   const started = performance.now();
