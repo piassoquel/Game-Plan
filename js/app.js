@@ -1,4 +1,4 @@
-import { GamePlanApi } from "./api.js?v=3.6.1-fix05a1";
+import { GamePlanApi } from "./api.js?v=3.7.0-fix05b";
 
 const CACHE_KEY = "gameplan-live-bootstrap-v2";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -441,8 +441,9 @@ function weekLabel(start) {
   const end = addDays(start, 6);
   const sameMonth = start.getMonth() === end.getMonth();
   const first = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(start);
-  const last = new Intl.DateTimeFormat("en-US", sameMonth ? { day: "numeric", year: "numeric" } : { month: "short", day: "numeric", year: "numeric" }).format(end);
-  return `${first}–${last}`;
+  const lastDay = new Intl.DateTimeFormat("en-US", { day: "numeric" }).format(end);
+  const lastMonthDay = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(end);
+  return `${first}–${sameMonth ? lastDay : lastMonthDay}, ${end.getFullYear()}`;
 }
 
 function renderSchedule() {
@@ -1894,7 +1895,8 @@ const blankDraft = () => ({
   editStep: null,
   pendingCondition: "",
   rescheduleJobId: "",
-  rescheduleReturnJobId: ""
+  rescheduleReturnJobId: "",
+  reschedulePiggyback: false
 });
 let draft = blankDraft();
 function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;"}[c]));}
@@ -2062,6 +2064,10 @@ function slotConflicts(dateKey,startMinutes,durationMinutes){
   const end=startMinutes+durationMinutes;
   return jobsOnDate(dateKey).some(job=>{const interval=jobInterval(job);return interval&&startMinutes<interval.end&&end>interval.start;});
 }
+function slotConflictJobs(dateKey,startMinutes,durationMinutes){
+  const end=startMinutes+durationMinutes;
+  return jobsOnDate(dateKey).filter(job=>{const interval=jobInterval(job);return interval&&startMinutes<interval.end&&end>interval.start;});
+}
 function dayAvailability(date){
   const today=startOfLocalDay(new Date());
   if(date<today)return {tone:"past",label:"Past",detail:"Not selectable",disabled:true};
@@ -2072,14 +2078,15 @@ function dayAvailability(date){
     detail:policy.detail,
     disabled:!policy.overrideAllowed
   };
-  const slots=availableSlotsForDate(dateKeyLocal(date));const open=slots.filter(slot=>!slot.disabled).length;
+  const slots=availableSlotsForDate(dateKeyLocal(date));const open=slots.filter(slot=>!slot.disabled&&!slot.piggyback).length;
   if(open===0)return {tone:"full",label:"Full",detail:"No availability",disabled:true};
   if(open<=2)return {tone:"nearly",label:"Nearly Full",detail:`${open} open ${open===1?"slot":"slots"}`};
   if(open<=5)return {tone:"limited",label:"Limited",detail:`${open} open slots`};
   return {tone:"open",label:"Open",detail:`${open} open slots`};
 }
 function availableSlotsForDate(dateKey){
-  const duration=estimatedDraftMinutes();
+  const rescheduleJob=draft.mode==="reschedule"?state.jobs.find(job=>String(job.id)===String(draft.rescheduleJobId)):null;
+  const duration=rescheduleJob?Math.max(30,Math.round(parseDurationHours(rescheduleJob)*60)):estimatedDraftMinutes();
   const date=new Date(`${dateKey}T12:00:00`);
   const policy=schedulePolicyFor(date);
   const rule=availabilityRuleFor(date);
@@ -2089,11 +2096,14 @@ function availableSlotsForDate(dateKey){
   const values=[];
   for(let minute=opening;minute<=closing;minute+=increment)values.push(`${String(Math.floor(minute/60)).padStart(2,"0")}:${String(minute%60).padStart(2,"0")}`);
   return values.map(value=>{
-    const mins=minutesFromTime(value);const disabled=slotConflicts(dateKey,mins,duration);
-    const tone=disabled?"unavailable":!policy.normal?"approval":mins<720?"preferred":mins<780?"limited":mins<840?"approval":"rare";
+    const mins=minutesFromTime(value);
+    const conflicts=slotConflictJobs(dateKey,mins,duration);
+    const managerPiggyback=draft.mode==="reschedule"&&conflicts.length>0&&(can("canOverrideConflict")||state.currentUser?.sharedAccount);
+    const disabled=conflicts.length>0&&!managerPiggyback;
+    const tone=managerPiggyback?"piggyback":disabled?"unavailable":!policy.normal?"approval":mins<720?"preferred":mins<780?"limited":mins<840?"approval":"rare";
     const [h,m]=value.split(":").map(Number);
     const label=new Intl.DateTimeFormat("en-US",{hour:"numeric",minute:"2-digit"}).format(new Date(2026,0,1,h,m));
-    return {value,label,tone,disabled,managerOverride:!policy.normal};
+    return {value,label,tone,disabled,managerOverride:!policy.normal,piggyback:managerPiggyback,conflicts};
   });
 }
 function timeSlotsForSelectedDate(){return draft.scheduledDate?availableSlotsForDate(draft.scheduledDate):[];}
@@ -2790,7 +2800,7 @@ function appointmentStep(){
       <div class="ux-appointment-panel slide-in">
         <button type="button" class="ux-back-to-dates" data-back-to-dates>← Choose Another Date</button>
         <h3 class="ux-section-label">${esc(new Intl.DateTimeFormat("en-US",{weekday:"long",month:"long",day:"numeric"}).format(selectedDate))}</h3>
-        <div class="ux-time-list">${slots.map(slot=>`<button type="button" class="ux-time-slot ${slot.tone} ${draft.scheduledTime===slot.value?"selected":""}" data-time="${slot.value}" ${slot.disabled?"disabled":""}><b>${slot.label}</b><span>${slot.disabled?"Unavailable":slot.tone==="preferred"?(slot.value==="10:00"?"Best Choice":"Preferred"):slot.tone==="limited"?"Limited":slot.tone==="approval"?"Manager Approval":"Rare — Approval"}</span></button>`).join("")}</div>
+        <div class="ux-time-list">${slots.map(slot=>`<button type="button" class="ux-time-slot ${slot.tone} ${draft.scheduledTime===slot.value?"selected":""}" data-time="${slot.value}" data-time-piggyback="${slot.piggyback?"true":"false"}" ${slot.disabled?"disabled":""}><b>${slot.label}</b><span>${slot.piggyback?`Piggyback with ${esc(slot.conflicts.map(job=>job.customer).join(", "))}`:slot.disabled?"Unavailable":slot.tone==="preferred"?(slot.value==="10:00"?"Best Choice":"Preferred"):slot.tone==="limited"?"Limited":slot.tone==="approval"?"Manager Approval":"Rare — Approval"}</span></button>`).join("")}</div>
       </div>`:`
       <div class="ux-appointment-panel slide-in">
         <div class="ux-week-header"><button type="button" data-appointment-week="-1" aria-label="Previous week">←</button><div><h3 class="ux-section-label">Select a Date</h3><strong>${appointmentWeekLabel(weekStart)}</strong></div><button type="button" data-appointment-week="1" aria-label="Next week">→</button></div>
@@ -2805,7 +2815,8 @@ function summaryStep(){
     const job=state.jobs.find(item=>item.id===draft.rescheduleJobId);
     const date=draft.scheduledDate?new Intl.DateTimeFormat("en-US",{weekday:"short",month:"short",day:"numeric"}).format(new Date(`${draft.scheduledDate}T12:00:00`)):"Not selected";
     const time=timeSlotsForSelectedDate().find(x=>x.value===draft.scheduledTime)?.label||draft.scheduledTime||"Not selected";
-    return `${stepHeading("Review Reschedule","Confirm the corrected appointment before returning to Manager Approval.")}
+    return `${stepHeading("Review Reschedule",draft.reschedulePiggyback?"Confirm this manager-approved Piggyback overlap.":"Confirm the corrected appointment before returning to Manager Approval.")}
+      ${draft.reschedulePiggyback?`<div class="ux-status-banner piggyback-review"><i>↝</i><span><b>Piggyback Appointment</b><small>This time overlaps another Scheduled job. Both jobs will be marked for the delivery crew.</small></span></div>`:""}
       ${job?renderJobSummaryCard({...job,date,time},{showItemCounts:true}):""}
       <div class="ux-summary-list">${summaryCard(4,"New Appointment",`${esc(date)} at ${esc(time)}`,"equipment")}</div>
     </div>`;
@@ -2907,10 +2918,10 @@ function bindStep(){
   wizardForm.querySelectorAll("[data-access-modifier]").forEach(el=>el.onclick=()=>{const id=el.dataset.accessModifier;draft.access=draft.access.includes(id)?draft.access.filter(x=>String(x)!==String(id)):[...draft.access,id];renderWizard();});
   wizardForm.querySelector("[data-more-access]")?.addEventListener("toggle",event=>{draft.moreAccessOpen=event.currentTarget.open;});
   wizardForm.querySelector('textarea[name="internalNotes"]')?.addEventListener("input",event=>{draft.internalNotes=event.currentTarget.value;});
-  wizardForm.querySelectorAll("[data-date]").forEach(el=>el.onclick=()=>{draft.scheduledDate=el.dataset.date;draft.scheduledTime="";draft.appointmentView="times";renderWizard();});
+  wizardForm.querySelectorAll("[data-date]").forEach(el=>el.onclick=()=>{draft.scheduledDate=el.dataset.date;draft.scheduledTime="";draft.reschedulePiggyback=false;draft.appointmentView="times";renderWizard();});
   wizardForm.querySelector("[data-back-to-dates]")?.addEventListener("click",()=>{draft.appointmentView="dates";renderWizard();});
   wizardForm.querySelectorAll("[data-appointment-week]").forEach(el=>el.onclick=()=>{const current=appointmentWeekStart();const next=addLocalDays(current,Number(el.dataset.appointmentWeek)*7);draft.appointmentWeekStart=dateKeyLocal(next);draft.appointmentView="dates";renderWizard();});
-  wizardForm.querySelectorAll("[data-time]").forEach(el=>el.onclick=()=>{draft.scheduledTime=el.dataset.time;renderWizard();});
+  wizardForm.querySelectorAll("[data-time]").forEach(el=>el.onclick=()=>{draft.scheduledTime=el.dataset.time;draft.reschedulePiggyback=el.dataset.timePiggyback==="true";renderWizard();});
   wizardForm.querySelectorAll("[data-edit-step]").forEach(el=>el.onclick=()=>{
     draft.editingFromSummary=true;
     draft.editStep=Number(el.dataset.editStep);
@@ -2937,13 +2948,28 @@ wizardNext.onclick=async()=>{
     wizardNext.disabled=true;wizardBack.disabled=true;wizardNext.textContent="Saving…";
     try{
       const pinToken=await requestPin("canCreateQuote","Enter your employee PIN to save the corrected appointment.");
-      await api.updateJobSchedule(draft.rescheduleJobId,draft.scheduledDate,draft.scheduledTime,pinToken);
+      const rescheduleJob=state.jobs.find(job=>String(job.id)===String(draft.rescheduleJobId));
+      const confirmedAppointment=String(rescheduleJob?.status||"").toLowerCase()==="scheduled";
+      let approvalToken="";
+      if(draft.reschedulePiggyback){
+        const selectedSlot=timeSlotsForSelectedDate().find(slot=>slot.value===draft.scheduledTime);
+        const partners=selectedSlot?.conflicts||[];
+        if(!partners.length)throw new Error("The Piggyback conflict is no longer present. Reload and choose the appointment again.");
+        if(!window.confirm(`Move this appointment to ${selectedSlot.label} and link it as a PIGGYBACK with ${partners.map(job=>`Job #${job.number||job.id} — ${job.customer}`).join(", ")}?\n\nBoth jobs remain independently priced.`)){
+          wizardNext.disabled=false;wizardBack.disabled=false;renderWizard();return;
+        }
+        approvalToken=await requestManagerApproval("Manager approval is required to reschedule a confirmed job as a Piggyback overlap.");
+      }else if(confirmedAppointment){
+        approvalToken=await requestManagerApproval("Manager approval is required to change the time of a confirmed appointment.");
+      }
+      await api.updateJobSchedule(draft.rescheduleJobId,draft.scheduledDate,draft.scheduledTime,pinToken,approvalToken,draft.reschedulePiggyback);
       touchPinSession();
       const returnJobId=draft.rescheduleReturnJobId;
+      const wasPiggyback=draft.reschedulePiggyback;
       localStorage.removeItem(DRAFT_KEY);draft=blankDraft();closeWizard();
       await loadLiveData();
       openJob(returnJobId);
-      toast("Appointment rescheduled. Review the job before manager approval.");
+      toast(wasPiggyback?"Appointment rescheduled and linked as a Piggyback.":"Appointment rescheduled. Review the job before manager approval.");
     }catch(error){console.error(error);toast(error.message||"The appointment could not be rescheduled.");wizardNext.disabled=false;wizardBack.disabled=false;renderWizard();}
     return;
   }
