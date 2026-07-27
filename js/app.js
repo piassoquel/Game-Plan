@@ -879,6 +879,10 @@ function permissionNotice(text) {
   return `<div class="permission-notice"><strong>Manager approval required</strong><span>${esc(text)}</span></div>`;
 }
 
+function workflowNotice(title, text) {
+  return `<div class="permission-notice"><strong>${esc(title)}</strong><span>${esc(text)}</span></div>`;
+}
+
 function conflictEquipmentSummary(job){
   const items=(job?.equipment||[]).map(item=>{
     const quantity=Math.max(1,Number(item.quantity||1));
@@ -1189,7 +1193,7 @@ function workflowActions(job) {
   if (job.status === "Tentative") {
     if (!jobDetailsComplete(job)) {
       return `<button class="button primary-action" data-complete-details="${esc(job.id)}">Complete Job Details</button>
-        ${permissionNotice("Complete the required job details before manager approval.")}
+        ${workflowNotice("Equipment details needed", "Add the required equipment information now, or return later. A manager can approve the appointment after these details are complete.")}
         <button class="button neutral" data-reschedule-job="${esc(job.id)}">Edit / Reschedule</button>
         <button class="button red" data-status-action="Cancelled" data-job-id="${esc(job.id)}">Cancel Job</button>`;
     }
@@ -1600,7 +1604,7 @@ const views = {
 };
 
 function bindDynamic() {
-  view.querySelectorAll("[data-complete-details]").forEach(el => el.onclick = () => openCompleteDetails(el.dataset.completeDetails));
+  document.querySelectorAll("[data-complete-details]").forEach(el => el.onclick = () => openCompleteDetails(el.dataset.completeDetails));
   view.querySelectorAll("[data-review-job]").forEach(el => el.onclick = () => openJob(el.dataset.reviewJob));
   view.querySelectorAll("[data-home-status]").forEach(el => el.onclick = () => { const status=el.dataset.homeStatus; if(status==="Needs Attention"){const matches=state.jobs.filter(jobNeedsOfficeAttention); if(matches.length===1){return jobDetailsComplete(matches[0]) ? openJob(matches[0].id) : openCompleteDetails(matches[0].id);} jobsViewFilter="attention";} else {jobsViewFilter=status.toLowerCase();} go("jobs"); });
   view.querySelectorAll("[data-home-select-day]").forEach(el=>el.onclick=()=>{
