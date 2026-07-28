@@ -2118,24 +2118,10 @@ function appointmentWeekLabel(start){
   return `${first}–${last}`;
 }
 function estimatedDraftMinutes(){
-  // A normal delivery begins with a small handling/arrival allowance rather
-  // than a blanket one-hour base. Equipment rules then supply the actual
-  // on-site duration. This allows a straightforward job to fit into a real
-  // 45-minute opening before another appointment.
-  let minutes=15;
-  draft.equipment.forEach(item=>{
-    const type=selectedType(item);const qty=Math.max(1,Number(item.quantity||1));
-    const perItem=Number(
-      type.defaultDurationMinutes||type.defaultOnSiteMinutes||type.estimatedMinutes||
-      type.deliveryMinutes||type.durationMinutes||type.laborMinutes||0
-    );
-    minutes+=qty*(perItem>0?perItem:30);
-    if(item.condition==="New"){
-      const assembly=Number(type.defaultAssemblyMinutes||type.assemblyMinutes||30);
-      minutes+=qty*Math.max(0,assembly);
-    }
-  });
-  if(draft.destinationId==="upstairs")minutes+=draft.flights==="3+"?45:Number(draft.flights||1)*15;
+  // Match the backend contract: round-trip travel + equipment service time
+  // + every selected CMS AccessCondition minute. Store assembly happens
+  // before the delivery appointment and is not added to the crew route.
+  const minutes=quoteBreakdown().laborMinutes;
   return Math.max(30,Math.ceil(minutes/15)*15);
 }
 function formatEstimatedDuration(minutes=estimatedDraftMinutes()){
@@ -2226,7 +2212,7 @@ function quoteBreakdown(){
       else usedItemCharge+=qty*Number(settings.usedItemDeliveryCharge||0);
     }
   });
-  const selectedAccess=state.accessConditions.filter(a=>draft.access.includes(a.id));
+  const selectedAccess=draft.access.map(id=>state.accessConditions.find(a=>String(a.id)===String(id))).filter(Boolean);
   const accessMinutes=selectedAccess.reduce((n,a)=>n+Number(a.defaultMinutes||0),0);
   const accessFlatCharge=selectedAccess.reduce((n,a)=>n+Number(a.flatCharge||0),0);
   const laborMinutes=travelMinutes+serviceMinutes+accessMinutes;
@@ -2911,30 +2897,40 @@ function equipmentEditSheet(index){
   }
   return `<div class="ux-sheet-backdrop open" id="equipmentEditSheet"><section class="ux-sheet" role="dialog" aria-modal="true"><div class="ux-sheet-handle"></div><h3>Edit ${esc(type.name||"Equipment")}</h3><div class="ux-condition"><button type="button" class="ux-segment ${item.condition==="New"?"selected":""}" data-edit-condition="New">New</button><button type="button" class="ux-segment ${item.condition==="Used"?"selected":""}" data-edit-condition="Used">Used</button></div><label class="ux-field"><span>Quantity</span><div class="ux-quantity"><button type="button" data-qty-change="-1">−</button><b>${Math.max(1,Number(item.quantity||1))}</b><button type="button" data-qty-change="1">＋</button></div></label><button type="button" class="button danger" id="removeEditedEquipment">Remove Item</button><button type="button" class="button neutral" id="closeEquipmentEdit">Done</button></section></div>`;
 }
-function accessSearchText(access){return `${access?.id||""} ${access?.name||""}`.toLowerCase();}
-function findAccessCondition(terms){
-  const needles=Array.isArray(terms)?terms:[terms];
-  return state.accessConditions.find(access=>needles.some(term=>accessSearchText(access).includes(term)));
+function normalizedAccessText(value){return String(value||"").trim().toLowerCase().replace(/[^a-z0-9]+/g," " ).replace(/\s+/g," ").trim();}
+function accessConditionByRole(role){
+  const definitions={
+    garage:{ids:["ACC-GARAGE"],names:["garage"]},
+    main:{ids:["ACC-SINGLE","ACC-MAIN"],names:["single level","main level","main floor"]},
+    mobile:{ids:["ACC-MOBILE","ACC-MOBILEHOME"],names:["mobile home","manufactured home"]},
+    firstFlight:{ids:["ACC-STAIR1","ACC-FIRSTFLIGHT"],names:["first flight of stairs","first flight","one flight of stairs"]},
+    additionalFlight:{ids:["ACC-STAIRX","ACC-ADDFLIGHT"],names:["each additional flight","additional flight of stairs","additional flight"]}
+  };
+  const definition=definitions[role]||{ids:[],names:[]};
+  const byId=state.accessConditions.find(access=>definition.ids.includes(String(access.id||"").toUpperCase()));
+  if(byId)return byId;
+  return state.accessConditions.find(access=>definition.names.includes(normalizedAccessText(access.name)));
 }
-function destinationAccessCondition(key,flights=draft.flights){
-  if(key==="garage")return findAccessCondition(["garage"]);
-  if(key==="main")return findAccessCondition(["main floor","main level","single level","single-level"]);
-  if(key==="mobile")return findAccessCondition(["mobile home","mobile"]);
-  if(key==="upstairs") {
-    const flightText=String(flights||"");
-    if(flightText==="1")return findAccessCondition(["1 flight","one flight"] )||findAccessCondition(["upstairs","stairs"]);
-    if(flightText==="2")return findAccessCondition(["2 flight","two flight"] )||findAccessCondition(["upstairs","stairs"]);
-    if(flightText==="3+")return findAccessCondition(["3 flight","three flight","multiple flight"] )||findAccessCondition(["upstairs","stairs"]);
-    return findAccessCondition(["upstairs","stairs"]);
+function destinationAccessConditions(key,flights=draft.flights){
+  if(key==="garage")return [accessConditionByRole("garage")].filter(Boolean);
+  if(key==="main")return [accessConditionByRole("main")].filter(Boolean);
+  if(key==="mobile")return [accessConditionByRole("mobile")].filter(Boolean);
+  if(key==="upstairs"){
+    const first=accessConditionByRole("firstFlight");
+    const additional=accessConditionByRole("additionalFlight");
+    const count=String(flights)==="3+"?3:Math.max(1,Number(flights)||1);
+    return [first,...Array.from({length:Math.max(0,count-1)},()=>additional)].filter(Boolean);
   }
-  return null;
+  return [];
 }
 function primaryAccessIds(){
-  return new Set(["garage","main","mobile","upstairs"].map(key=>destinationAccessCondition(key)?.id).filter(Boolean).map(String));
+  return new Set(["garage","main","mobile","firstFlight","additionalFlight"].map(role=>accessConditionByRole(role)?.id).filter(Boolean).map(String));
 }
 function rebuildDestinationAccess(){
-  const destination=destinationAccessCondition(draft.destinationId,draft.flights);
-  draft.access=destination?[destination.id]:[];
+  const primary=primaryAccessIds();
+  const modifiers=draft.access.filter(id=>!primary.has(String(id)));
+  const destination=destinationAccessConditions(draft.destinationId,draft.flights).map(access=>access.id);
+  draft.access=[...destination,...modifiers];
 }
 function selectDestination(key){
   draft.destinationId=key;
@@ -2946,10 +2942,12 @@ function destinationLabel(){
 }
 function destinationCard(key,label,description,icon){
   const selected=draft.destinationId===key;
-  return `<button type="button" class="ux-icon-card destination-card ${selected?"selected":""}" data-destination="${key}"><i>${gpIcon(icon)}</i><span>${label}</span><small>${description}</small>${selected?"<strong>✓</strong>":""}</button>`;
+  const configured=key==="upstairs"?Boolean(accessConditionByRole("firstFlight")):destinationAccessConditions(key).length>0;
+  return `<button type="button" class="ux-icon-card destination-card ${selected?"selected":""} ${configured?"":"not-configured"}" data-destination="${key}" ${configured?"":"disabled"}><i>${gpIcon(icon)}</i><span>${label}</span><small>${configured?description:"Add this AccessCondition in the CMS"}</small>${selected?"<strong>✓</strong>":""}</button>`;
 }
 function deliveryDetailsStep(){
   const price=quoteEstimate();
+  const optionalAccess=state.accessConditions.filter(access=>!primaryAccessIds().has(String(access.id)));
   return `${stepHeading("Delivery Details","Where is the equipment going?")}
     <div class="ux-price-card"><small>Estimated Delivery Price</small><strong>$${price}</strong><span>Updates automatically</span></div>
     <h3 class="ux-section-label">Destination</h3>
@@ -2960,11 +2958,12 @@ function deliveryDetailsStep(){
       ${destinationCard("upstairs","Upstairs","One or more flights","upstairs")}
     </div>
     ${draft.destinationId==="upstairs"?`<section class="ux-progressive-panel"><h3>How many flights?</h3><div class="ux-flight-options">${["1","2","3+"].map(value=>`<button type="button" class="ux-flight ${draft.flights===value?"selected":""}" data-flights="${value}">${value} ${value==="1"?"Flight":"Flights"}</button>`).join("")}</div></section>`:""}
+    ${optionalAccess.length?`<section class="ux-progressive-panel access-modifier-panel"><h3>Additional Access Conditions</h3><p class="ux-helper">Select every condition that applies. CMS minutes and charges are added automatically.</p><div class="ux-access-modifiers">${optionalAccess.map(access=>`<button type="button" class="ux-access-modifier ${draft.access.some(id=>String(id)===String(access.id))?"selected":""}" data-access-modifier="${esc(access.id)}"><i>${gpIcon(iconNameFor(access,"access"))}</i><span><b>${esc(access.name)}</b><small>${Number(access.defaultMinutes||0)} min · $${Number(access.flatCharge||0).toFixed(2)}</small></span><strong>✓</strong></button>`).join("")}</div></section>`:""}
     <details class="ux-more access-more other-condition" data-more-access ${draft.moreAccessOpen?"open":""}>
       <summary><span><b>Other Special Condition</b><small>Add anything unusual the crew should know</small></span><em>⌄</em></summary>
       <div class="ux-more-body">
         <label class="ux-field special-condition-field"><span>Special condition <small>Optional</small></span><textarea name="internalNotes" rows="4" maxlength="500" placeholder="Example: locked gate, steep driveway, rear entrance, or call before arrival">${esc(draft.internalNotes)}</textarea></label>
-        <p class="ux-helper">This note helps the crew prepare. It does not change the estimated price.</p>
+        <p class="ux-helper">This note helps the crew prepare. Use Additional Access Conditions above for pricing changes.</p>
       </div>
     </details>
     <p class="ux-helper delivery-helper">GamePlan applies stair pricing and labor rules in the background.</p>
@@ -3089,7 +3088,7 @@ function bindStep(){
   wizardForm.querySelectorAll("[data-edit-equipment]").forEach(el=>el.onclick=()=>openEquipmentEditor(Number(el.dataset.editEquipment)));
   wizardForm.querySelectorAll("[data-destination]").forEach(el=>el.onclick=()=>{selectDestination(el.dataset.destination);renderWizard();});
   wizardForm.querySelectorAll("[data-flights]").forEach(el=>el.onclick=()=>{draft.flights=el.dataset.flights;rebuildDestinationAccess();renderWizard();});
-  wizardForm.querySelectorAll("[data-access-modifier]").forEach(el=>el.onclick=()=>{const id=el.dataset.accessModifier;draft.access=draft.access.includes(id)?draft.access.filter(x=>String(x)!==String(id)):[...draft.access,id];renderWizard();});
+  wizardForm.querySelectorAll("[data-access-modifier]").forEach(el=>el.onclick=()=>{const id=el.dataset.accessModifier;const selected=draft.access.some(value=>String(value)===String(id));draft.access=selected?draft.access.filter(value=>String(value)!==String(id)):[...draft.access,id];renderWizard();});
   wizardForm.querySelector("[data-more-access]")?.addEventListener("toggle",event=>{draft.moreAccessOpen=event.currentTarget.open;});
   wizardForm.querySelector('textarea[name="internalNotes"]')?.addEventListener("input",event=>{draft.internalNotes=event.currentTarget.value;});
   wizardForm.querySelectorAll("[data-date]").forEach(el=>el.onclick=()=>{draft.scheduledDate=el.dataset.date;draft.scheduledTime="";draft.reschedulePiggyback=false;draft.appointmentView="times";renderWizard();});

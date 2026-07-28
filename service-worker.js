@@ -1,11 +1,11 @@
-const CACHE_NAME = "gameplan-v3.8.0-fix05d-cache";
+const CACHE_NAME = "gameplan-v3.8.1-fix05e-cache";
 const APP_SHELL = [
   "./",
   "./index.html",
   "./manifest.json",
-  "./css/app.css?v=3.8.0-fix05d",
+  "./css/app.css?v=3.8.1-fix05e",
   "./js/config.js?v=3.0.5-alpha2-3",
-  "./js/app.js?v=3.8.0-fix05d",
+  "./js/app.js?v=3.8.1-fix05e",
   "./js/api.js?v=3.7.0-fix05b",
   "./assets/logo/gameplan-logo.svg",
   "./assets/icons/icon.svg"
