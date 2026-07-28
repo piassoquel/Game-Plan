@@ -769,13 +769,14 @@ function openCompleteDetails(jobId) {
   const deliveryItems = (job.equipment || []).filter(item => item.deliveryRequired !== false && !item.pickupRequired);
   const pickupItems = (job.equipment || []).filter(item => item.pickupRequired);
   const allItems = [...deliveryItems,...pickupItems];
+  const pickupPurpose = normalizedPickupType(job.pickupType);
   drawerContent.innerHTML = `<div class="complete-details-screen" data-details-job="${esc(job.id)}">
     ${renderLifecycle(job.status)}
     ${renderJobSummaryCard(job, { showItemCounts: true })}
     <p class="complete-instruction">Complete the required details for delivery items. Pickup items will be documented during the Pickup Item Checklist.</p>
     ${deliveryItems.length?`<h2 class="complete-section-title">DELIVERY ITEMS (${deliveryItems.length})</h2>${deliveryItems.map((item,i)=>completeDetailsItemCard(item,i)).join("")}`:""}
     ${pickupItems.length?`<h2 class="complete-section-title">PICKUP ITEMS (${pickupItems.length})</h2>${pickupItems.map((item,i)=>completeDetailsItemCard(item,deliveryItems.length+i)).join("")}`:""}
-    ${job.hasPickup?`<h2 class="complete-section-title">PICKUP DETAILS</h2><section class="pickup-details-card"><fieldset><legend>Pickup Type <small>(Required)</small></legend><label><input type="radio" name="pickupType" value="Sale" ${job.pickupType==="Sale"?"checked":""}> Pickup for Sale</label><label><input type="radio" name="pickupType" value="Disposal" ${job.pickupType==="Disposal"?"checked":""}> Pickup for Disposal</label></fieldset><label class="details-field stacked"><span>Pickup Notes <small>(Optional)</small></span><textarea name="pickupNotes" placeholder="Add any notes about the pickup…">${esc(job.pickupNotes||"")}</textarea></label></section>`:""}
+    ${job.hasPickup?`<h2 class="complete-section-title">PICKUP DETAILS</h2><section class="pickup-details-card">${pickupPurpose?`<div class="pickup-purpose-readonly"><span>Pickup Purpose</span><strong>${esc(pickupPurpose)}</strong><small>Selected when the quote was created and included in pricing.</small><input type="hidden" name="pickupType" value="${esc(pickupPurpose)}"></div>`:`<fieldset><legend>Pickup Purpose <small>(Required for this older job)</small></legend><label><input type="radio" name="pickupType" value="Trade-In"> Trade-In</label><label><input type="radio" name="pickupType" value="Disposal"> Disposal</label></fieldset>`}<label class="details-field stacked"><span>Pickup Notes <small>(Optional)</small></span><textarea name="pickupNotes" placeholder="Add any notes about the pickup…">${esc(job.pickupNotes||"")}</textarea></label></section>`:""}
     <div class="complete-details-error" data-details-error></div>
     <button class="button save-details-button" type="button" data-save-details>▣ &nbsp; Save Details</button>
     <button class="button neutral finish-details-later" type="button" data-finish-details-later>Enter Details Later</button>
@@ -829,7 +830,7 @@ function bindCompleteDetails(job, items) {
         ? !detail.productId
         : !detail.manufacturer||!detail.model||(!detail.photoDataUrl&&!source.imageUrl);
     });
-    const pickupType=screen.querySelector('[name="pickupType"]:checked')?.value||"";
+    const pickupType=screen.querySelector('[name="pickupType"]:checked')?.value||screen.querySelector('[name="pickupType"][type="hidden"]')?.value||"";
     if(missing){errorBox.textContent="Choose a model for every new delivery item and add a manufacturer, model, and photo for every used delivery item.";return;}
     if(job.hasPickup&&!pickupType){errorBox.textContent="Choose Pickup for Sale or Pickup for Disposal.";return;}
     button.disabled=true;button.textContent="Saving…";
@@ -1982,6 +1983,7 @@ const blankDraft = () => ({
   routeLoading: false,
   routeError: "",
   jobTypeId: "",
+  pickupType: "",
   equipment: [],
   access: [],
   destinationId: "",
@@ -2200,7 +2202,7 @@ function quoteBreakdown(){
   const roundTripMiles=Number(draft.route?.roundTripDistanceMiles||0);
   const travelMinutes=Number(draft.route?.roundTripTravelMinutes||0);
   let serviceMinutes=0,assemblyCharge=0,disposalCharge=0,usedItemCharge=0;
-  const disposal=/disposal/i.test(resolveJobType(draft.jobTypeId)?.name||"");
+  const disposal=normalizedPickupType(draft.pickupType)==="Disposal";
   draft.equipment.forEach(item=>{
     const type=selectedType(item);const qty=Math.max(1,Number(item.quantity||1));
     if(itemMovement(item)==="pickup"){
@@ -2262,7 +2264,7 @@ function openReschedule(jobId){
   wizardBackdrop.classList.add("open");
   wizard.setAttribute("aria-hidden","false");
 }
-function closeWizard(){wizard.classList.remove("open");wizardBackdrop.classList.remove("open");wizard.setAttribute("aria-hidden","true");}
+function closeWizard(){document.querySelector("#pickupPurposePrompt")?.remove();wizard.classList.remove("open");wizardBackdrop.classList.remove("open");wizard.setAttribute("aria-hidden","true");}
 function waitForReward(ms){
   return new Promise(resolve=>window.setTimeout(resolve,ms));
 }
@@ -2334,6 +2336,34 @@ function jobTypeStep(){
     </div>
     <p class="ux-helper job-type-helper">One tap moves directly to Customer Information.</p>
   </div>`;
+}
+function openPickupPurposePrompt(kind,type){
+  document.querySelector("#pickupPurposePrompt")?.remove();
+  const prompt=document.createElement("section");
+  prompt.id="pickupPurposePrompt";
+  prompt.className="ux-sheet-backdrop open pickup-purpose-prompt";
+  prompt.innerHTML=`<section class="ux-sheet" role="dialog" aria-modal="true" aria-labelledby="pickupPurposeTitle">
+    <div class="ux-sheet-handle"></div>
+    <small>PICKUP PURPOSE</small>
+    <h3 id="pickupPurposeTitle">Is this pickup for Trade-In or Disposal?</h3>
+    <p class="ux-helper">This choice determines the pickup charge and follows the job through final inspection.</p>
+    <div class="pickup-purpose-actions">
+      <button type="button" class="pickup-purpose-choice trade-in" data-pickup-purpose="Trade-In"><i>${gpIcon("pickup-box")}</i><span><b>Trade-In</b><small>No disposal pickup charge</small></span><em>›</em></button>
+      <button type="button" class="pickup-purpose-choice disposal" data-pickup-purpose="Disposal"><i>${gpIcon("equipment")}</i><span><b>Disposal</b><small>CMS disposal charge per item</small></span><em>›</em></button>
+    </div>
+    <button type="button" class="button neutral" data-cancel-pickup-purpose>Back</button>
+  </section>`;
+  wizard.appendChild(prompt);
+  prompt.querySelector("[data-cancel-pickup-purpose]").onclick=()=>{prompt.remove();draft.jobTypeId="";draft.pickupType="";};
+  prompt.querySelectorAll("[data-pickup-purpose]").forEach(button=>button.onclick=()=>{
+    draft.jobTypeId=type.id;
+    draft.pickupType=button.dataset.pickupPurpose;
+    draft.step=1;
+    prompt.remove();
+    saveDraft(false);
+    renderWizard();
+    toast(`${draft.pickupType} pickup selected.`);
+  });
 }
 function customerText(value){
   return String(value||"").trim().toLowerCase().replace(/[^a-z0-9]+/g," ").replace(/\s+/g," ").trim();
@@ -3007,11 +3037,14 @@ function summaryStep(){
   const items=[deliveryItems.length?`Delivery: ${deliveryItems.join(" · ")}`:"",pickupItems.length?`Pickup: ${pickupItems.join(" · ")}`:""].filter(Boolean).join("<br>");
   const access=[destinationLabel(),draft.destinationId==="upstairs"&&draft.flights?`${draft.flights} flight${draft.flights==="1"?"":"s"}`:""].filter(Boolean).join(" · ");
   const specialCondition=String(draft.internalNotes||"").trim();
+  const jobTypeName=selectedJobTypeRecord().name||"Job";
+  const pickupPurpose=normalizedPickupType(draft.pickupType);
   const date=draft.scheduledDate?new Intl.DateTimeFormat("en-US",{weekday:"short",month:"short",day:"numeric"}).format(new Date(`${draft.scheduledDate}T12:00:00`)):"Not selected";
   const time=timeSlotsForSelectedDate().find(x=>x.value===draft.scheduledTime)?.label||draft.scheduledTime||"Not selected";
   return `${stepHeading("Job Summary","Does everything look correct?")}
     <div class="ux-status-banner"><i>✓</i><span><b>Tentative Appointment Ready</b><small>Manager approval is required before Scheduled.</small></span></div>
     <div class="ux-summary-list">
+      ${summaryCard(0,"Job Type",`${esc(jobTypeName)}${pickupPurpose?` · ${esc(pickupPurpose)}`:""}`,"delivery-swap")}
       ${summaryCard(1,"Customer",`${esc(customerName())}<br><small>${esc(draft.phone)} · ${esc(draft.address)}</small>`,"single-level")}
       ${summaryCard(2,"Equipment",esc(items),iconNameFor(selectedType(draft.equipment[0])))}
       ${summaryCard(3,"Delivery Details",`${esc(access)}${specialCondition?`<br><small>${esc(specialCondition)}</small>`:""}`,"stairs")}
@@ -3033,6 +3066,7 @@ function sync(){
 function validate(){
   sync();
   if(draft.step===0&&!draft.jobTypeId)return "Choose a job type.";
+  if(draft.step===1&&/pickup/i.test(selectedJobTypeSearch())&&!normalizedPickupType(draft.pickupType))return "Choose whether the pickup is for Trade-In or Disposal.";
   if(draft.step===1){if(!draft.firstName.trim())return "Enter the customer's first name.";if(draft.phone.replace(/\D/g,"").length!==10)return "Enter a valid 10-digit phone number.";if(!draft.address.trim())return "Enter the customer address.";if(!draft.route&&!draft.routeLoading)return "Select a Google address so travel can be calculated.";}
   if(draft.step===2&&draft.equipment.length<1)return "Add at least one equipment item.";
   if(draft.step===2&&isDeliveryPickupDraft()){
@@ -3063,9 +3097,15 @@ function renderWizard(){
 }
 function bindStep(){
   wizardForm.querySelectorAll("[data-job-type-choice]").forEach(el=>el.onclick=()=>{
-    const type=resolveJobType(el.dataset.jobTypeChoice);
+    const kind=el.dataset.jobTypeChoice;
+    const type=resolveJobType(kind);
     if(!type)return toast("That job type is not active in the CMS.");
-    draft.jobTypeId=type.id;draft.step=1;saveDraft(false);renderWizard();
+    if(kind==="pickup"||kind==="delivery-pickup"){
+      draft.jobTypeId=type.id;
+      openPickupPurposePrompt(kind,type);
+      return;
+    }
+    draft.jobTypeId=type.id;draft.pickupType="";draft.step=1;saveDraft(false);renderWizard();
   });
   if(draft.step===1){
     const fields=[...wizardForm.querySelectorAll('input[name="firstName"],input[name="lastName"],input[name="phone"],input[name="address"]')];
@@ -3215,7 +3255,7 @@ wizardNext.onclick=async()=>{
       total:savedDraft.estimatedPrice,
       crewSize:Math.max(1,...savedDraft.equipment.map(item=>Number(state.products.find(product=>product.id===item.productId)?.defaultCrewSize||state.equipmentTypes.find(type=>type.id===item.equipmentTypeId)?.defaultCrewSize||2))),
       duration:formatEstimatedDuration(savedDraft.estimatedDurationMinutes),
-      detailsStatus:"Needed",hasPickup:/pickup/i.test(resolveJobType(savedDraft.jobTypeId)?.name||savedDraft.jobTypeId),
+      detailsStatus:"Needed",hasPickup:/pickup/i.test(resolveJobType(savedDraft.jobTypeId)?.name||savedDraft.jobTypeId),pickupType:normalizedPickupType(savedDraft.pickupType),
       equipment:savedDraft.equipment.map((item,index)=>({...item,id:result.jobEquipmentIds?.[index]||`pending-${index}`}))
     };
     state.jobs=[...state.jobs.filter(job=>String(job.id)!==String(savedJobId)),optimisticJob];
