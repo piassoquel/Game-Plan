@@ -2202,10 +2202,13 @@ function quoteBreakdown(){
   const roundTripMiles=Number(draft.route?.roundTripDistanceMiles||0);
   const travelMinutes=Number(draft.route?.roundTripTravelMinutes||0);
   let serviceMinutes=0,assemblyCharge=0,disposalCharge=0,usedItemCharge=0;
-  const disposal=normalizedPickupType(draft.pickupType)==="Disposal";
+  const pickupType=normalizedPickupType(draft.pickupType);
+  const disposal=pickupType==="Disposal";
+  let hasPickupItem=false;
   draft.equipment.forEach(item=>{
     const type=selectedType(item);const qty=Math.max(1,Number(item.quantity||1));
     if(itemMovement(item)==="pickup"){
+      hasPickupItem=true;
       serviceMinutes+=qty*Number(type.pickupMinutes||0);
       if(disposal)disposalCharge+=qty*Number(type.defaultDisposalCharge??50);
     }else{
@@ -2221,10 +2224,13 @@ function quoteBreakdown(){
   const laborCharge=laborMinutes/60*crew*Number(settings.laborRatePerEmployeeHour||0);
   const mileageCharge=roundTripMiles*Number(settings.vehicleRatePerMile||0);
   const baseTripCharge=Number(settings.baseTripCharge||0);
-  const subtotal=baseTripCharge+mileageCharge+laborCharge+usedItemCharge+assemblyCharge+disposalCharge+accessFlatCharge;
+  const tradeInPickupDiscount=pickupType==="Trade-In"&&hasPickupItem
+    ? Math.max(0,Number(settings.tradeInPickupDiscount||0))
+    : 0;
+  const subtotal=Math.max(0,baseTripCharge+mileageCharge+laborCharge+usedItemCharge+assemblyCharge+disposalCharge+accessFlatCharge-tradeInPickupDiscount);
   const minimum=Math.max(0,Number(settings.minimumServiceCharge||0)-subtotal);
   const increment=Math.max(1,Number(settings.priceRoundingIncrement||5));
-  return {crew,roundTripMiles,travelMinutes,serviceMinutes,accessMinutes,laborMinutes,baseTripCharge,mileageCharge,laborCharge,usedItemCharge,assemblyCharge,disposalCharge,accessFlatCharge,subtotal,minimum,roundedTotal:Math.round((subtotal+minimum)/increment)*increment};
+  return {crew,roundTripMiles,travelMinutes,serviceMinutes,accessMinutes,laborMinutes,baseTripCharge,mileageCharge,laborCharge,usedItemCharge,assemblyCharge,disposalCharge,accessFlatCharge,tradeInPickupDiscount,subtotal,minimum,roundedTotal:Math.round((subtotal+minimum)/increment)*increment};
 }
 function quoteEstimate(){return quoteBreakdown().roundedTotal;}
 function crewSize(){return Math.max(1,...draft.equipment.map(item=>{
