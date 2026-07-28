@@ -59,6 +59,42 @@ function showStartupSplash(message = "Preparing today's plan…") {
   startupSplash.classList.remove("leaving");
 }
 
+let taskProgressOverlay = null;
+
+function showTaskProgress(title, message) {
+  taskProgressOverlay?.remove();
+  const overlay = document.createElement("section");
+  overlay.className = "task-progress-overlay";
+  overlay.setAttribute("role", "status");
+  overlay.setAttribute("aria-live", "polite");
+  overlay.innerHTML = `<div class="task-progress-card">
+    <div class="task-progress-mark"><img src="./assets/logo/gameplan-logo.svg" alt=""></div>
+    <small>GAMEPLAN IS WORKING</small>
+    <h2>${esc(title)}</h2>
+    <p>${esc(message)}</p>
+    <div class="task-progress-bar"><i></i></div>
+  </div>`;
+  document.body.appendChild(overlay);
+  taskProgressOverlay = overlay;
+  requestAnimationFrame(() => overlay.classList.add("show"));
+  return overlay;
+}
+
+function hideTaskProgress() {
+  const overlay = taskProgressOverlay;
+  if (!overlay) return;
+  taskProgressOverlay = null;
+  overlay.classList.remove("show");
+  setTimeout(() => overlay.remove(), 180);
+}
+
+function refreshLiveDataInBackground() {
+  loadLiveData().catch(error => {
+    console.error("Background refresh failed.", error);
+    toast("Saved successfully. Live data will refresh automatically.");
+  });
+}
+
 function decodeJwtPayload(token) {
   try {
     const payload = token.split(".")[1];
@@ -797,8 +833,28 @@ function bindCompleteDetails(job, items) {
     if(missing){errorBox.textContent="Choose a model for every new delivery item and add a manufacturer, model, and photo for every used delivery item.";return;}
     if(job.hasPickup&&!pickupType){errorBox.textContent="Choose Pickup for Sale or Pickup for Disposal.";return;}
     button.disabled=true;button.textContent="Saving…";
-    try{const pinToken=await requestPin("canCreateQuote","Enter your employee PIN to save equipment details.");await api.updateJobDetails(job.id,payloadItems,pickupType,screen.querySelector('[name="pickupNotes"]')?.value||"",pinToken);touchPinSession();toast("Job details saved.");closeJob();await loadLiveData();go("today");}
-    catch(error){console.error(error);errorBox.textContent=error.message||"The details could not be saved.";button.disabled=false;button.textContent="▣  Save Details";}
+    try{
+      const pinToken=await requestPin("canCreateQuote","Enter your employee PIN to save equipment details.");
+      showTaskProgress("Saving equipment details…","Recording models, photos, and job information in the CMS.");
+      await api.updateJobDetails(job.id,payloadItems,pickupType,screen.querySelector('[name="pickupNotes"]')?.value||"",pinToken);
+      touchPinSession();
+      job.detailsStatus="Complete";
+      job.pickupType=pickupType||job.pickupType;
+      payloadItems.forEach((detail,index)=>{
+        const target=items[index];
+        if(!target)return;
+        target.productId=detail.productId||target.productId;
+        target.brand=detail.manufacturer||target.brand;
+        target.model=detail.model||target.model;
+        if(detail.photoDataUrl)target.imageUrl=detail.photoDataUrl;
+      });
+      closeJob();
+      go("today");
+      hideTaskProgress();
+      toast("Equipment details saved.");
+      refreshLiveDataInBackground();
+    }
+    catch(error){console.error(error);hideTaskProgress();errorBox.textContent=error.message||"The details could not be saved.";button.disabled=false;button.textContent="▣  Save Details";}
   };
 }
 
@@ -1137,6 +1193,7 @@ function openPickupInspection(jobId) {
     button.textContent = "Finalizing…";
     try {
       const pinToken = await requestPin("canCreateQuote","Enter your employee PIN to finalize this pickup.");
+      showTaskProgress("Finalizing pickup…","Saving the inspection, photos, and customer signature.");
       await api.finalizePickupInspection(job.id, {
         pickupType,
         overallCondition,
@@ -1146,12 +1203,22 @@ function openPickupInspection(jobId) {
         items
       }, pinToken);
       touchPinSession();
-      toast("Pickup inspection finalized.");
+      job.pickupInspectionStatus = "Complete";
+      job.pickupSummary = {
+        pickupType,
+        overallCondition,
+        issueCount: items.reduce((count,item)=>count+Object.values(item.responses||{}).filter(response=>response.result==="Issue").length,0),
+        photoCount: items.length,
+        completedBy: effectiveUser()?.displayName || "Employee"
+      };
       closeJob();
-      await loadLiveData();
       openJob(job.id);
+      hideTaskProgress();
+      toast("Pickup inspection finalized.");
+      refreshLiveDataInBackground();
     } catch (error) {
       console.error(error);
+      hideTaskProgress();
       errorBox.textContent = error.message || "The pickup inspection could not be finalized.";
       button.disabled = false;
       button.textContent = "✓  Finalize Pickup";
@@ -1326,14 +1393,25 @@ async function changeJobStatus(jobId, newStatus, {piggyback=false} = {}) {
     const approvalToken = managerOnly
       ? await requestManagerApproval("A manager PIN is required to finalize or change the schedule. The active employee will remain signed in.")
       : "";
+    showTaskProgress(
+      newStatus === "Completed" ? "Completing delivery…" : newStatus === "Scheduled" ? "Confirming appointment…" : "Updating job…",
+      "Saving the confirmed change to the GamePlan CMS."
+    );
     await api.updateJobStatus(jobId, newStatus, piggyback?"Approved as manager-authorized piggyback overlap":"Updated from Job Details", pinToken, approvalToken, overrideSchedule, scheduleOverrideType);
     touchPinSession();
-    toast(newStatus === "Scheduled" ? "Appointment confirmed and added to the Weekly Planner." : `Job marked ${newStatus}.`);
+    job.status = newStatus;
+    if (piggyback) {
+      job.piggyback = true;
+      scheduledConflictsFor(job).forEach(partner => { partner.piggyback = true; });
+    }
     closeJob();
-    await loadLiveData();
     go(newStatus === "Scheduled" ? "schedule" : "jobs");
+    hideTaskProgress();
+    toast(newStatus === "Scheduled" ? "Appointment confirmed and added to the Weekly Planner." : `Job marked ${newStatus}.`);
+    refreshLiveDataInBackground();
   } catch (error) {
     console.error(error);
+    hideTaskProgress();
     toast(error.message || "The job status could not be updated.");
     buttons.forEach(button => button.disabled = false);
     if(newStatus==="Scheduled"&&/overlap|conflict|time is already taken/i.test(error.message||"")){
@@ -1354,13 +1432,19 @@ async function markBuildComplete(jobId, jobEquipmentId) {
   }
   try {
     const pinToken = await requestPin("canCreateQuote", "Enter your employee PIN to certify this equipment build.");
+    showTaskProgress("Saving build completion…","Updating the delivery crew’s build status.");
     await api.updateEquipmentBuildStatus(jobId, jobEquipmentId, true, pinToken);
     touchPinSession();
-    toast("Equipment build marked complete.");
-    await loadLiveData();
+    const equipment = (job.equipment || []).find(item => String(item.id) === String(jobEquipmentId));
+    if (equipment) equipment.buildComplete = true;
+    job.buildComplete = (job.equipment || []).filter(item=>item.buildRequired).every(item=>item.buildComplete);
     openJob(jobId);
+    hideTaskProgress();
+    toast("Equipment build marked complete.");
+    refreshLiveDataInBackground();
   } catch (error) {
     console.error(error);
+    hideTaskProgress();
     toast(error.message || "The build status could not be updated.");
     if (button) {
       button.disabled = false;
@@ -2542,6 +2626,7 @@ function scheduleCustomerMatchUpdate(){
   customerMatchTimer=setTimeout(updateCustomerMatchMount,260);
 }
 let placesLibraryPromise;
+let routeCalculationRequest = 0;
 function loadPlacesLibrary(){
   if(window.google?.maps?.importLibrary)return window.google.maps.importLibrary("places");
   if(placesLibraryPromise)return placesLibraryPromise;
@@ -2560,10 +2645,34 @@ function loadPlacesLibrary(){
 }
 async function calculateDraftRoute(){
   if(!draft.address)return;
+  const request=++routeCalculationRequest;
+  const address=draft.address;
+  const placeId=draft.destinationPlaceId;
   draft.routeLoading=true;draft.routeError="";renderWizard();
-  try{draft.route=await api.calculateRoute(draft.address,draft.destinationPlaceId);}
-  catch(error){draft.route=null;draft.routeError=error.message||"Route calculation failed.";}
-  finally{draft.routeLoading=false;saveDraft(false);renderWizard();}
+  try{
+    const route=await api.calculateRoute(address,placeId);
+    if(request!==routeCalculationRequest||address!==draft.address)return;
+    draft.route=route;
+  }
+  catch(error){
+    if(request!==routeCalculationRequest)return;
+    draft.route=null;draft.routeError=error.message||"Route calculation failed.";
+  }
+  finally{
+    if(request!==routeCalculationRequest)return;
+    draft.routeLoading=false;saveDraft(false);
+    if(wizard.classList.contains("open")){
+      if(draft.step===1)renderWizard();
+      else{
+        const status=wizardForm.querySelector("[data-route-background-status]");
+        if(status){
+          const next=routeBackgroundStatus();
+          if(next)status.outerHTML=next;
+          else status.remove();
+        }
+      }
+    }
+  }
 }
 async function bindAddressAutocomplete(){
   const mount=wizardForm.querySelector("[data-address-autocomplete]");
@@ -2650,7 +2759,8 @@ async function bindAddressAutocomplete(){
         input.value=draft.address;
         sessionToken=new AutocompleteSessionToken();
         hideSuggestions();
-        await calculateDraftRoute();
+        input.disabled=false;
+        void calculateDraftRoute();
       }catch(error){
         input.disabled=false;
         draft.routeError=error.message||"That address could not be selected.";
@@ -2695,6 +2805,11 @@ function itemMovement(item){
 function equipmentCard(type,movement="delivery"){
   return `<button type="button" class="ux-icon-card" data-add-equipment="${esc(type.id)}" data-equipment-movement="${movement}"><i>${gpIcon(iconNameFor(type))}</i><span>${esc(type.name)}</span><small>Tap to add</small></button>`;
 }
+function routeBackgroundStatus(){
+  if(draft.routeLoading)return `<div class="route-background-status working" data-route-background-status><i></i><span><b>Calculating travel in the background</b><small>You can continue adding job information.</small></span></div>`;
+  if(draft.routeError)return `<div class="route-background-status error" data-route-background-status><span><b>Travel calculation needs attention</b><small>${esc(draft.routeError)}</small></span></div>`;
+  return "";
+}
 function equipmentChooser(movement,popular,more){
   return `<h3 class="ux-section-label">Popular Equipment</h3>
     <div class="ux-card-grid">${popular.map(type=>equipmentCard(type,movement)).join("")}</div>
@@ -2716,10 +2831,10 @@ function equipmentStep(){
 
   if(combined){
     return `${stepHeading("Delivery & Pickup Items","What are we delivering and picking up?")}
+      ${routeBackgroundStatus()}
       <section class="ux-combined-equipment-section">
         <h3 class="ux-section-label">Delivery Items</h3>
-        <p class="ux-helper">Choose New or Used, then tap each equipment type being delivered.</p>
-        <div class="ux-condition" role="radiogroup" aria-label="Delivery item condition"><button type="button" class="ux-segment ${draft.pendingCondition==="New"?"selected":""}" data-condition="New" aria-pressed="${draft.pendingCondition==="New"}">New</button><button type="button" class="ux-segment ${draft.pendingCondition==="Used"?"selected":""}" data-condition="Used" aria-pressed="${draft.pendingCondition==="Used"}">Used</button></div>
+        <p class="ux-helper">Tap an equipment type, then choose New or Used.</p>
         ${equipmentChooser("delivery",popular,more)}
         <section class="ux-selected-list"><h3>Delivery Items</h3>${deliveryItems.length?deliveryItems.map(entry=>selectedEquipmentChip(entry.item,entry.index)).join(""):`<div class="ux-empty-selection">No delivery items added yet</div>`}</section>
       </section>
@@ -2734,11 +2849,60 @@ function equipmentStep(){
   }
 
   return `${stepHeading(pickupOnly?"Pickup Items":"Equipment",pickupOnly?"What equipment are we picking up?":"What are we moving?")}
-    ${pickupOnly?`<p class="ux-helper">Tap each equipment type to add it. Add as many pickup items as needed.</p>`:`<div class="ux-condition" role="radiogroup" aria-label="Condition"><button type="button" class="ux-segment ${draft.pendingCondition==="New"?"selected":""}" data-condition="New" aria-pressed="${draft.pendingCondition==="New"}">New</button><button type="button" class="ux-segment ${draft.pendingCondition==="Used"?"selected":""}" data-condition="Used" aria-pressed="${draft.pendingCondition==="Used"}">Used</button></div><p class="ux-helper">Choose New or Used, then tap an equipment type.</p>`}
+    ${routeBackgroundStatus()}
+    ${pickupOnly?`<p class="ux-helper">Tap each equipment type to add it. Add as many pickup items as needed.</p>`:`<p class="ux-helper">Tap an equipment type, then choose New or Used.</p>`}
     ${equipmentChooser(pickupOnly?"pickup":"delivery",popular,more)}
     <section class="ux-selected-list"><h3>${pickupOnly?"Pickup Items":"Selected Equipment"}</h3>${draft.equipment.length?draft.equipment.map(selectedEquipmentChip).join(""):`<div class="ux-empty-selection">Nothing added yet</div>`}</section>
     <div id="equipmentEditMount"></div>
   </div>`;
+}
+function showEquipmentAddedFeedback(type, condition, movement){
+  const existing=document.querySelector("#equipmentAddedFeedback");
+  existing?.remove();
+  const feedback=document.createElement("div");
+  feedback.id="equipmentAddedFeedback";
+  feedback.className="equipment-added-feedback";
+  const label=movement==="pickup"?`Pickup ${type.name||"equipment"}`:`${condition} ${type.name||"equipment"}`;
+  feedback.innerHTML=`<i>✓</i><span><b>Equipment Added</b><small>${esc(label)}</small></span>`;
+  document.body.appendChild(feedback);
+  requestAnimationFrame(()=>feedback.classList.add("show"));
+  setTimeout(()=>{feedback.classList.remove("show");setTimeout(()=>feedback.remove(),180);},1050);
+}
+function addEquipmentItem(typeId,movement,condition){
+  const type=state.equipmentTypes.find(item=>String(item.id)===String(typeId))||{name:"Equipment"};
+  draft.equipment.push({
+    ...blankItem(),
+    condition:movement==="pickup"?"Used":condition,
+    movement,
+    deliveryRequired:movement==="delivery",
+    pickupRequired:movement==="pickup",
+    equipmentTypeId:typeId,
+    quantity:1
+  });
+  draft.pendingCondition="";
+  saveDraft(false);
+  renderWizard();
+  showEquipmentAddedFeedback(type,condition,movement);
+}
+function openEquipmentConditionPrompt(typeId,movement="delivery"){
+  const mount=wizardForm.querySelector("#equipmentEditMount");
+  const type=state.equipmentTypes.find(item=>String(item.id)===String(typeId));
+  if(!mount||!type)return;
+  mount.innerHTML=`<div class="ux-sheet-backdrop open equipment-condition-prompt" id="equipmentConditionPrompt"><section class="ux-sheet" role="dialog" aria-modal="true" aria-labelledby="equipmentConditionTitle">
+    <div class="ux-sheet-handle"></div>
+    <small>ADD EQUIPMENT</small>
+    <h3 id="equipmentConditionTitle">${gpIcon(iconNameFor(type))}${esc(type.name)}</h3>
+    <p class="ux-helper">Is this item new or used?</p>
+    <div class="equipment-condition-actions">
+      <button type="button" class="button condition-choice new" data-add-condition="New">New</button>
+      <button type="button" class="button condition-choice used" data-add-condition="Used">Used</button>
+    </div>
+    <button type="button" class="button neutral" data-cancel-equipment-add>Cancel</button>
+  </section></div>`;
+  const prompt=mount.querySelector("#equipmentConditionPrompt");
+  prompt.onclick=event=>{if(event.target===prompt)prompt.remove();};
+  mount.querySelector("[data-cancel-equipment-add]").onclick=()=>prompt.remove();
+  mount.querySelectorAll("[data-add-condition]").forEach(button=>button.onclick=()=>addEquipmentItem(typeId,movement,button.dataset.addCondition));
 }
 function equipmentEditSheet(index){
   const item=draft.equipment[index];if(!item)return "";const type=selectedType(item);
@@ -2870,7 +3034,7 @@ function sync(){
 function validate(){
   sync();
   if(draft.step===0&&!draft.jobTypeId)return "Choose a job type.";
-  if(draft.step===1){if(!draft.firstName.trim())return "Enter the customer's first name.";if(draft.phone.replace(/\D/g,"").length!==10)return "Enter a valid 10-digit phone number.";if(!draft.address.trim())return "Enter the customer address.";if(!draft.route)return "Select a Google address and wait for the route calculation.";}
+  if(draft.step===1){if(!draft.firstName.trim())return "Enter the customer's first name.";if(draft.phone.replace(/\D/g,"").length!==10)return "Enter a valid 10-digit phone number.";if(!draft.address.trim())return "Enter the customer address.";if(!draft.route&&!draft.routeLoading)return "Select a Google address so travel can be calculated.";}
   if(draft.step===2&&draft.equipment.length<1)return "Add at least one equipment item.";
   if(draft.step===2&&isDeliveryPickupDraft()){
     if(!draft.equipment.some(item=>itemMovement(item)==="delivery"))return "Add at least one delivery item.";
@@ -2878,6 +3042,8 @@ function validate(){
   }
   if(draft.step===3&&!draft.destinationId)return "Choose where the equipment is going.";
   if(draft.step===3&&draft.destinationId==="upstairs"&&!draft.flights)return "Choose the number of flights.";
+  if(draft.step===3&&draft.routeLoading)return "Travel is still calculating. This should take only a moment.";
+  if(draft.step===3&&!draft.route)return draft.routeError||"Travel must be calculated before appointment times can be shown.";
   if(draft.step===4&&(!draft.scheduledDate||!draft.scheduledTime))return "Choose an available date and time.";
   return "";
 }
@@ -2915,20 +3081,10 @@ function bindStep(){
     bindCustomerMatchActions();
     bindAddressAutocomplete();
   }
-  wizardForm.querySelectorAll("[data-condition]").forEach(el=>el.onclick=()=>{draft.pendingCondition=el.dataset.condition;saveDraft(false);renderWizard();});
   wizardForm.querySelectorAll("[data-add-equipment]").forEach(el=>el.onclick=()=>{
     const movement=el.dataset.equipmentMovement|| (isPickupOnlyDraft()?"pickup":"delivery");
-    if(movement==="delivery"&&!draft.pendingCondition){toast("Choose New or Used first.");return;}
-    draft.equipment.push({
-      ...blankItem(),
-      condition:movement==="pickup"?"Used":draft.pendingCondition,
-      movement,
-      deliveryRequired:movement==="delivery",
-      pickupRequired:movement==="pickup",
-      equipmentTypeId:el.dataset.addEquipment,
-      quantity:1
-    });
-    saveDraft(false);renderWizard();
+    if(movement==="pickup"){addEquipmentItem(el.dataset.addEquipment,movement,"Used");return;}
+    openEquipmentConditionPrompt(el.dataset.addEquipment,movement);
   });
   wizardForm.querySelectorAll("[data-edit-equipment]").forEach(el=>el.onclick=()=>openEquipmentEditor(Number(el.dataset.editEquipment)));
   wizardForm.querySelectorAll("[data-destination]").forEach(el=>el.onclick=()=>{selectDestination(el.dataset.destination);renderWizard();});
@@ -2980,15 +3136,24 @@ wizardNext.onclick=async()=>{
       }else if(confirmedAppointment){
         approvalToken=await requestManagerApproval("Manager approval is required to change the time of a confirmed appointment.");
       }
+      showTaskProgress("Saving appointment time…","Updating the schedule and checking the confirmed change.");
       await api.updateJobSchedule(draft.rescheduleJobId,draft.scheduledDate,draft.scheduledTime,pinToken,approvalToken,draft.reschedulePiggyback);
       touchPinSession();
       const returnJobId=draft.rescheduleReturnJobId;
       const wasPiggyback=draft.reschedulePiggyback;
+      if(rescheduleJob){
+        const localDate=new Date(`${draft.scheduledDate}T${draft.scheduledTime}:00`);
+        rescheduleJob.dateTime=localDate.toISOString();
+        rescheduleJob.date=new Intl.DateTimeFormat("en-US",{weekday:"short",month:"short",day:"numeric"}).format(localDate);
+        rescheduleJob.time=new Intl.DateTimeFormat("en-US",{hour:"numeric",minute:"2-digit"}).format(localDate);
+        if(wasPiggyback)rescheduleJob.piggyback=true;
+      }
       localStorage.removeItem(DRAFT_KEY);draft=blankDraft();closeWizard();
-      await loadLiveData();
       openJob(returnJobId);
+      hideTaskProgress();
       toast(wasPiggyback?"Appointment rescheduled and linked as a Piggyback.":"Appointment rescheduled. Review the job before manager approval.");
-    }catch(error){console.error(error);toast(error.message||"The appointment could not be rescheduled.");wizardNext.disabled=false;wizardBack.disabled=false;renderWizard();}
+      refreshLiveDataInBackground();
+    }catch(error){console.error(error);hideTaskProgress();toast(error.message||"The appointment could not be rescheduled.");wizardNext.disabled=false;wizardBack.disabled=false;renderWizard();}
     return;
   }
 
@@ -3030,6 +3195,7 @@ wizardNext.onclick=async()=>{
     delete payload.editStep;
 
     const savedDraft=structuredClone(payload);
+    showTaskProgress("Saving tentative appointment…","Creating the customer, route, pricing, and job records.");
     const result=await api.createJob(payload,pinToken);
     if(!result)throw new Error("The CMS did not confirm that the job was saved.");
 
@@ -3056,15 +3222,18 @@ wizardNext.onclick=async()=>{
     state.jobs=[...state.jobs.filter(job=>String(job.id)!==String(savedJobId)),optimisticJob];
     const savedJob=optimisticJob;
     if(savedJob){
+      hideTaskProgress();
       await showQuoteReserved(result,savedJob);
       showEquipmentDetailsChoice(savedJob);
-      loadLiveData().catch(error=>console.error("Background refresh failed.",error));
+      refreshLiveDataInBackground();
     }else{
+      hideTaskProgress();
       go("today");
       toast(`✓ ${jobLabel} saved. Open it from Needs Attention to continue.`);
     }
   }catch(error){
     console.error(error);
+    hideTaskProgress();
     toast(error.message||"The tentative job could not be saved.");
     wizardNext.disabled=false;
     wizardBack.disabled=false;

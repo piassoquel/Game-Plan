@@ -413,3 +413,19 @@
   .employee-home-job>.button{grid-column:3;width:100%;margin-top:3px}.employee-home-job .agenda-main__top{display:grid;gap:7px}.employee-home-job .agenda-statuses{justify-content:flex-start}
 }
 @media(prefers-reduced-motion:reduce){.startup-splash__mark,.startup-splash__progress i{animation:none}}
+
+/* Fix 05D — responsive task progress and equipment-first entry */
+.task-progress-overlay{position:fixed;inset:0;z-index:310;display:grid;place-items:center;padding:24px;background:rgba(5,9,12,.97);opacity:0;visibility:hidden;transition:opacity .18s ease,visibility .18s ease}
+.task-progress-overlay.show{opacity:1;visibility:visible}
+.task-progress-card{width:min(360px,100%);display:grid;justify-items:center;gap:12px;text-align:center}
+.task-progress-mark{width:92px;height:92px;display:grid;place-items:center;border:1px solid rgba(255,138,42,.48);border-radius:26px;background:#10171c;box-shadow:0 0 0 10px rgba(255,138,42,.035),0 18px 60px rgba(0,0,0,.5);animation:startup-mark 1.65s ease-in-out infinite}
+.task-progress-mark img{width:64px;height:64px}.task-progress-card>small{margin-top:8px;color:#ff8a2a;font-weight:800;letter-spacing:.12em}.task-progress-card h2{margin:0;color:#f5f7fa;font-size:27px}.task-progress-card p{max-width:310px;margin:0;color:#9ca3af;line-height:1.5}
+.task-progress-bar{width:170px;height:4px;margin-top:8px;overflow:hidden;border-radius:999px;background:#20282e}.task-progress-bar i{display:block;width:45%;height:100%;border-radius:inherit;background:#ff8a2a;animation:startup-progress 1.15s ease-in-out infinite}
+.route-background-status{display:flex;align-items:center;gap:11px;margin:0 0 14px;padding:12px 14px;border:1px solid #303a42;border-radius:12px;background:rgba(255,255,255,.025)}
+.route-background-status i{width:22px;height:22px;flex:0 0 auto;border:3px solid #303a42;border-top-color:#ff8a2a;border-radius:50%;animation:spin .8s linear infinite}.route-background-status span,.route-background-status b,.route-background-status small{display:block}.route-background-status small{margin-top:3px;color:#9ca3af}.route-background-status.error{border-color:rgba(239,68,68,.55)}.route-background-status.error b{color:#ff7777}
+@keyframes spin{to{transform:rotate(360deg)}}
+.equipment-condition-prompt .ux-sheet>small{display:block;color:#ff8a2a;font-size:11px;font-weight:800;letter-spacing:.12em}.equipment-condition-prompt .ux-sheet h3{display:flex;align-items:center;gap:12px;font-size:24px}.equipment-condition-prompt .ux-sheet h3 svg{width:46px;height:46px;fill:none;stroke:#ff8a2a;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.equipment-condition-actions{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:18px 0 12px}.equipment-condition-actions .button{min-height:64px;font-size:19px;font-weight:900}.equipment-condition-actions .new{border-color:#3b82f6;background:rgba(59,130,246,.13);color:#71adff}.equipment-condition-actions .used{border-color:#ff8a2a;background:rgba(255,138,42,.13);color:#ff9d4d}
+.equipment-added-feedback{position:fixed;z-index:320;left:50%;top:24%;transform:translate(-50%,-12px) scale(.96);width:min(310px,calc(100% - 36px));display:flex;align-items:center;gap:14px;padding:17px 19px;border:1px solid rgba(87,201,91,.65);border-radius:17px;background:#111a18;color:#f5f7fa;box-shadow:0 22px 60px rgba(0,0,0,.55),0 0 24px rgba(87,201,91,.12);opacity:0;transition:.18s}
+.equipment-added-feedback.show{opacity:1;transform:translate(-50%,0) scale(1)}.equipment-added-feedback i{width:42px;height:42px;display:grid;place-items:center;border-radius:50%;background:#22a447;color:#fff;font-style:normal;font-size:24px;font-weight:900}.equipment-added-feedback span,.equipment-added-feedback b,.equipment-added-feedback small{display:block}.equipment-added-feedback small{margin-top:3px;color:#aeb8b2}
+@media(prefers-reduced-motion:reduce){.task-progress-mark,.task-progress-bar i,.route-background-status i{animation:none}}
