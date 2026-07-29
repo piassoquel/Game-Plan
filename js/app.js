@@ -248,6 +248,7 @@ let jobsViewFilter = "all";
 let jobsViewWeekStart = "";
 let jobHistoryFilter = "all";
 let jobHistorySearch = "";
+let rosterSearch = "";
 
 const view = document.querySelector("#view");
 const title = document.querySelector("#title");
@@ -1637,14 +1638,91 @@ function jobMatchesHistoryFilter(job, filter = jobHistoryFilter) {
   return String(job.status || "").toLowerCase() === filter;
 }
 
-function jobHistoryCard(job) {
+function jobHistoryCard(job, applySearch = true) {
   const equipment = jobHistoryEquipmentLabels(job);
   const equipmentLabel = equipment.length > 2 ? `${equipment.slice(0,2).join(", ")} +${equipment.length-2} more` : equipment.join(", ") || "Equipment not listed";
   const pickup = Boolean(job.hasPickup || (job.equipment || []).some(item => item.pickupRequired));
-  return `<article class="job-history-card ${jobMatchesHistorySearch(job)?"":"hidden"}" data-open-job="${esc(job.id)}" data-history-job="${esc(job.id)}">
+  return `<article class="job-history-card ${!applySearch||jobMatchesHistorySearch(job)?"":"hidden"}" data-open-job="${esc(job.id)}" ${applySearch?`data-history-job="${esc(job.id)}"`:""}>
     <div class="job-history-copy"><h3>${esc(job.customer || "Unknown customer")}</h3><p>${esc(equipmentLabel)} · ${esc(job.type || "Job")}</p><small>${esc(job.date || "Unscheduled")}${job.time&&job.time!=="—"?` · ${esc(job.time)}`:""}</small><div class="job-history-badges"><span class="badge ${badgeClass(job.status)}">${esc(job.status)}</span>${pickup?`<span class="badge pickup-history-badge">Pickup</span>`:""}</div></div>
     <span class="job-history-chevron">›</span>
   </article>`;
+}
+
+function customerJobs(customerId) {
+  return state.jobs.filter(job => String(job.customerId) === String(customerId)).sort((a,b) => {
+    const ad=parseJobDate(a),bd=parseJobDate(b);
+    if(ad&&bd)return bd-ad||timeSortValue(b)-timeSortValue(a);
+    if(ad)return -1;
+    if(bd)return 1;
+    return String(a.customer||"").localeCompare(String(b.customer||""));
+  });
+}
+
+function customerLastName(customer) {
+  const explicit=String(customer.lastName||"").trim();
+  if(explicit)return explicit;
+  const parts=String(customer.name||"").trim().split(/\s+/);
+  return parts.length>1?parts[parts.length-1]:parts[0]||"";
+}
+
+function sortedRosterCustomers() {
+  return [...state.customers].sort((a,b) => customerLastName(a).localeCompare(customerLastName(b),undefined,{sensitivity:"base"}) ||
+    String(a.firstName||a.name||"").localeCompare(String(b.firstName||b.name||""),undefined,{sensitivity:"base"}));
+}
+
+function customerMatchesRosterSearch(customer,query=rosterSearch) {
+  const term=String(query||"").trim().toLowerCase();
+  if(!term)return true;
+  const visible=[customer.name,customer.firstName,customer.lastName,customer.phone].filter(Boolean).join(" ").toLowerCase();
+  const compactVisible=visible.replace(/[^a-z0-9]+/g,"");
+  const compactTerm=term.replace(/[^a-z0-9]+/g,"");
+  return visible.includes(term)||Boolean(compactTerm&&compactVisible.includes(compactTerm));
+}
+
+function renderRoster() {
+  const customers=sortedRosterCustomers();
+  const visible=customers.filter(customerMatchesRosterSearch);
+  return `<section class="customer-roster-screen">
+    <div class="customer-roster-toolbar">
+      <label class="job-history-search customer-roster-search"><span aria-hidden="true">⌕</span><input type="search" data-roster-search placeholder="Search customer or phone" value="${esc(rosterSearch)}" autocomplete="off"></label>
+      <div class="customer-roster-meta"><span data-roster-count>${visible.length} ${visible.length===1?"customer":"customers"}</span><span>Last name A–Z</span></div>
+    </div>
+    <div class="customer-roster-list">${customers.map(customer=>{
+      const jobs=customerJobs(customer.id);
+      const hidden=customerMatchesRosterSearch(customer)?"":"hidden";
+      return `<button class="customer-roster-row ${hidden}" type="button" data-roster-customer="${esc(customer.id)}"><span class="customer-roster-avatar">${esc((customer.firstName||customer.name||"?").charAt(0).toUpperCase())}</span><span class="customer-roster-copy"><b>${esc(customer.name||"Unnamed customer")}</b><small>${esc(customer.phone||"No phone number")}${customer.email?` · ${esc(customer.email)}`:""}</small></span><span class="customer-job-count">${jobs.length} ${jobs.length===1?"job":"jobs"}</span><span class="customer-roster-chevron">›</span></button>`;
+    }).join("")}</div>
+    <div class="customer-roster-empty ${visible.length?"hidden":""}" data-roster-empty><b>No customers found</b><span>Try searching another name or phone number.</span></div>
+  </section>`;
+}
+
+function openCustomerRosterProfile(customerId) {
+  const customer=state.customers.find(item=>String(item.id)===String(customerId));
+  if(!customer)return toast("Customer could not be found.");
+  document.querySelector("#customerRosterProfile")?.remove();
+  const jobs=customerJobs(customer.id);
+  const addresses=uniqueCustomerAddresses(customer);
+  const profile=document.createElement("section");
+  profile.id="customerRosterProfile";
+  profile.className="customer-roster-profile";
+  profile.innerHTML=`<div class="customer-roster-profile-card" role="dialog" aria-modal="true" aria-labelledby="customerRosterProfileTitle">
+    <header><div><small>CUSTOMER</small><h2 id="customerRosterProfileTitle">${esc(customer.name||"Customer")}</h2></div><button type="button" data-close-roster-profile aria-label="Close">×</button></header>
+    <section class="customer-profile-contact"><a href="tel:${esc(customer.phone||"")}">${esc(customer.phone||"No phone number")}</a>${customer.email?`<a href="mailto:${esc(customer.email)}">${esc(customer.email)}</a>`:""}</section>
+    <section class="customer-profile-addresses"><h3>Saved Addresses</h3>${addresses.length?addresses.map(address=>`<div><b>${esc(address.label||"Service Address")}${address.default?` <span>Default</span>`:""}</b><small>${esc(address.address)}</small></div>`).join(""):`<p>No active saved addresses.</p>`}</section>
+    <section class="customer-profile-jobs"><div><h3>Job History</h3><span>${jobs.length} ${jobs.length===1?"job":"jobs"}</span></div>${jobs.length?`<div class="customer-profile-job-list">${jobs.map(job=>jobHistoryCard(job,false)).join("")}</div>`:`<div class="customer-profile-no-jobs"><b>No job history</b><span>This customer does not have any saved jobs.</span></div>`}</section>
+    <footer><button class="button neutral" type="button" data-close-roster-profile>Close</button><button class="button" type="button" data-edit-roster-customer="${esc(customer.id)}">Edit Customer</button></footer>
+  </div>`;
+  document.body.appendChild(profile);
+  profile.querySelectorAll("[data-close-roster-profile]").forEach(button=>button.onclick=()=>profile.remove());
+  profile.addEventListener("click",event=>{if(event.target===profile)profile.remove();});
+  profile.querySelector("[data-edit-roster-customer]")?.addEventListener("click",()=>{
+    profile.remove();
+    openCustomerEditor(customer.id,{returnToRoster:true});
+  });
+  profile.querySelectorAll("[data-open-job]").forEach(card=>card.onclick=()=>{
+    profile.remove();
+    openJob(card.dataset.openJob);
+  });
 }
 
 const views = {
@@ -1748,8 +1826,8 @@ const views = {
   },
 
   roster: {
-    title:"Roster", sub:"Customers and saved service addresses",
-    html:()=>`<section class="card"><div class="head"><h2>Customers</h2><button class="button" data-demo-action="Add Customer">Add Customer</button></div><div class="body list">${state.customers.map(c=>`<div class="row"><div><b>${c.name}</b><span>${c.phone} · ${c.email || ""}</span></div><span class="badge">${c.jobs || 0} jobs</span></div>`).join("")}</div></section>`
+    title:"Customer Roster", sub:"Customers, saved addresses, and job history",
+    html:()=>renderRoster()
   },
 
   more: {
@@ -1873,6 +1951,25 @@ function bindDynamic() {
       document.querySelector("[data-history-empty]")?.classList.toggle("hidden", count > 0);
     };
   }
+  const customerSearch=document.querySelector("[data-roster-search]");
+  if(customerSearch){
+    customerSearch.oninput=()=>{
+      rosterSearch=customerSearch.value;
+      let count=0;
+      document.querySelectorAll("[data-roster-customer]").forEach(row=>{
+        const customer=state.customers.find(item=>String(item.id)===String(row.dataset.rosterCustomer));
+        const visible=Boolean(customer&&customerMatchesRosterSearch(customer));
+        row.classList.toggle("hidden",!visible);
+        if(visible)count+=1;
+      });
+      const countLabel=document.querySelector("[data-roster-count]");
+      if(countLabel)countLabel.textContent=`${count} ${count===1?"customer":"customers"}`;
+      document.querySelector("[data-roster-empty]")?.classList.toggle("hidden",count>0);
+    };
+  }
+  document.querySelectorAll("[data-roster-customer]").forEach(row=>{
+    row.onclick=()=>openCustomerRosterProfile(row.dataset.rosterCustomer);
+  });
   view.querySelectorAll("[data-summary-filter]").forEach(el => {
     el.onclick = () => {
       const filter = el.dataset.summaryFilter;
@@ -2677,7 +2774,7 @@ async function bindCustomerEditorAddressAutocomplete(editor){
   return()=>({address:input.value.trim(),placeId:selectedPlaceId});
 }
 
-function openCustomerEditor(customerId){
+function openCustomerEditor(customerId,{returnToRoster=false}={}){
   const customer=state.customers.find(item=>String(item.id)===String(customerId));
   if(!customer)return toast("Customer could not be found.");
   document.querySelector("#customerEditor")?.remove();
@@ -2742,12 +2839,18 @@ function openCustomerEditor(customerId){
         else customer.addresses.push({id:result.defaultAddressId,address:payload.newAddress,placeId:payload.newAddressPlaceId,default:true,label:"Service Address"});
       }else if(payload.defaultAddressId)customer.addresses.forEach(address=>address.default=String(address.id)===String(payload.defaultAddressId));
       const updated=customer,values=customerAutofillValues(updated);
-      draft.customerId=updated.id;draft.firstName=values.firstName;draft.lastName=values.lastName;draft.phone=values.phone;
-      const preferred=uniqueCustomerAddresses(updated).find(address=>address.default)||uniqueCustomerAddresses(updated)[0];
-      if(payload.newAddress||payload.defaultAddressId){draft.address=values.address;draft.addressId=preferred?.id||"";draft.destinationPlaceId=preferred?.placeId||"";draft.route=null;}
-      localStorage.setItem(DRAFT_KEY,JSON.stringify(draft));
-      renderWizard();toast("Customer record updated.");
-      if(draft.address&&!draft.route)calculateDraftRoute();
+      if(returnToRoster){
+        go("roster");
+        openCustomerRosterProfile(updated.id);
+      }else{
+        draft.customerId=updated.id;draft.firstName=values.firstName;draft.lastName=values.lastName;draft.phone=values.phone;
+        const preferred=uniqueCustomerAddresses(updated).find(address=>address.default)||uniqueCustomerAddresses(updated)[0];
+        if(payload.newAddress||payload.defaultAddressId){draft.address=values.address;draft.addressId=preferred?.id||"";draft.destinationPlaceId=preferred?.placeId||"";draft.route=null;}
+        localStorage.setItem(DRAFT_KEY,JSON.stringify(draft));
+        renderWizard();
+        if(draft.address&&!draft.route)calculateDraftRoute();
+      }
+      toast("Customer record updated.");
       loadLiveData().catch(error=>console.error("Background customer refresh failed.",error));
     }catch(error){console.error(error);errorBox.textContent=error.message||"Customer could not be updated.";saveButton.disabled=false;saveButton.textContent="Save Customer";}
   };
