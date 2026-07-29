@@ -591,11 +591,14 @@ function jobHasFutureAppointment(job) {
 
 function jobNeedsOfficeAttention(job) {
   const status = String(job.status || "").toLowerCase();
-  return status === "tentative" && jobHasFutureAppointment(job);
+  if (status !== "tentative" || !jobHasFutureAppointment(job)) return false;
+  return jobNeedsDetails(job) || scheduledConflictsFor(job).length > 0;
 }
 
 function statusCount(status) {
   if (status === "Needs Attention") return state.jobs.filter(jobNeedsOfficeAttention).length;
+  if (status === "Needs Build") return upcomingBuildAlerts().length;
+  if (status === "Deliveries Today") return state.jobs.filter(isTodayJob).length;
   return state.jobs.filter(job => job.status === status).length;
 }
 
@@ -603,8 +606,8 @@ function homeStatusButtons() {
   const cards = [
     ["Tentative", "tentative", "▣"],
     ["Needs Attention", "attention", "!"],
-    ["Scheduled", "scheduled", "✓"],
-    ["Completed", "completed", "✓"]
+    ["Needs Build", "builds", "⌁"],
+    ["Deliveries Today", "today", "→"]
   ];
   return `<section class="home-status-grid" aria-label="Job status filters">${cards.map(([label,tone,icon]) =>
     `<button class="home-status-card ${tone}" type="button" data-home-status="${esc(label)}"><i>${icon}</i><b>${statusCount(label)}</b><span>${esc(label)}</span></button>`
@@ -1308,7 +1311,13 @@ function workflowActions(job) {
 
 function equipmentBuildControl(job, item) {
   if (!item.buildRequired) return `<span class="badge completed">No Build Needed</span>`;
-  if (item.buildComplete) return `<span class="badge completed">Build Complete ✓</span>`;
+  if (item.buildComplete) {
+    const completedAt = item.buildCompletedAt ? new Date(item.buildCompletedAt) : null;
+    const completedWhen = completedAt && !Number.isNaN(completedAt.getTime())
+      ? new Intl.DateTimeFormat("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}).format(completedAt)
+      : "";
+    return `<div class="build-complete-record"><span class="badge completed">Build Complete ✓</span>${item.buildCompletedBy?`<small>Marked built by <b>${esc(item.buildCompletedBy)}</b>${completedWhen?` · ${esc(completedWhen)}`:""}</small>`:""}</div>`;
+  }
   if (job.status !== "Scheduled") return `<span class="build-warning">Needs Build</span>`;
   return `<button class="button build-complete-button" data-build-complete="${esc(item.id)}" data-job-id="${esc(job.id)}">Mark Build Complete</button>`;
 }
@@ -1434,10 +1443,14 @@ async function markBuildComplete(jobId, jobEquipmentId) {
   try {
     const pinToken = await requestPin("canCreateQuote", "Enter your employee PIN to certify this equipment build.");
     showTaskProgress("Saving build completion…","Updating the delivery crew’s build status.");
-    await api.updateEquipmentBuildStatus(jobId, jobEquipmentId, true, pinToken);
+    const result = await api.updateEquipmentBuildStatus(jobId, jobEquipmentId, true, pinToken);
     touchPinSession();
     const equipment = (job.equipment || []).find(item => String(item.id) === String(jobEquipmentId));
-    if (equipment) equipment.buildComplete = true;
+    if (equipment) {
+      equipment.buildComplete = true;
+      equipment.buildCompletedBy = result.buildCompletedBy || state.currentUser?.displayName || "";
+      equipment.buildCompletedAt = result.buildCompletedAt || new Date().toISOString();
+    }
     job.buildComplete = (job.equipment || []).filter(item=>item.buildRequired).every(item=>item.buildComplete);
     openJob(jobId);
     hideTaskProgress();
@@ -1599,7 +1612,7 @@ const views = {
     title:"Today's GamePlan", sub:todayDate,
     html:()=>{if(!isManager())return renderEmployeeHome();const attention=state.jobs.filter(jobNeedsOfficeAttention);return `<div class="home-dashboard">
       ${homeStatusButtons()}
-      <section class="card needs-attention-card"><div class="head"><div><h2>Needs Attention</h2><span class="attention-count">${attention.length}</span></div></div><div class="body attention-list">${attention.length?attention.map(needsAttentionCard).join(""):`<div class="empty-agenda"><b>Nothing needs attention</b><span>Tentative jobs remain here until details are complete and a manager confirms the appointment.</span></div>`}</div></section>
+      <section class="card needs-attention-card"><div class="head"><div><h2>Needs Attention</h2><span class="attention-count">${attention.length}</span></div></div><div class="body attention-list">${attention.length?attention.map(needsAttentionCard).join(""):`<div class="empty-agenda"><b>Nothing needs attention</b><span>No future tentative jobs are missing details or have a schedule conflict.</span></div>`}</div></section>
       <div class="grid two"><section class="card"><div class="head"><h2>Today's Schedule</h2></div><div class="body queue">${state.jobs.filter(isTodayJob).length?state.jobs.filter(isTodayJob).map(queueItem).join(""):`<div class="empty-agenda"><b>No scheduled jobs today</b><span>Confirmed work scheduled for today will appear here.</span></div>`}</div></section>
       <section class="card mobile-workflow-card"><div class="head"><div><h2>Start Here</h2><span class="agenda-subtitle">New Job Workflow</span></div></div><div class="body v3-actions"><button class="v3-primary-action" data-demo-action="New Job"><span class="v3-action-icon">＋</span><span><b>New Job</b><small>Delivery, Pickup, or Delivery &amp; Pickup</small></span><em>›</em></button><div class="v3-secondary-actions single-action"><button data-route="schedule"><b>Schedule</b><small>View the weekly plan</small></button></div></div></section></div>
     </div>`;}
@@ -1643,6 +1656,14 @@ const views = {
         filteredJobs = upcomingBuildAlerts();
         heading = "Build Alerts";
         subtitle = "Unfinished builds for scheduled jobs within the next 48 hours";
+      } else if (jobsViewFilter === "today") {
+        filteredJobs = state.jobs.filter(isTodayJob);
+        heading = "Deliveries Today";
+        subtitle = "Confirmed operational jobs scheduled for today";
+      } else if (jobsViewFilter === "tentative") {
+        filteredJobs = state.jobs.filter(job => job.status === "Tentative");
+        heading = "Tentative";
+        subtitle = "Appointments awaiting manager approval";
       } else if (jobsViewFilter === "attention") {
         filteredJobs = state.jobs.filter(jobNeedsOfficeAttention);
         heading = "Needs Attention";
@@ -1691,7 +1712,23 @@ const views = {
 function bindDynamic() {
   document.querySelectorAll("[data-complete-details]").forEach(el => el.onclick = () => openCompleteDetails(el.dataset.completeDetails));
   view.querySelectorAll("[data-review-job]").forEach(el => el.onclick = () => openJob(el.dataset.reviewJob));
-  view.querySelectorAll("[data-home-status]").forEach(el => el.onclick = () => { const status=el.dataset.homeStatus; if(status==="Needs Attention"){const matches=state.jobs.filter(jobNeedsOfficeAttention); if(matches.length===1){return jobDetailsComplete(matches[0]) ? openJob(matches[0].id) : openCompleteDetails(matches[0].id);} jobsViewFilter="attention";} else {jobsViewFilter=status.toLowerCase();} go("jobs"); });
+  view.querySelectorAll("[data-home-status]").forEach(el => el.onclick = () => {
+    const status=el.dataset.homeStatus;
+    if(status==="Needs Attention"){
+      const matches=state.jobs.filter(jobNeedsOfficeAttention);
+      if(matches.length===1){
+        return jobDetailsComplete(matches[0]) ? openJob(matches[0].id) : openCompleteDetails(matches[0].id);
+      }
+      jobsViewFilter="attention";
+    } else if(status==="Needs Build"){
+      jobsViewFilter="builds-48";
+    } else if(status==="Deliveries Today"){
+      jobsViewFilter="today";
+    } else {
+      jobsViewFilter=status.toLowerCase();
+    }
+    go("jobs");
+  });
   view.querySelectorAll("[data-home-select-day]").forEach(el=>el.onclick=()=>{
     employeeHomeState.selectedDay=el.dataset.homeSelectDay;
     go("today");

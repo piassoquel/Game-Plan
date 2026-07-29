@@ -436,6 +436,14 @@
 @media(max-width:560px){.ux-access-modifiers{grid-template-columns:1fr}}
 
 /* Fix 05F — early pickup purpose */
+
+/* Fix 05H — daily operations visibility */
+.home-status-card.builds i,.home-status-card.builds span{color:#f5b942}
+.home-status-card.today i,.home-status-card.today span{color:#60d66a}
+.build-complete-record{display:grid;justify-items:end;gap:7px;text-align:right}
+.build-complete-record small{max-width:220px;color:#9ca3af;line-height:1.35}
+.build-complete-record small b{display:inline;color:#f5f7fa}
+@media(max-width:600px){.build-complete-record{justify-items:start;text-align:left}.build-complete-record small{max-width:none}}
 .pickup-purpose-prompt{z-index:110}.pickup-purpose-prompt .ux-sheet>small{display:block;color:#ff8a2a;font-size:11px;font-weight:800;letter-spacing:.12em;text-align:center}.pickup-purpose-prompt .ux-sheet h3{max-width:440px;margin:8px auto 10px;font-size:23px;line-height:1.25}.pickup-purpose-prompt .ux-helper{text-align:center}
 .pickup-purpose-actions{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin:19px 0 10px}.pickup-purpose-choice{display:grid;grid-template-columns:48px minmax(0,1fr) 18px;gap:10px;align-items:center;min-height:92px;padding:14px;border:1px solid #303840;border-radius:15px;background:#11171c;color:#f5f7fa;text-align:left;font:inherit}.pickup-purpose-choice>i{width:46px;height:46px;display:grid;place-items:center;border-radius:12px}.pickup-purpose-choice>i svg{width:36px;height:36px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}.pickup-purpose-choice span,.pickup-purpose-choice b,.pickup-purpose-choice small{display:block}.pickup-purpose-choice b{font-size:18px}.pickup-purpose-choice small{margin-top:4px;color:#9ca3af;line-height:1.3}.pickup-purpose-choice em{font-style:normal;font-size:21px}.pickup-purpose-choice.trade-in{border-color:rgba(59,130,246,.65)}.pickup-purpose-choice.trade-in>i,.pickup-purpose-choice.trade-in em{color:#67a8ff}.pickup-purpose-choice.disposal{border-color:rgba(255,138,42,.72)}.pickup-purpose-choice.disposal>i,.pickup-purpose-choice.disposal em{color:#ff9d4d}
 .pickup-purpose-readonly{display:grid;gap:4px;padding:14px;border:1px solid rgba(59,130,246,.42);border-radius:12px;background:rgba(59,130,246,.07)}.pickup-purpose-readonly span,.pickup-purpose-readonly strong,.pickup-purpose-readonly small{display:block}.pickup-purpose-readonly span{color:#9ca3af;font-size:12px;text-transform:uppercase;letter-spacing:.08em}.pickup-purpose-readonly strong{font-size:22px}.pickup-purpose-readonly small{color:#a9b1ba}
