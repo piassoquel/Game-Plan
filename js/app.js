@@ -246,7 +246,8 @@ const employeeHomeState = {
 
 let jobsViewFilter = "all";
 let jobsViewWeekStart = "";
-let jobStatusFilters = new Set(["Quote", "Tentative", "Scheduled"]);
+let jobHistoryFilter = "all";
+let jobHistorySearch = "";
 
 const view = document.querySelector("#view");
 const title = document.querySelector("#title");
@@ -1316,7 +1317,8 @@ function equipmentBuildControl(job, item) {
     const completedWhen = completedAt && !Number.isNaN(completedAt.getTime())
       ? new Intl.DateTimeFormat("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}).format(completedAt)
       : "";
-    return `<div class="build-complete-record"><span class="badge completed">Build Complete ✓</span>${item.buildCompletedBy?`<small>Marked built by <b>${esc(item.buildCompletedBy)}</b>${completedWhen?` · ${esc(completedWhen)}`:""}</small>`:""}</div>`;
+    const completedBy = employeeDisplayName(item.buildCompletedBy);
+    return `<div class="build-complete-record"><span class="badge completed">Build Complete ✓</span>${completedBy?`<small>Marked built by <b>${esc(completedBy)}</b>${completedWhen?` · ${esc(completedWhen)}`:""}</small>`:""}</div>`;
   }
   if (job.status !== "Scheduled") return `<span class="build-warning">Needs Build</span>`;
   return `<button class="button build-complete-button" data-build-complete="${esc(item.id)}" data-job-id="${esc(job.id)}">Mark Build Complete</button>`;
@@ -1607,6 +1609,44 @@ function renderEmployees() {
   </article>`).join("") || `<div class="empty-agenda"><b>No employees yet</b><span>Add the first staff profile to begin.</span></div>`}</div></section>`;
 }
 
+function jobHistoryEquipmentLabels(job) {
+  return (job.equipment || []).map(item => {
+    const type = equipmentTypeName(item);
+    const product = state.products.find(value => String(value.id) === String(item.productId));
+    const brand = item.brand || product?.brand || "";
+    const model = item.model || product?.model || "";
+    return [brand, model].filter(Boolean).join(" ") || type;
+  }).filter(Boolean);
+}
+
+function jobHistorySearchText(job) {
+  const visible = [job.customer, job.phone, ...jobHistoryEquipmentLabels(job)].filter(Boolean).join(" ").toLowerCase();
+  return `${visible} ${visible.replace(/[^a-z0-9]+/g,"")}`;
+}
+
+function jobMatchesHistorySearch(job, query = jobHistorySearch) {
+  const terms = String(query || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length) return true;
+  const searchable = jobHistorySearchText(job);
+  return terms.every(term => searchable.includes(term) || searchable.includes(term.replace(/[^a-z0-9]+/g,"")));
+}
+
+function jobMatchesHistoryFilter(job, filter = jobHistoryFilter) {
+  if (filter === "all") return true;
+  if (filter === "pickups") return Boolean(job.hasPickup || (job.equipment || []).some(item => item.pickupRequired));
+  return String(job.status || "").toLowerCase() === filter;
+}
+
+function jobHistoryCard(job) {
+  const equipment = jobHistoryEquipmentLabels(job);
+  const equipmentLabel = equipment.length > 2 ? `${equipment.slice(0,2).join(", ")} +${equipment.length-2} more` : equipment.join(", ") || "Equipment not listed";
+  const pickup = Boolean(job.hasPickup || (job.equipment || []).some(item => item.pickupRequired));
+  return `<article class="job-history-card ${jobMatchesHistorySearch(job)?"":"hidden"}" data-open-job="${esc(job.id)}" data-history-job="${esc(job.id)}">
+    <div class="job-history-copy"><h3>${esc(job.customer || "Unknown customer")}</h3><p>${esc(equipmentLabel)} · ${esc(job.type || "Job")}</p><small>${esc(job.date || "Unscheduled")}${job.time&&job.time!=="—"?` · ${esc(job.time)}`:""}</small><div class="job-history-badges"><span class="badge ${badgeClass(job.status)}">${esc(job.status)}</span>${pickup?`<span class="badge pickup-history-badge">Pickup</span>`:""}</div></div>
+    <span class="job-history-chevron">›</span>
+  </article>`;
+}
+
 const views = {
   today: {
     title:"Today's GamePlan", sub:todayDate,
@@ -1624,72 +1664,86 @@ const views = {
   },
 
   jobs: {
-    title:"Jobs", sub:"Quotes, tentative appointments, scheduled work, and history",
+    title:"Job History", sub:"Find previous and active jobs",
     html:()=>{
       const weekStart = jobsViewWeekStart ? new Date(`${jobsViewWeekStart}T12:00:00`) : null;
       const weekKeys = weekStart ? new Set(Array.from({length:7}, (_,i)=>toDateKey(addDays(weekStart,i)))) : null;
       let filteredJobs = state.jobs;
-      let heading = "All Jobs";
-      let subtitle = "";
+      let heading = "Job History";
+      let subtitle = "Find previous and active jobs";
+      let focusedView = false;
 
       if (jobsViewFilter === "scheduled-week") {
         filteredJobs = state.jobs.filter(job => ["Scheduled","Completed"].includes(job.status) && weekKeys?.has(toDateKey(parseJobDate(job))));
         heading = "Scheduled Jobs";
         subtitle = `Jobs scheduled for ${weekLabel(weekStart)}`;
+        focusedView = true;
       } else if (jobsViewFilter === "tentative-week") {
         filteredJobs = state.jobs.filter(job => job.status === "Tentative" && weekKeys?.has(toDateKey(parseJobDate(job))));
         heading = "Awaiting Confirmation";
         subtitle = `Tentative jobs for ${weekLabel(weekStart)}`;
+        focusedView = true;
       } else if (jobsViewFilter === "builds-week") {
         filteredJobs = state.jobs.filter(job => isScheduledBuildAlert(job) && weekKeys?.has(toDateKey(parseJobDate(job))));
         heading = "Needs Build";
         subtitle = `Unfinished scheduled builds for ${weekLabel(weekStart)}`;
+        focusedView = true;
       } else if (jobsViewFilter === "unscheduled") {
         filteredJobs = state.jobs.filter(job => !parseJobDate(job) && job.status !== "Cancelled");
         heading = "Unscheduled Jobs";
         subtitle = "Jobs that still need an appointment date";
+        focusedView = true;
       } else if (jobsViewFilter === "builds") {
         filteredJobs = state.jobs.filter(isScheduledBuildAlert);
         heading = "Build Alerts";
         subtitle = "Scheduled jobs with unfinished equipment builds";
+        focusedView = true;
       } else if (jobsViewFilter === "builds-48") {
         filteredJobs = upcomingBuildAlerts();
         heading = "Build Alerts";
         subtitle = "Unfinished builds for scheduled jobs within the next 48 hours";
+        focusedView = true;
       } else if (jobsViewFilter === "today") {
         filteredJobs = state.jobs.filter(isTodayJob);
         heading = "Deliveries Today";
         subtitle = "Confirmed operational jobs scheduled for today";
+        focusedView = true;
       } else if (jobsViewFilter === "tentative") {
         filteredJobs = state.jobs.filter(job => job.status === "Tentative");
         heading = "Tentative";
         subtitle = "Appointments awaiting manager approval";
+        focusedView = true;
       } else if (jobsViewFilter === "attention") {
         filteredJobs = state.jobs.filter(jobNeedsOfficeAttention);
         heading = "Needs Attention";
         subtitle = "Jobs awaiting details or manager approval";
+        focusedView = true;
       } else {
-        filteredJobs = state.jobs.filter(job => jobStatusFilters.has(job.status));
+        filteredJobs = state.jobs.filter(job => jobMatchesHistoryFilter(job));
       }
 
       filteredJobs = [...filteredJobs].sort((a,b) => {
         const ad=parseJobDate(a), bd=parseJobDate(b);
-        if (ad && bd) return ad-bd || timeSortValue(a)-timeSortValue(b);
+        if (ad && bd) return bd-ad || timeSortValue(b)-timeSortValue(a);
         if (ad) return -1;
         if (bd) return 1;
         return String(a.customer||"").localeCompare(String(b.customer||""));
       });
 
-      const filteredMode = jobsViewFilter !== "all";
-      const emptyTitle = jobsViewFilter.includes("builds") ? "No build alerts" : jobsViewFilter === "tentative-week" ? "No jobs awaiting confirmation" : jobsViewFilter === "scheduled-week" ? "No scheduled jobs" : jobsViewFilter === "unscheduled" ? "No unscheduled jobs" : "No jobs found";
+      const visibleJobs = filteredJobs.filter(job => jobMatchesHistorySearch(job));
+      const emptyTitle = jobsViewFilter.includes("builds") ? "No build alerts" : jobsViewFilter === "tentative-week" ? "No jobs awaiting confirmation" : jobsViewFilter === "scheduled-week" ? "No scheduled jobs" : jobsViewFilter === "unscheduled" ? "No unscheduled jobs" : "No matching jobs";
       const emptyText = jobsViewFilter.includes("builds") ? "All scheduled equipment builds are complete." : "There are no jobs in this view.";
-
-      const statusOptions = ["Quote", "Tentative", "Scheduled", "Completed", "Cancelled"];
-      const focusedBuildView = jobsViewFilter === "builds-48";
-      const filterControls = focusedBuildView ? "" : filteredMode ? `<button class="button neutral" data-clear-job-filter>Show All Jobs</button>` : `<div class="job-filter-bar" aria-label="Filter jobs by status">${statusOptions.map(status => `<button class="job-filter-chip ${jobStatusFilters.has(status) ? "active" : ""} ${badgeClass(status)}" data-toggle-job-status="${status}" aria-pressed="${jobStatusFilters.has(status)}">${status}</button>`).join("")}</div>`;
-      const headActions = focusedBuildView ? "" : `<div class="head-actions">${filterControls}<button class="button" data-demo-action="New Job">New Job</button></div>`;
-
-      return `<section class="card"><div class="head jobs-head"><div><h2>${heading}</h2>${subtitle ? `<span class="agenda-subtitle">${subtitle}</span>` : ""}</div>${headActions}</div><div class="body list">${filteredJobs.length ? filteredJobs.map(j=>`<div class="row" data-open-job="${j.id}"><div><b>${j.customer}</b><span>${j.number} · ${j.type} · ${j.date} ${j.time}</span></div><span class="badge ${badgeClass(j.status)}">${j.status}</span></div>`).join("") : `<div class="empty-agenda"><b>${emptyTitle}</b><span>${emptyText}</span></div>`}</div></section>`;
+      const filters = [["all","All"],["tentative","Tentative"],["scheduled","Scheduled"],["completed","Completed"],["cancelled","Cancelled"],["pickups","Pickups"]];
+      return `<section class="job-history-screen">
+        <div class="job-history-toolbar">
+          <label class="job-history-search"><span aria-hidden="true">⌕</span><input type="search" data-history-search placeholder="Search customer, phone, or equipment" value="${esc(jobHistorySearch)}" autocomplete="off" autocapitalize="none"></label>
+          ${focusedView?`<button class="button neutral history-show-all" data-clear-job-filter>Show All History</button>`:`<div class="job-history-filters" aria-label="Filter job history">${filters.map(([value,label])=>`<button type="button" class="job-history-filter ${jobHistoryFilter===value?"active":""}" data-history-filter="${value}" aria-pressed="${jobHistoryFilter===value}">${label}</button>`).join("")}</div>`}
+          <div class="job-history-meta"><span data-history-count>${visibleJobs.length} ${visibleJobs.length===1?"job":"jobs"}</span><span>Newest first</span></div>
+        </div>
+        ${focusedView?`<div class="job-history-focus"><h2>${heading}</h2><p>${subtitle}</p></div>`:""}
+        <div class="job-history-results" data-history-results>${filteredJobs.map(jobHistoryCard).join("")}</div>
+        <div class="job-history-empty ${visibleJobs.length?"hidden":""}" data-history-empty><b>${emptyTitle}</b><span>${emptyText}</span></div>
+      </section>`;
     }
   },
 
@@ -1791,17 +1845,34 @@ function bindDynamic() {
     el.onclick = () => {
       jobsViewFilter = "all";
       jobsViewWeekStart = "";
+      jobHistoryFilter = "all";
       go("jobs");
     };
   });
-  document.querySelectorAll("[data-toggle-job-status]").forEach(el => {
+  document.querySelectorAll("[data-history-filter]").forEach(el => {
     el.onclick = () => {
-      const status = el.dataset.toggleJobStatus;
-      if (jobStatusFilters.has(status)) jobStatusFilters.delete(status);
-      else jobStatusFilters.add(status);
+      jobsViewFilter = "all";
+      jobsViewWeekStart = "";
+      jobHistoryFilter = el.dataset.historyFilter || "all";
       go("jobs");
     };
   });
+  const historySearch = document.querySelector("[data-history-search]");
+  if (historySearch) {
+    historySearch.oninput = () => {
+      jobHistorySearch = historySearch.value;
+      let count = 0;
+      document.querySelectorAll("[data-history-job]").forEach(card => {
+        const job = state.jobs.find(item => String(item.id) === String(card.dataset.historyJob));
+        const visible = Boolean(job && jobMatchesHistorySearch(job));
+        card.classList.toggle("hidden", !visible);
+        if (visible) count += 1;
+      });
+      const countLabel = document.querySelector("[data-history-count]");
+      if (countLabel) countLabel.textContent = `${count} ${count===1?"job":"jobs"}`;
+      document.querySelector("[data-history-empty]")?.classList.toggle("hidden", count > 0);
+    };
+  }
   view.querySelectorAll("[data-summary-filter]").forEach(el => {
     el.onclick = () => {
       const filter = el.dataset.summaryFilter;
@@ -1977,7 +2048,13 @@ async function loadLiveData({forceLoading = false} = {}) {
 
 document.addEventListener("click", event => {
   const routeButton = event.target.closest("[data-route]");
-  if (routeButton && !routeButton.closest("#view")) go(routeButton.dataset.route);
+  if (routeButton && !routeButton.closest("#view")) {
+    if (routeButton.dataset.route === "jobs") {
+      jobsViewFilter = "all";
+      jobsViewWeekStart = "";
+    }
+    go(routeButton.dataset.route);
+  }
 });
 
 
