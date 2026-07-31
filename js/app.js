@@ -1,4 +1,4 @@
-import { GamePlanApi } from "./api.js?v=3.7.0-fix05b";
+import { GamePlanApi } from "./api.js?v=4.2.0-fix06c";
 
 const CACHE_KEY = "gameplan-live-bootstrap-v2";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -93,6 +93,11 @@ function refreshLiveDataInBackground() {
     console.error("Background refresh failed.", error);
     toast("Saved successfully. Live data will refresh automatically.");
   });
+}
+
+function managerSyncPanel(){
+  const stamp=state.lastUpdated?new Date(state.lastUpdated).toLocaleTimeString([],{hour:"numeric",minute:"2-digit"}):"Not yet synced";
+  return `<section class="manager-sync-panel"><span><b>CMS data</b><small>${state.live?`Last synced ${esc(stamp)}`:state.cached?`Cached from ${esc(stamp)}`:"Not connected"}</small></span><button type="button" data-hard-refresh-cms ${state.refreshing?"disabled":""}><i aria-hidden="true">↻</i>${state.refreshing?"Syncing…":"Sync CMS"}</button></section>`;
 }
 
 function decodeJwtPayload(token) {
@@ -1745,6 +1750,7 @@ const views = {
   today: {
     title:"Today's GamePlan", sub:todayDate,
     html:()=>{if(!isManager())return renderEmployeeHome();const attention=state.jobs.filter(jobNeedsOfficeAttention);const todayJobs=jobsForDate(new Date());return `<div class="home-dashboard">
+      ${managerSyncPanel()}
       ${homeStatusButtons()}
       <section class="card needs-attention-card ${managerHomePanels.attentionOpen?"expanded":"collapsed"}">
         <button class="needs-attention-toggle" type="button" data-toggle-manager-attention aria-expanded="${managerHomePanels.attentionOpen}"><span><h2>Needs Attention</h2><em class="attention-count">${attention.length}</em></span><i>${managerHomePanels.attentionOpen?"⌃":"⌄"}</i></button>
@@ -1862,6 +1868,7 @@ const views = {
 
 function bindDynamic() {
   document.querySelectorAll("[data-complete-details]").forEach(el => el.onclick = () => openCompleteDetails(el.dataset.completeDetails));
+  view.querySelector("[data-hard-refresh-cms]")?.addEventListener("click",hardRefreshCms);
   view.querySelectorAll("[data-review-job]").forEach(el => el.onclick = () => openJob(el.dataset.reviewJob));
   view.querySelector("[data-toggle-manager-attention]")?.addEventListener("click",()=>{
     managerHomePanels.attentionOpen=!managerHomePanels.attentionOpen;
@@ -2138,7 +2145,8 @@ function go(route) {
   history.replaceState({}, "", `#${selected}`);
 }
 
-async function loadLiveData({forceLoading = false} = {}) {
+async function loadLiveData({forceLoading = false, forceCms = false} = {}) {
+  if(state.refreshing)return false;
   if (!state.authenticated) {
     showAuthGate("Sign in with an approved Google account.");
     return;
@@ -2158,13 +2166,14 @@ async function loadLiveData({forceLoading = false} = {}) {
   if (forceLoading && !state.cached) state.ready = false;
   go(location.hash.slice(1) || "today");
   try {
-    const data = await api.getBootstrap();
+    const data = await api.getBootstrap(forceCms);
     const timestamp = new Date().toISOString();
     applyBootstrapData(data, {cached:false, timestamp});
     state.loadDurationMs = Math.round(performance.now() - started);
     localStorage.setItem(CACHE_KEY, JSON.stringify({timestamp, data}));
     localStorage.setItem("gameplan-last-bootstrap-ms", String(state.loadDurationMs));
     console.info(`[GamePlan] Bootstrap ${state.loadDurationMs} ms`);
+    return true;
   } catch (error) {
     console.error(error);
     state.loadError = error.message || "The live CMS did not respond.";
@@ -2174,11 +2183,25 @@ async function loadLiveData({forceLoading = false} = {}) {
     }
     if (!state.ready) state.live = false;
     if (state.cached) toast("Could not refresh. Showing the last successful live data.");
+    return false;
   } finally {
     state.refreshing = false;
     updateDataStatus();
     go(location.hash.slice(1) || "today");
     if (!state.ready) dismissStartupSplash();
+  }
+}
+
+async function hardRefreshCms(){
+  if(state.refreshing)return toast("A CMS sync is already running.");
+  showTaskProgress("Syncing CMS","Reading the latest jobs, customers, builds, and schedule directly from GamePlan.");
+  const success=await loadLiveData({forceCms:true});
+  hideTaskProgress();
+  if(success){
+    const stamp=new Date(state.lastUpdated).toLocaleTimeString([],{hour:"numeric",minute:"2-digit"});
+    toast(`CMS sync complete · ${stamp}`);
+  }else{
+    toast("CMS sync could not finish. GamePlan kept the last successful data.");
   }
 }
 
@@ -2284,7 +2307,7 @@ function gpIcon(name){
     "bench","weights","squat-rack","basketball","table-tennis","mobile-home"
   ]);
   if(rasterIcons.has(name)){
-    return `<img class="gp-icon gp-icon-raster" src="./assets/icons/${name}.png?v=4.1.1-fix06b1" alt="" aria-hidden="true">`;
+    return `<img class="gp-icon gp-icon-raster" src="./assets/icons/${name}.png?v=4.2.0-fix06c" alt="" aria-hidden="true">`;
   }
   const paths={
     "treadmill":`<g transform="scale(.5)"><path d="M5 39h37M9 34h29l3-5H17L11 9M11 9h8M36 29l-6-17h8l5 17M29 12V5h7l3 7"/><path d="M15 34l-2 5M36 34l2 5"/></g>`,

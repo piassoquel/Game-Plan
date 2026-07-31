@@ -614,3 +614,9 @@ body{background:var(--gp-bg);color:var(--gp-text)}
 .gp-icon-raster{display:block;object-fit:contain;filter:none}
 .destination-card>i .gp-icon-raster,.equipment-condition-prompt .gp-icon-raster{width:100%;height:100%;object-fit:contain}
 @media(max-width:540px){.ux-icon-card{min-height:138px}.ux-icon-card>i{width:74px;height:62px}.destination-card{min-height:130px}.destination-card>i{width:70px;height:58px}}
+
+/* Fix 06C — manager-requested authoritative CMS sync */
+.manager-sync-panel{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:13px 15px;border:1px solid rgba(59,130,246,.36);border-radius:16px;background:rgba(59,130,246,.055)}
+.manager-sync-panel>span{display:grid;gap:3px}.manager-sync-panel b{color:var(--gp-text);font-size:14px}.manager-sync-panel small{color:var(--gp-muted);font-size:12px}
+.manager-sync-panel button{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:42px;padding:0 15px;border:1px solid rgba(59,130,246,.72);border-radius:12px;background:rgba(59,130,246,.08);color:#78adff;font:700 13px/1 inherit;white-space:nowrap}.manager-sync-panel button i{font-style:normal;font-size:18px}.manager-sync-panel button:disabled{opacity:.58}
+@media(max-width:430px){.manager-sync-panel{padding:12px}.manager-sync-panel button{padding:0 12px}}

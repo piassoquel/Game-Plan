@@ -1,30 +1,30 @@
-const CACHE_NAME = "gameplan-v4.1.1-fix06b1-cache";
+const CACHE_NAME = "gameplan-v4.2.0-fix06c-cache";
 const APP_SHELL = [
   "./",
   "./index.html",
   "./manifest.json",
-  "./css/app.css?v=4.1.1-fix06b1",
+  "./css/app.css?v=4.2.0-fix06c",
   "./js/config.js?v=3.0.5-alpha2-3",
-  "./js/app.js?v=4.1.1-fix06b1",
-  "./js/api.js?v=3.7.0-fix05b",
+  "./js/app.js?v=4.2.0-fix06c",
+  "./js/api.js?v=4.2.0-fix06c",
   "./assets/logo/gameplan-logo.svg",
   "./assets/icons/icon.svg",
   "./assets/icons/icon-192.png",
   "./assets/icons/icon-512.png",
   "./assets/icons/apple-touch-icon-180.png",
   "./assets/icons/favicon-32.png",
-  "./assets/icons/upright-bike.png?v=4.1.1-fix06b1",
-  "./assets/icons/recumbent-bike.png?v=4.1.1-fix06b1",
-  "./assets/icons/treadmill.png?v=4.1.1-fix06b1",
-  "./assets/icons/elliptical.png?v=4.1.1-fix06b1",
-  "./assets/icons/rower.png?v=4.1.1-fix06b1",
-  "./assets/icons/bench.png?v=4.1.1-fix06b1",
-  "./assets/icons/weights.png?v=4.1.1-fix06b1",
-  "./assets/icons/squat-rack.png?v=4.1.1-fix06b1",
-  "./assets/icons/home-gym.png?v=4.1.1-fix06b1",
-  "./assets/icons/basketball.png?v=4.1.1-fix06b1",
-  "./assets/icons/table-tennis.png?v=4.1.1-fix06b1",
-  "./assets/icons/mobile-home.png?v=4.1.1-fix06b1"
+  "./assets/icons/upright-bike.png?v=4.2.0-fix06c",
+  "./assets/icons/recumbent-bike.png?v=4.2.0-fix06c",
+  "./assets/icons/treadmill.png?v=4.2.0-fix06c",
+  "./assets/icons/elliptical.png?v=4.2.0-fix06c",
+  "./assets/icons/rower.png?v=4.2.0-fix06c",
+  "./assets/icons/bench.png?v=4.2.0-fix06c",
+  "./assets/icons/weights.png?v=4.2.0-fix06c",
+  "./assets/icons/squat-rack.png?v=4.2.0-fix06c",
+  "./assets/icons/home-gym.png?v=4.2.0-fix06c",
+  "./assets/icons/basketball.png?v=4.2.0-fix06c",
+  "./assets/icons/table-tennis.png?v=4.2.0-fix06c",
+  "./assets/icons/mobile-home.png?v=4.2.0-fix06c"
 ];
 self.addEventListener("install",event=>{
   event.waitUntil(caches.open(CACHE_NAME).then(cache=>cache.addAll(APP_SHELL)));

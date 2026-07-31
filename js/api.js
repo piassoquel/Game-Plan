@@ -21,6 +21,7 @@ export class GamePlanApi {
     if (!this.googleIdToken) throw new Error("Google sign-in is required.");
     const response = await fetch(this.config.apiBaseUrl, {
       method: "POST",
+      cache: "no-store",
       headers: { "Content-Type": "text/plain;charset=utf-8" },
       body: JSON.stringify({
         action,
@@ -35,7 +36,9 @@ export class GamePlanApi {
   }
 
   authenticate() { return this.post("authCheck"); }
-  getBootstrap() { return this.post("bootstrap"); }
+  getBootstrap(forceRefresh = false) {
+    return this.post("bootstrap", forceRefresh ? { forceRefresh: true, requestedAt: new Date().toISOString() } : {});
+  }
   calculateRoute(destinationAddress, destinationPlaceId = "") {
     return this.post("calculateRoute", { destinationAddress, destinationPlaceId });
   }
