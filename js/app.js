@@ -678,51 +678,29 @@ function employeeHomeJob(job) {
   return agendaJobCard(job, "employeeHome");
 }
 
+function employeeHomeStatusButtons() {
+  const cards = [
+    ["Needs Build", "builds", "assembly"],
+    ["Deliveries Today", "today", "delivery-truck"]
+  ];
+  return `<section class="home-status-grid employee-home-status-grid" aria-label="Today's employee status">${cards.map(([label,tone,icon]) =>
+    `<button class="home-status-card ${tone}" type="button" data-home-status="${esc(label)}"><i>${gpIcon(icon)}</i><b>${statusCount(label)}</b><span>${esc(label)}</span></button>`
+  ).join("")}</section>`;
+}
+
 function renderEmployeeHome() {
   const today = new Date(); today.setHours(0,0,0,0);
-  const weekStart = employeeHomeState.weekStart;
-  const days = Array.from({length:7},(_,index)=>addDays(weekStart,index));
-  let selectedDate = days.find(day=>toDateKey(day)===employeeHomeState.selectedDay);
-  if (!selectedDate) {
-    selectedDate = days[0];
-    employeeHomeState.selectedDay = toDateKey(selectedDate);
-  }
-  const selectedJobs = jobsForDate(selectedDate);
-  const buildAlerts = upcomingBuildAlerts();
-  const selectedTitle = new Intl.DateTimeFormat("en-US",{weekday:"long",month:"long",day:"numeric"}).format(selectedDate);
+  const selectedJobs = jobsForDate(today);
+  const selectedTitle = new Intl.DateTimeFormat("en-US",{weekday:"long",month:"long",day:"numeric"}).format(today);
   return `<div class="employee-home">
-    <div class="employee-home-brand" aria-label="GamePlan"><img src="./assets/logo/gameplan-logo.svg" alt=""><div><strong>Game<span>Plan</span></strong><small>Delivery &amp; Installation</small></div></div>
-    ${buildAlerts.length ? `<section class="employee-build-alert"><div class="employee-build-icon">${gpIcon("assembly")}</div><div><h2>${buildAlerts.length===1?"Build Alert":"Build Alerts"}</h2><p>${buildAlerts.length} scheduled ${buildAlerts.length===1?"job still needs":"jobs still need"} equipment assembled within the next 48 hours.</p></div><button class="button" data-home-build-alert>View Items</button></section>` : ""}
-
-    <section class="employee-date-strip" aria-label="Choose schedule date">
-      ${days.map(day=>{
-        const jobs=jobsForDate(day);
-        const load=scheduleLoadInfo(jobs);
-        const selected=toDateKey(day)===employeeHomeState.selectedDay;
-        return `<button class="employee-date-card ${selected?"selected":""}" data-home-select-day="${toDateKey(day)}" aria-pressed="${selected}">
-          <div class="week-day__top"><span>${new Intl.DateTimeFormat("en-US",{weekday:"short"}).format(day)}</span><b>${day.getDate()}</b></div>
-          <div class="capacity-track"><i class="${load.level}" style="width:${Math.min(load.percent,100)}%"></i></div>
-          <div class="week-day__meta"><strong>${jobs.length} ${jobs.length===1?"job":"jobs"}</strong><span>${jobs.filter(isScheduledBuildAlert).length?`${jobs.filter(isScheduledBuildAlert).length} Needs Build`:load.label}</span></div>
-        </button>`;
-      }).join("")}
-    </section>
-
-    <section class="employee-week-selector" aria-label="Change week">
-      <button class="button neutral" data-home-week-nav="-1" aria-label="Previous week">←</button>
-      <div><small>Weekly Operations Plan</small><strong>${weekLabel(weekStart)}</strong></div>
-      <button class="button neutral" data-home-week-nav="1" aria-label="Next week">→</button>
-      <button class="button employee-this-week" data-home-this-week>This Week</button>
-    </section>
+    ${employeeHomeStatusButtons()}
 
     <section class="card employee-day-agenda">
-      <div class="head"><div><h2>${selectedTitle}</h2><span class="agenda-subtitle">${selectedJobs.length?`${selectedJobs.length} scheduled ${selectedJobs.length===1?"job":"jobs"}`:"No jobs scheduled"}</span></div></div>
+      <div class="head"><div><h2>Today's Schedule</h2><span class="agenda-subtitle">${selectedTitle} · ${selectedJobs.length?`${selectedJobs.length} scheduled ${selectedJobs.length===1?"job":"jobs"}`:"No jobs scheduled"}</span></div><button class="text-button" data-route="schedule">View Schedule ›</button></div>
       <div class="body agenda-list">${selectedJobs.length?selectedJobs.map(employeeHomeJob).join(""):`<div class="empty-agenda compact"><b>Open day</b><span>This day currently has no scheduled work.</span></div>`}</div>
     </section>
 
-    <section class="card mobile-workflow-card employee-start-card"><div class="head"><div><h2>Start Here</h2><span class="agenda-subtitle">New Job Workflow</span></div></div><div class="body v3-actions">
-      <button class="v3-primary-action" data-demo-action="New Job"><span class="v3-action-icon">＋</span><span><b>New Job</b><small>Choose Delivery, Pickup, or Delivery &amp; Pickup</small></span><em>›</em></button>
-      <div class="v3-secondary-actions single-action"><button data-route="schedule"><b>Schedule</b><small>View the weekly plan</small></button></div>
-    </div></section>
+    <button class="manager-new-job employee-new-job" data-demo-action="New Job"><span>＋</span> New Job</button>
   </div>`;
 }
 

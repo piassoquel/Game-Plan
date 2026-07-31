@@ -594,3 +594,11 @@ body{background:var(--gp-bg);color:var(--gp-text)}
   .home-status-card{min-height:142px;grid-template-columns:minmax(0,1fr) 82px;grid-template-rows:54px auto;padding:16px}
   .home-status-card b{font-size:48px}.home-status-card i{width:46px;height:46px}.home-status-card span{font-size:11px}
 }
+
+/* Fix 06A.2 — focused Employee Home dashboard */
+.employee-home-status-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.employee-home-status-grid .home-status-card{min-height:150px}
+.employee-day-agenda .head .text-button{color:var(--gp-blue);white-space:nowrap}.employee-new-job{margin-top:0}
+@media(max-width:520px){
+  .employee-home-status-grid{gap:10px}.employee-home-status-grid .home-status-card{min-height:136px;grid-template-columns:minmax(0,1fr) 72px;padding:14px}.employee-home-status-grid .home-status-card b{font-size:44px}.employee-home-status-grid .home-status-card i{width:43px;height:43px}.employee-home-status-grid .home-status-card i svg{width:27px;height:27px}
+  .employee-day-agenda .head{align-items:flex-start;gap:10px}.employee-day-agenda .head .text-button{padding-top:2px;font-size:12px}.employee-new-job{min-height:64px}
+}
