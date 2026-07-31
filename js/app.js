@@ -2279,23 +2279,30 @@ function iconNameFor(item, kind="equipment"){
   return map.find(([needle])=>text.includes(needle))?.[1]||"equipment";
 }
 function gpIcon(name){
+  const rasterIcons=new Set([
+    "treadmill","upright-bike","recumbent-bike","elliptical","rower","home-gym",
+    "bench","weights","squat-rack","basketball","table-tennis","mobile-home"
+  ]);
+  if(rasterIcons.has(name)){
+    return `<img class="gp-icon gp-icon-raster" src="./assets/icons/${name}.png?v=4.1.1-fix06b1" alt="" aria-hidden="true">`;
+  }
   const paths={
-    "treadmill":`<path d="M5 19h14M7 17l3-8h8l2 8M11 9V5h5l2 4"/>`,
-    "upright-bike":`<circle cx="6" cy="17" r="3"/><circle cx="18" cy="17" r="3"/><path d="M9 17l3-7 4 7M10 10h5M13 10l-2-3h3"/>`,
-    "recumbent-bike":`<circle cx="6" cy="17" r="3"/><circle cx="18" cy="17" r="3"/><path d="M8 17l4-4h4l2 4M10 13l-2-5h5"/>`,
-    "elliptical":`<path d="M7 20h10M9 20l2-9 3 9M11 11l-2-5M14 9l2-5M8 8h3M14 6h3"/>`,
-    "rower":`<circle cx="17" cy="16" r="3"/><path d="M4 18h10M7 18l5-7h5M12 11l-3-3"/>`,
-    "home-gym":`<path d="M5 20V7h14v13M8 7V4h8v3M9 11h6M10 15h4"/>`,
-    "bench":`<path d="M4 15h16M7 15v5M17 15v5M8 11h8M10 11V8h4v3"/>`,
-    "weights":`<path d="M4 10v4M7 8v8M17 8v8M20 10v4M7 12h10"/>`,
-    "squat-rack":`<path d="M6 20V4M18 20V4M6 8h12M9 12h6M8 20h8"/>`,
-    "basketball":`<path d="M5 4h14M12 4v6M8 10h8v4H8zM12 14v6M9 20h6"/>`,
-    "table-tennis":`<path d="M4 10h16M6 10v10M18 10v10M12 10v10M8 6h5M13 6l3 2"/>`,
+    "treadmill":`<g transform="scale(.5)"><path d="M5 39h37M9 34h29l3-5H17L11 9M11 9h8M36 29l-6-17h8l5 17M29 12V5h7l3 7"/><path d="M15 34l-2 5M36 34l2 5"/></g>`,
+    "upright-bike":`<g transform="scale(.5)"><path d="M4 39h40M8 34h27l-4-18H17l-5 18M18 16l-1-7h-6M28 16l4-8h6M30 8h10M20 21h8M23 21l-4 8M23 21l7 8"/><circle cx="24" cy="27" r="4"/><path d="M24 27l5 3M23 27l-4-2M6 34h6M35 34h7"/></g>`,
+    "recumbent-bike":`<g transform="scale(.5)"><path d="M4 40h40M8 35h31M14 24h13l8 11H14zM14 24l-5-12H5M9 18h11M27 24l7-8h8M34 16h9M9 35h6M39 35h5"/><circle cx="33" cy="30" r="7"/><circle cx="33" cy="30" r="2"/><path d="M27 30h-7M20 30l-4-3"/></g>`,
+    "elliptical":`<g transform="scale(.5)"><path d="M5 40h38M12 40l7-22 8 22M19 18l-6-11M27 18l8-14M11 9h6M34 4h5M15 34c8-8 15-8 23 0M28 34c-8-8-15-8-21 0"/><circle cx="23" cy="26" r="7"/></g>`,
+    "rower":`<g transform="scale(.5)"><path d="M4 40h41M7 36l31-6M10 36l-3 4M34 31l5 9M14 30h10l-2-5h-7zM22 25l8-10M30 15l6 7M29 16l-7-6M22 10l-3 3"/><circle cx="39" cy="28" r="7"/><circle cx="39" cy="28" r="2"/></g>`,
+    "home-gym":`<g transform="scale(.5)"><path d="M6 42V7h36v35M9 7V3h30v4M14 12v30M34 12v30M14 16h20M18 22h12M19 27h10M20 32h8M14 38h20"/><path d="M9 10h5M34 10h5M17 16l-3 7M31 16l3 7"/></g>`,
+    "bench":`<g transform="scale(.5)"><path d="M6 31h36M10 31l-3 11M38 31l3 11M14 25h21l-3-8H18zM18 17l-2-8M32 17l4-8"/><path d="M5 8h7M3 5v6M14 5v6M36 8h7M34 5v6M45 5v6M12 8h24"/></g>`,
+    "weights":`<g transform="scale(.5)"><path d="M5 31h38M10 31L7 42M38 31l3 11M14 25h20l-3-8H18zM18 17l-2-8M31 17l4-8M5 8h38M3 5v6M8 4v8M40 4v8M45 5v6"/></g>`,
+    "squat-rack":`<g transform="scale(.5)"><path d="M7 43V5M41 43V5M7 10h34M11 43h-8M37 43h8M12 17h24M14 17v7M34 17v7M9 27h30"/><path d="M2 25v5M5 23v9M43 23v9M46 25v5M5 27h38"/></g>`,
+    "basketball":`<g transform="scale(.5)"><path d="M8 5h32v21H8zM24 26v16M15 42h18M12 26l4 5h16l4-5M16 31c1 10 15 10 16 0M18 31l2 7M30 31l-2 7M20 38h8"/></g>`,
+    "table-tennis":`<g transform="scale(.5)"><path d="M11 8c7-7 18-4 22 3s1 15-6 20-15 5-20-2S4 15 11 8zM27 30l14 13M31 36l5-5"/><circle cx="38" cy="9" r="3"/></g>`,
     "garage":`<path d="M4 20V9l8-5 8 5v11M7 20v-8h10v8M7 15h10"/>`,
     "single-level":`<path d="M3 11l9-7 9 7M5 10v10h14V10M9 20v-6h6v6"/>`,
-    "mobile-home":`<path d="M3 11l9-6 9 6M5 10v9h14v-9M8 19v-5h4v5M15 13h2v2h-2M3 21h18"/>`,
+    "mobile-home":`<g transform="scale(.5)"><path d="M4 14h40v24H4zM2 14l4-8h36l4 8M2 14h44M8 38h34M11 38a5 5 0 1 0 10 0M24 38a5 5 0 1 0 10 0M42 38v3h4M31 14v24M34 19h6v13h-6zM35 26h1M8 19h9v8H8zM11 19v8M21 20h6v6h-6z"/></g>`,
     "stairs":`<path d="M4 19h4v-4h4v-4h4V7h4"/>`,
-    "upstairs":`<path d="M4 19h4v-4h4v-4h4V7h4M16 4h4v4"/>`,
+    "upstairs":`<g transform="scale(.5)"><path d="M4 39h9v-8h9v-8h9v-8h9M24 42V7M17 14l7-7 7 7"/></g>`,
     "assembly":`<path d="M14 6a4 4 0 0 0-5 5l-5 5 4 4 5-5a4 4 0 0 0 5-5l-3 3-3-3z"/>`,
     "narrow":`<path d="M8 4v16M16 4v16M11 12h2M10 10l-2 2 2 2M14 10l2 2-2 2"/>`,
     "hallway":`<path d="M5 4h14v16H5zM9 4v16M15 4v16"/>`,
@@ -2308,7 +2315,8 @@ function gpIcon(name){
     "attention":`<path d="M12 3 2.8 20h18.4L12 3zM12 9v5M12 17h.01"/>`,
     "equipment":`<path d="M5 8h14v11H5zM8 8V5h8v3M9 13h6"/>`
   };
-  return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name]||paths.equipment}</svg>`;
+  const detailed=new Set(["upstairs"]);
+  return `<svg class="gp-icon ${detailed.has(name)?"gp-icon-detailed":""}" viewBox="0 0 24 24" aria-hidden="true">${paths[name]||paths.equipment}</svg>`;
 }
 function startOfLocalDay(date){const d=new Date(date);d.setHours(0,0,0,0);return d;}
 function addLocalDays(date,n){const d=new Date(date);d.setDate(d.getDate()+n);return d;}

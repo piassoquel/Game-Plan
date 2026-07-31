@@ -606,3 +606,11 @@ body{background:var(--gp-bg);color:var(--gp-text)}
 /* Fix 06A.3 — readable Job Details customer call action */
 .drawer-actions .call-action,.call-action{display:grid;place-items:center;min-height:52px;border:1px solid rgba(59,130,246,.82);background:rgba(59,130,246,.07);color:#69a4ff!important;text-decoration:none;box-shadow:none}
 .drawer-actions .call-action:hover,.call-action:hover{border-color:var(--gp-blue);background:rgba(59,130,246,.14);color:#8abbff!important}
+
+/* Fix 06B — finalized scheduling equipment and destination icon family */
+.ux-icon-card{min-height:150px}.ux-icon-card>i{width:82px;height:68px}.ux-icon-card>i svg,.ux-icon-card>i img{width:100%;height:100%}.ux-icon-card .gp-icon-detailed{stroke-width:2.35}
+.destination-card{min-height:138px}.destination-card>i{width:76px;height:62px}.destination-card>i .gp-icon-detailed{stroke-width:2.3}
+.equipment-condition-prompt .ux-sheet h3 .gp-icon-detailed{stroke-width:2.3}
+.gp-icon-raster{display:block;object-fit:contain;filter:none}
+.destination-card>i .gp-icon-raster,.equipment-condition-prompt .gp-icon-raster{width:100%;height:100%;object-fit:contain}
+@media(max-width:540px){.ux-icon-card{min-height:138px}.ux-icon-card>i{width:74px;height:62px}.destination-card{min-height:130px}.destination-card>i{width:70px;height:58px}}
