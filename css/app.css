@@ -580,3 +580,17 @@ body{background:var(--gp-bg);color:var(--gp-text)}
   .agenda-statuses{gap:5px}.badge,.build-warning,.piggyback-badge{min-height:26px;padding:3px 8px;font-size:10px}
   .agenda-job__details{margin-left:84px}
 }
+
+/* Fix 06A.1 — final Manager/Admin Home arrangement */
+.home-status-card{display:grid;grid-template-columns:minmax(0,1fr) 92px;grid-template-rows:58px auto;place-items:initial;align-content:center;align-items:center;gap:5px 12px;padding:18px 20px;text-align:left}
+.home-status-card b{grid-column:1;grid-row:1/3;align-self:center;color:var(--gp-text);font-size:52px;line-height:1;text-align:left}
+.home-status-card i{grid-column:2;grid-row:1;justify-self:center;align-self:end}
+.home-status-card span{grid-column:2;grid-row:2;justify-self:center;align-self:start;width:100%;font-size:12px;line-height:1.25;text-align:center}
+.needs-attention-card{overflow:hidden}.needs-attention-toggle{width:100%;min-height:72px;display:flex;align-items:center;justify-content:space-between;gap:15px;padding:16px 18px;border:0;background:transparent;color:var(--gp-text);font:inherit;cursor:pointer;text-align:left}
+.needs-attention-toggle:hover{background:rgba(255,255,255,.018)}.needs-attention-toggle>span{display:flex;align-items:center;gap:10px}.needs-attention-toggle h2{margin:0;font-size:18px}.needs-attention-toggle em{font-style:normal}.needs-attention-toggle>i{color:var(--gp-muted);font-style:normal;font-size:22px}
+.needs-attention-card.expanded .needs-attention-toggle{border-bottom:1px solid rgba(255,255,255,.07)}.needs-attention-card .attention-list{padding-top:14px}.needs-attention-card .empty-agenda.compact{min-height:120px}
+.manager-today-schedule .agenda-job--expandable.collapsed{min-height:0}.manager-today-schedule .agenda-list{padding-top:7px}
+@media(max-width:700px){
+  .home-status-card{min-height:142px;grid-template-columns:minmax(0,1fr) 82px;grid-template-rows:54px auto;padding:16px}
+  .home-status-card b{font-size:48px}.home-status-card i{width:46px;height:46px}.home-status-card span{font-size:11px}
+}

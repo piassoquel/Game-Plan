@@ -241,7 +241,11 @@ const scheduleState = {
 };
 const expandedAgenda = {
   schedule: "",
-  employeeHome: ""
+  employeeHome: "",
+  managerHome: ""
+};
+const managerHomePanels = {
+  attentionOpen: false
 };
 const employeeHomeState = {
   weekStart: startOfWeek(new Date()),
@@ -1762,10 +1766,13 @@ function openCustomerRosterProfile(customerId) {
 const views = {
   today: {
     title:"Today's GamePlan", sub:todayDate,
-    html:()=>{if(!isManager())return renderEmployeeHome();const attention=state.jobs.filter(jobNeedsOfficeAttention);return `<div class="home-dashboard">
+    html:()=>{if(!isManager())return renderEmployeeHome();const attention=state.jobs.filter(jobNeedsOfficeAttention);const todayJobs=jobsForDate(new Date());return `<div class="home-dashboard">
       ${homeStatusButtons()}
-      <section class="card needs-attention-card"><div class="head"><div><h2>Needs Attention</h2><span class="attention-count">${attention.length}</span></div></div><div class="body attention-list">${attention.length?attention.map(needsAttentionCard).join(""):`<div class="empty-agenda"><b>Nothing needs attention</b><span>No future tentative jobs are missing details or have a schedule conflict.</span></div>`}</div></section>
-      <section class="card manager-today-schedule"><div class="head"><h2>Today's Schedule</h2><button class="text-button" data-route="schedule">View Schedule ›</button></div><div class="body queue">${state.jobs.filter(isTodayJob).length?state.jobs.filter(isTodayJob).map(queueItem).join(""):`<div class="empty-agenda compact"><b>No scheduled jobs today</b><span>Confirmed work scheduled for today will appear here.</span></div>`}</div></section>
+      <section class="card needs-attention-card ${managerHomePanels.attentionOpen?"expanded":"collapsed"}">
+        <button class="needs-attention-toggle" type="button" data-toggle-manager-attention aria-expanded="${managerHomePanels.attentionOpen}"><span><h2>Needs Attention</h2><em class="attention-count">${attention.length}</em></span><i>${managerHomePanels.attentionOpen?"⌃":"⌄"}</i></button>
+        ${managerHomePanels.attentionOpen?`<div class="body attention-list">${attention.length?attention.map(needsAttentionCard).join(""):`<div class="empty-agenda compact"><b>Nothing needs attention</b><span>No future tentative jobs are missing details or have a schedule conflict.</span></div>`}</div>`:""}
+      </section>
+      <section class="card manager-today-schedule"><div class="head"><div><h2>Today's Schedule</h2><span class="agenda-subtitle">${todayJobs.length} scheduled ${todayJobs.length===1?"job":"jobs"}</span></div><button class="text-button" data-route="schedule">View Schedule ›</button></div><div class="body agenda-list">${todayJobs.length?todayJobs.map(job=>agendaJobCard(job,"managerHome")).join(""):`<div class="empty-agenda compact"><b>No scheduled jobs today</b><span>Confirmed work scheduled for today will appear here.</span></div>`}</div></section>
       <button class="manager-new-job" data-demo-action="New Job"><span>＋</span> New Job</button>
     </div>`;}
   },
@@ -1878,6 +1885,10 @@ const views = {
 function bindDynamic() {
   document.querySelectorAll("[data-complete-details]").forEach(el => el.onclick = () => openCompleteDetails(el.dataset.completeDetails));
   view.querySelectorAll("[data-review-job]").forEach(el => el.onclick = () => openJob(el.dataset.reviewJob));
+  view.querySelector("[data-toggle-manager-attention]")?.addEventListener("click",()=>{
+    managerHomePanels.attentionOpen=!managerHomePanels.attentionOpen;
+    go("today");
+  });
   view.querySelectorAll("[data-home-status]").forEach(el => el.onclick = () => {
     const status=el.dataset.homeStatus;
     if(status==="Needs Attention"){
