@@ -602,3 +602,7 @@ body{background:var(--gp-bg);color:var(--gp-text)}
   .employee-home-status-grid{gap:10px}.employee-home-status-grid .home-status-card{min-height:136px;grid-template-columns:minmax(0,1fr) 72px;padding:14px}.employee-home-status-grid .home-status-card b{font-size:44px}.employee-home-status-grid .home-status-card i{width:43px;height:43px}.employee-home-status-grid .home-status-card i svg{width:27px;height:27px}
   .employee-day-agenda .head{align-items:flex-start;gap:10px}.employee-day-agenda .head .text-button{padding-top:2px;font-size:12px}.employee-new-job{min-height:64px}
 }
+
+/* Fix 06A.3 — readable Job Details customer call action */
+.drawer-actions .call-action,.call-action{display:grid;place-items:center;min-height:52px;border:1px solid rgba(59,130,246,.82);background:rgba(59,130,246,.07);color:#69a4ff!important;text-decoration:none;box-shadow:none}
+.drawer-actions .call-action:hover,.call-action:hover{border-color:var(--gp-blue);background:rgba(59,130,246,.14);color:#8abbff!important}
