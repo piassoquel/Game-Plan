@@ -1,1 +1,17 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="112" fill="#0F1316"/><rect x="116" y="92" width="280" height="340" rx="48" fill="none" stroke="#F5F7FA" stroke-width="28"/><path d="M206 92c0-34 22-56 50-56s50 22 50 56" fill="none" stroke="#F5F7FA" stroke-width="28" stroke-linecap="round"/><path d="M178 190l52 52M230 190l-52 52M304 198a42 42 0 1 0 0 84 42 42 0 0 0 0-84Z" fill="none" stroke="#FF8A2A" stroke-width="24"/><path d="M166 342c82-18 138-12 188-78" fill="none" stroke="#FF8A2A" stroke-width="24" stroke-linecap="round"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title">
+  <title id="title">GamePlan app icon</title>
+  <rect width="1024" height="1024" rx="210" fill="#0B1014"/>
+  <g transform="translate(72 72) scale(.86)">
+    <g fill="none" stroke="#F5F7FA" stroke-width="52" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M238 252h112M674 252h112c42 0 76 34 76 76v476c0 42-34 76-76 76H238c-42 0-76-34-76-76V328c0-42 34-76 76-76"/>
+      <path d="M388 278v-82h48c0-42 34-76 76-76s76 34 76 76h48v82H388Z"/>
+      <circle cx="512" cy="190" r="20" fill="#F5F7FA" stroke="none"/>
+      <path d="M373 406l50 50m0-50-50 50M644 406l50 50m0-50-50 50M324 585l50 50m0-50-50 50"/>
+      <circle cx="512" cy="666" r="37"/>
+      <circle cx="384" cy="756" r="37"/>
+    </g>
+    <circle cx="512" cy="525" r="39" fill="none" stroke="#FF7A00" stroke-width="42"/>
+    <path d="M430 812C596 768 670 679 736 544" fill="none" stroke="#FF7A00" stroke-width="46" stroke-linecap="round"/>
+    <path d="M702 558l67-36-7 76" fill="none" stroke="#FF7A00" stroke-width="46" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

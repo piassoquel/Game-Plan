@@ -1,14 +1,18 @@
-const CACHE_NAME = "gameplan-v3.9.2-fix05j-cache";
+const CACHE_NAME = "gameplan-v4.0.0-fix06a-cache";
 const APP_SHELL = [
   "./",
   "./index.html",
   "./manifest.json",
-  "./css/app.css?v=3.9.2-fix05j",
+  "./css/app.css?v=4.0.0-fix06a",
   "./js/config.js?v=3.0.5-alpha2-3",
-  "./js/app.js?v=3.9.2-fix05j",
+  "./js/app.js?v=4.0.0-fix06a",
   "./js/api.js?v=3.7.0-fix05b",
   "./assets/logo/gameplan-logo.svg",
-  "./assets/icons/icon.svg"
+  "./assets/icons/icon.svg",
+  "./assets/icons/icon-192.png",
+  "./assets/icons/icon-512.png",
+  "./assets/icons/apple-touch-icon-180.png",
+  "./assets/icons/favicon-32.png"
 ];
 self.addEventListener("install",event=>{
   event.waitUntil(caches.open(CACHE_NAME).then(cache=>cache.addAll(APP_SHELL)));

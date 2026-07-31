@@ -239,6 +239,10 @@ const scheduleState = {
   weekStart: startOfWeek(new Date()),
   selectedDay: toDateKey(new Date())
 };
+const expandedAgenda = {
+  schedule: "",
+  employeeHome: ""
+};
 const employeeHomeState = {
   weekStart: startOfWeek(new Date()),
   selectedDay: toDateKey(new Date())
@@ -497,6 +501,49 @@ function weekLabel(start) {
   return `${first}–${sameMonth ? lastDay : lastMonthDay}, ${end.getFullYear()}`;
 }
 
+function jobTypeLabel(job) {
+  return String(job.type || job.jobType || "Job").split("·")[0].trim() || "Job";
+}
+
+function crewDisplay(job) {
+  const raw = String(job.crewSize || "").trim();
+  if (!raw) return "Not assigned";
+  const numeric = Number(raw);
+  if (Number.isFinite(numeric)) return `${numeric} ${numeric === 1 ? "person" : "people"}`;
+  return /crew|person|people/i.test(raw) ? raw : `${raw} crew`;
+}
+
+function agendaJobCard(job, context = "schedule") {
+  const expanded = expandedAgenda[context] === String(job.id);
+  const needsBuild = job.buildRequired && !job.buildComplete;
+  const time = job.time || job.scheduledTime || "Time TBD";
+  return `<article class="agenda-job agenda-job--expandable ${expanded ? "expanded" : "collapsed"}" data-agenda-toggle="${esc(job.id)}" data-agenda-context="${context}" aria-expanded="${expanded}">
+    <div class="agenda-job__summary">
+      <div class="agenda-time"><strong>${esc(time)}</strong>${expanded && job.duration ? `<span>${esc(job.duration)}</span>` : ""}</div>
+      <div class="agenda-line"></div>
+      <div class="agenda-main">
+        <div class="agenda-main__top">
+          <div class="agenda-identity"><h3>${esc(job.customer)}</h3><p>${esc(jobTypeLabel(job))}</p></div>
+          <span class="agenda-statuses">
+            <span class="badge ${badgeClass(job.status)}">${esc(job.status)}</span>
+            ${job.piggyback ? `<span class="piggyback-badge">Piggyback</span>` : ""}
+            ${needsBuild ? `<span class="build-warning">Needs Build</span>` : ""}
+          </span>
+        </div>
+      </div>
+      <button class="agenda-chevron" type="button" aria-label="${expanded ? "Collapse" : "Expand"} ${esc(job.customer)} job">${expanded ? "⌃" : "⌄"}</button>
+    </div>
+    ${expanded ? `<div class="agenda-job__details">
+      <div class="agenda-detail"><span>Address</span><strong>${esc(job.address || "Address not listed")}</strong></div>
+      <div class="agenda-detail-grid">
+        <div class="agenda-detail"><span>Crew</span><strong>${esc(crewDisplay(job))}</strong></div>
+        <div class="agenda-detail"><span>Duration</span><strong>${esc(job.duration || "—")}</strong></div>
+      </div>
+      <button class="button neutral agenda-open-job" type="button" data-open-job="${esc(job.id)}">Open Job</button>
+    </div>` : ""}
+  </article>`;
+}
+
 function renderSchedule() {
   const days = Array.from({ length: 7 }, (_, index) => addDays(scheduleState.weekStart, index));
   const selectedDate = days.find(day => toDateKey(day) === scheduleState.selectedDay) || days[0];
@@ -546,12 +593,7 @@ function renderSchedule() {
     <section class="card schedule-agenda">
       <div class="head"><div><h2>${selectedTitle}</h2><span class="agenda-subtitle">${selectedJobs.length ? `${selectedJobs.length} scheduled ${selectedJobs.length === 1 ? "job" : "jobs"}` : "No jobs scheduled"}</span></div><button class="button" data-demo-action="New Job">＋ New Job</button></div>
       <div class="body agenda-list">
-        ${selectedJobs.length ? selectedJobs.map(job => `<article class="agenda-job" data-open-job="${esc(job.id)}">
-          <div class="agenda-time"><strong>${esc(job.time || job.scheduledTime || "Time TBD")}</strong><span>${esc(job.duration || "")}</span></div>
-          <div class="agenda-line"></div>
-          <div class="agenda-main"><div class="agenda-main__top"><h3>${esc(job.customer)}</h3><span class="agenda-statuses"><span class="badge ${badgeClass(job.status)}">${esc(job.status)}</span>${job.piggyback?`<span class="piggyback-badge">Piggyback</span>`:""}</span></div><p>${esc(job.type)} · ${esc(job.address)}</p><div class="agenda-tags"><span>${esc(job.crewSize || "—")} crew</span>${job.buildRequired && !job.buildComplete ? `<span class="build-warning">Needs Build</span>` : ""}</div></div>
-          <button class="button neutral" data-open-job="${esc(job.id)}">Open</button>
-        </article>`).join("") : `<div class="empty-agenda"><b>Open day</b><span>This day currently has no scheduled work.</span><button class="button" data-demo-action="New Job">Schedule a Job</button></div>`}
+        ${selectedJobs.length ? selectedJobs.map(job => agendaJobCard(job, "schedule")).join("") : `<div class="empty-agenda"><b>Open day</b><span>This day currently has no scheduled work.</span><button class="button" data-demo-action="New Job">Schedule a Job</button></div>`}
       </div>
     </section>
 
@@ -606,13 +648,13 @@ function statusCount(status) {
 
 function homeStatusButtons() {
   const cards = [
-    ["Tentative", "tentative", "▣"],
-    ["Needs Attention", "attention", "!"],
-    ["Needs Build", "builds", "⌁"],
-    ["Deliveries Today", "today", "→"]
+    ["Tentative", "tentative", "calendar"],
+    ["Needs Attention", "attention", "attention"],
+    ["Needs Build", "builds", "assembly"],
+    ["Deliveries Today", "today", "delivery-truck"]
   ];
   return `<section class="home-status-grid" aria-label="Job status filters">${cards.map(([label,tone,icon]) =>
-    `<button class="home-status-card ${tone}" type="button" data-home-status="${esc(label)}"><i>${icon}</i><b>${statusCount(label)}</b><span>${esc(label)}</span></button>`
+    `<button class="home-status-card ${tone}" type="button" data-home-status="${esc(label)}"><i>${gpIcon(icon)}</i><b>${statusCount(label)}</b><span>${esc(label)}</span></button>`
   ).join("")}</section>`;
 }
 
@@ -629,15 +671,7 @@ function upcomingBuildAlerts() {
 }
 
 function employeeHomeJob(job) {
-  return `<article class="agenda-job employee-home-job" data-open-job="${esc(job.id)}">
-    <div class="agenda-time"><strong>${esc(job.time || job.scheduledTime || "Time TBD")}</strong><span>${esc(job.duration || "")}</span></div>
-    <div class="agenda-line"></div>
-    <div class="agenda-main"><div class="agenda-main__top"><h3>${esc(job.customer)}</h3><span class="agenda-statuses"><span class="badge ${badgeClass(job.status)}">${esc(job.status)}</span>${job.piggyback?`<span class="piggyback-badge employee-home-piggyback">Piggyback</span>`:""}</span></div>
-      <p>${esc(job.type)} · ${esc(job.address)}</p>
-      <div class="agenda-tags"><span>${esc(job.crewSize || "—")} crew</span>${job.buildRequired && !job.buildComplete ? `<span class="build-warning">Needs Build</span>` : ""}</div>
-    </div>
-    <button class="button neutral" data-open-job="${esc(job.id)}">Open</button>
-  </article>`;
+  return agendaJobCard(job, "employeeHome");
 }
 
 function renderEmployeeHome() {
@@ -1731,8 +1765,8 @@ const views = {
     html:()=>{if(!isManager())return renderEmployeeHome();const attention=state.jobs.filter(jobNeedsOfficeAttention);return `<div class="home-dashboard">
       ${homeStatusButtons()}
       <section class="card needs-attention-card"><div class="head"><div><h2>Needs Attention</h2><span class="attention-count">${attention.length}</span></div></div><div class="body attention-list">${attention.length?attention.map(needsAttentionCard).join(""):`<div class="empty-agenda"><b>Nothing needs attention</b><span>No future tentative jobs are missing details or have a schedule conflict.</span></div>`}</div></section>
-      <div class="grid two"><section class="card"><div class="head"><h2>Today's Schedule</h2></div><div class="body queue">${state.jobs.filter(isTodayJob).length?state.jobs.filter(isTodayJob).map(queueItem).join(""):`<div class="empty-agenda"><b>No scheduled jobs today</b><span>Confirmed work scheduled for today will appear here.</span></div>`}</div></section>
-      <section class="card mobile-workflow-card"><div class="head"><div><h2>Start Here</h2><span class="agenda-subtitle">New Job Workflow</span></div></div><div class="body v3-actions"><button class="v3-primary-action" data-demo-action="New Job"><span class="v3-action-icon">＋</span><span><b>New Job</b><small>Delivery, Pickup, or Delivery &amp; Pickup</small></span><em>›</em></button><div class="v3-secondary-actions single-action"><button data-route="schedule"><b>Schedule</b><small>View the weekly plan</small></button></div></div></section></div>
+      <section class="card manager-today-schedule"><div class="head"><h2>Today's Schedule</h2><button class="text-button" data-route="schedule">View Schedule ›</button></div><div class="body queue">${state.jobs.filter(isTodayJob).length?state.jobs.filter(isTodayJob).map(queueItem).join(""):`<div class="empty-agenda compact"><b>No scheduled jobs today</b><span>Confirmed work scheduled for today will appear here.</span></div>`}</div></section>
+      <button class="manager-new-job" data-demo-action="New Job"><span>＋</span> New Job</button>
     </div>`;}
   },
 
@@ -1863,16 +1897,19 @@ function bindDynamic() {
   });
   view.querySelectorAll("[data-home-select-day]").forEach(el=>el.onclick=()=>{
     employeeHomeState.selectedDay=el.dataset.homeSelectDay;
+    expandedAgenda.employeeHome="";
     go("today");
   });
   view.querySelectorAll("[data-home-week-nav]").forEach(el=>el.onclick=()=>{
     employeeHomeState.weekStart=addDays(employeeHomeState.weekStart,Number(el.dataset.homeWeekNav)*7);
     employeeHomeState.selectedDay=toDateKey(employeeHomeState.weekStart);
+    expandedAgenda.employeeHome="";
     go("today");
   });
   view.querySelector("[data-home-this-week]")?.addEventListener("click",()=>{
     employeeHomeState.weekStart=startOfWeek(new Date());
     employeeHomeState.selectedDay=toDateKey(new Date());
+    expandedAgenda.employeeHome="";
     go("today");
   });
   view.querySelector("[data-home-build-alert]")?.addEventListener("click",()=>{
@@ -1890,6 +1927,16 @@ function bindDynamic() {
         return;
       }
       openJob(el.dataset.openJob);
+    };
+  });
+  view.querySelectorAll("[data-agenda-toggle]").forEach(card => {
+    card.onclick = event => {
+      if (event.target.closest("[data-open-job]")) return;
+      const context = card.dataset.agendaContext;
+      const jobId = card.dataset.agendaToggle;
+      if (!Object.prototype.hasOwnProperty.call(expandedAgenda, context)) return;
+      expandedAgenda[context] = expandedAgenda[context] === jobId ? "" : jobId;
+      go(location.hash.slice(1) || "today");
     };
   });
   document.querySelectorAll("[data-reschedule-job]").forEach(el => {
@@ -2002,12 +2049,14 @@ function bindDynamic() {
     el.onclick = () => {
       scheduleState.weekStart = addDays(scheduleState.weekStart, Number(el.dataset.weekNav) * 7);
       scheduleState.selectedDay = toDateKey(scheduleState.weekStart);
+      expandedAgenda.schedule = "";
       go("schedule");
     };
   });
   view.querySelectorAll("[data-select-day]").forEach(el => {
     el.onclick = () => {
       scheduleState.selectedDay = el.dataset.selectDay;
+      expandedAgenda.schedule = "";
       go("schedule");
     };
   });
@@ -2015,6 +2064,7 @@ function bindDynamic() {
     el.onclick = () => {
       scheduleState.weekStart = startOfWeek(new Date());
       scheduleState.selectedDay = toDateKey(new Date());
+      expandedAgenda.schedule = "";
       go("schedule");
     };
   });
@@ -2254,7 +2304,7 @@ function gpIcon(name){
     "table-tennis":`<path d="M4 10h16M6 10v10M18 10v10M12 10v10M8 6h5M13 6l3 2"/>`,
     "garage":`<path d="M4 20V9l8-5 8 5v11M7 20v-8h10v8M7 15h10"/>`,
     "single-level":`<path d="M3 11l9-7 9 7M5 10v10h14V10M9 20v-6h6v6"/>`,
-    "mobile-home":`<path d="M3 9h18v9H3zM6 9V6h10v3M7 18a2 2 0 1 0 0 .1M17 18a2 2 0 1 0 0 .1"/>`,
+    "mobile-home":`<path d="M3 11l9-6 9 6M5 10v9h14v-9M8 19v-5h4v5M15 13h2v2h-2M3 21h18"/>`,
     "stairs":`<path d="M4 19h4v-4h4v-4h4V7h4"/>`,
     "upstairs":`<path d="M4 19h4v-4h4v-4h4V7h4M16 4h4v4"/>`,
     "assembly":`<path d="M14 6a4 4 0 0 0-5 5l-5 5 4 4 5-5a4 4 0 0 0 5-5l-3 3-3-3z"/>`,
@@ -2265,6 +2315,8 @@ function gpIcon(name){
     "delivery-truck":`<path d="M3 7h11v10H3zM14 10h4l3 3v4h-7z"/><circle cx="7" cy="18" r="2"/><circle cx="18" cy="18" r="2"/>`,
     "pickup-box":`<path d="M5 8h14v11H5zM5 8l3-4h8l3 4M9 12h6"/><path d="M12 16V10M9.5 12.5 12 10l2.5 2.5"/>`,
     "delivery-swap":`<path d="M3 7h10v9H3zM13 10h4l3 3v3h-7z"/><circle cx="6" cy="18" r="2"/><circle cx="17" cy="18" r="2"/><path d="M6 4h11M14 2l3 2-3 2"/>`,
+    "calendar":`<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M8 3v4M16 3v4M4 10h16M8 14h3M8 17h6"/>`,
+    "attention":`<path d="M12 3 2.8 20h18.4L12 3zM12 9v5M12 17h.01"/>`,
     "equipment":`<path d="M5 8h14v11H5zM8 8V5h8v3M9 13h6"/>`
   };
   return `<svg viewBox="0 0 24 24" aria-hidden="true">${paths[name]||paths.equipment}</svg>`;
