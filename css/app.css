@@ -611,7 +611,7 @@ body{background:var(--gp-bg);color:var(--gp-text)}
 .ux-icon-card{min-height:150px}.ux-icon-card>i{width:82px;height:68px}.ux-icon-card>i svg,.ux-icon-card>i img{width:100%;height:100%}.ux-icon-card .gp-icon-detailed{stroke-width:2.35}
 .destination-card{min-height:138px}.destination-card>i{width:76px;height:62px}.destination-card>i .gp-icon-detailed{stroke-width:2.3}
 .equipment-condition-prompt .ux-sheet h3 .gp-icon-detailed{stroke-width:2.3}
-.gp-icon-raster{display:block;object-fit:contain;filter:none}
+.gp-icon-raster{display:block;width:1em;height:1em;max-width:100%;max-height:100%;object-fit:contain;filter:none}
 .destination-card>i .gp-icon-raster,.equipment-condition-prompt .gp-icon-raster{width:100%;height:100%;object-fit:contain}
 @media(max-width:540px){.ux-icon-card{min-height:138px}.ux-icon-card>i{width:74px;height:62px}.destination-card{min-height:130px}.destination-card>i{width:70px;height:58px}}
 
@@ -620,3 +620,11 @@ body{background:var(--gp-bg);color:var(--gp-text)}
 .manager-sync-panel>span{display:grid;gap:3px}.manager-sync-panel b{color:var(--gp-text);font-size:14px}.manager-sync-panel small{color:var(--gp-muted);font-size:12px}
 .manager-sync-panel button{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:42px;padding:0 15px;border:1px solid rgba(59,130,246,.72);border-radius:12px;background:rgba(59,130,246,.08);color:#78adff;font:700 13px/1 inherit;white-space:nowrap}.manager-sync-panel button i{font-style:normal;font-size:18px}.manager-sync-panel button:disabled{opacity:.58}
 @media(max-width:430px){.manager-sync-panel{padding:12px}.manager-sync-panel button{padding:0 12px}}
+
+/* Fix 06C.1 — constrain raster equipment icons everywhere they are rendered */
+.ux-selected-item>i .gp-icon-raster{width:100%;height:100%}
+.equipment-reference-icon .gp-icon-raster{width:58px;height:58px}
+.equipment-photo--generic .gp-icon-raster{width:42px;height:42px}
+.equipment-condition-prompt .ux-sheet h3 .gp-icon-raster{flex:0 0 46px;width:46px;height:46px}
+.ux-access-modifier>i .gp-icon-raster{width:100%;height:100%}
+@media(max-width:700px){.equipment-reference-icon .gp-icon-raster{width:48px;height:48px}}
