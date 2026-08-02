@@ -942,7 +942,10 @@ function renderJobSummaryCard(job, options = {}) {
     </section>`;
 }
 
-function equipmentImage(item) {
+function equipmentImage(item, preferredPhotoUrl = "") {
+  if (preferredPhotoUrl) {
+    return `<img class="equipment-photo" src="${esc(preferredPhotoUrl)}" alt="Pickup equipment photo" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><div class="equipment-photo equipment-photo--generic" hidden>${gpIcon(iconNameFor(item))}</div>`;
+  }
   const pickupOnly = item?.pickupRequired === true && item?.deliveryRequired === false;
   if (pickupOnly) {
     return `<div class="equipment-photo equipment-photo--generic" aria-label="Pickup item">${gpIcon(iconNameFor(item))}</div>`;
@@ -1279,10 +1282,53 @@ function pickupSummaryMarkup(job) {
     <div class="detail-line"><span>Overall condition</span><strong>${esc(summary.overallCondition || "—")}</strong></div>
     <div class="detail-line"><span>Issues found</span><strong>${Number(summary.issueCount || 0)}</strong></div>
     <div class="detail-line"><span>Photos</span><strong>${Number(summary.photoCount || 0)} Attached</strong></div>
-    <div class="detail-line"><span>Customer signature</span><strong>Received ✓</strong></div>
-    <div class="detail-line"><span>Completed by</span><strong>${esc(summary.completedBy || "—")}</strong></div>
+    <div class="detail-line"><span>Customer signature</span><strong>${summary.signatureUrl ? "Received ✓" : "—"}</strong></div>
+    ${summary.signatureUrl ? `<button type="button" class="pickup-signature-preview" data-view-signature="${esc(job.id)}"><img src="${esc(summary.signatureUrl)}" alt="Customer signature"><span><b>View customer signature</b><small>${esc(summary.customerName || job.customer || "Customer")}</small></span><i>›</i></button>` : ""}
+    <div class="detail-line"><span>Completed by</span><strong>${esc(employeeDisplayName(summary.completedBy) || "—")}</strong></div>
     ${summary.notes ? `<p class="pickup-summary-notes">${esc(summary.notes)}</p>` : ""}
   </section>`;
+}
+
+function pickupInspectionFor(job, equipmentId) {
+  return (job.pickupSummary?.items || []).find(item => String(item.jobEquipmentId) === String(equipmentId));
+}
+
+function pickupResponseMarkup(responses = {}) {
+  const sections = [
+    ["Appearance", PICKUP_APPEARANCE_QUESTIONS, "appearance"],
+    ["Function", PICKUP_FUNCTION_QUESTIONS, "function"]
+  ];
+  return sections.map(([title, questions, prefix]) => `<div class="pickup-record-section"><h4>${title}</h4>${questions.map(([key,label]) => {
+    const value = responses[`${prefix}-${key}`];
+    const answer = typeof value === "object" ? (value.result || value.value) : value;
+    const note = typeof value === "object" ? value.note : "";
+    return `<div class="pickup-record-row"><span>${esc(label)}</span><b class="pickup-answer ${String(answer || "").toLowerCase().replace(/[^a-z]/g, "")}">${esc(answer || "Not recorded")}</b>${note ? `<small>${esc(note)}</small>` : ""}</div>`;
+  }).join("")}</div>`).join("");
+}
+
+function pickupInspectionMarkup(job, item) {
+  const record = pickupInspectionFor(job, item.id);
+  if (!record) return "";
+  return `<div class="pickup-record" data-pickup-record="${esc(item.id)}" hidden>
+    ${record.photoUrl ? `<a class="pickup-record-photo" href="${esc(record.photoUrl)}" target="_blank" rel="noopener"><img src="${esc(record.photoUrl)}" alt="Pickup photo of ${esc(equipmentTypeName(item))}"><span>Tap photo to view full size</span></a>` : ""}
+    ${pickupResponseMarkup(record.responses)}
+    <div class="pickup-record-section"><h4>Pickup notes</h4>
+      <div class="pickup-record-row"><span>Disassembled</span><b>${record.disassembled ? "Yes" : "No"}</b></div>
+      ${record.disassemblyNotes ? `<p>${esc(record.disassemblyNotes)}</p>` : ""}
+      ${record.notes ? `<p>${esc(record.notes)}</p>` : ""}
+      ${record.issueSummary ? `<p class="pickup-record-issues"><b>Issues:</b> ${esc(record.issueSummary)}</p>` : ""}
+    </div>
+  </div>`;
+}
+
+function equipmentDetailMarkup(job, item) {
+  const inspection = pickupInspectionFor(job, item.id);
+  const content = `${equipmentImage(item, inspection?.photoUrl || "")}
+    <div class="equipment-copy"><strong>${esc([item.brand,item.model].filter(Boolean).join(" ") || `${String(item.condition || "").toLowerCase() === "new" ? "New" : "Used"} ${equipmentTypeName(item)}`)}</strong><small>${esc(equipmentTypeName(item))}</small>${inspection ? `<em>View Pickup Checklist</em>` : ""}</div>
+    <div class="equipment-build-action">${equipmentBuildControl(job, item)}</div>${inspection ? `<i class="pickup-record-chevron">⌄</i>` : ""}`;
+  return inspection
+    ? `<div class="equipment-card-wrap"><button type="button" class="equipment-card pickup-equipment-card" data-toggle-pickup-record="${esc(item.id)}" aria-expanded="false">${content}</button>${pickupInspectionMarkup(job, item)}</div>`
+    : `<div class="equipment-card">${content}</div>`;
 }
 
 function workflowActions(job) {
@@ -1359,11 +1405,7 @@ function openJob(jobId) {
 
     <section class="detail-card">
       <h3>Equipment (${job.equipment?.length || 0})</h3>
-      ${(job.equipment || []).map(item => `<div class="equipment-card">
-        ${equipmentImage(item)}
-        <div class="equipment-copy"><strong>${esc([item.brand,item.model].filter(Boolean).join(" ") || `${String(item.condition || "").toLowerCase() === "new" ? "New" : "Used"} ${equipmentTypeName(item)}`)}</strong><small>${esc(equipmentTypeName(item))}</small></div>
-        <div class="equipment-build-action">${equipmentBuildControl(job, item)}</div>
-      </div>`).join("")}
+      ${(job.equipment || []).map(item => equipmentDetailMarkup(job, item)).join("")}
     </section>
 
     ${pickupSummaryMarkup(job)}
@@ -1871,6 +1913,18 @@ const views = {
 };
 
 function bindDynamic() {
+  document.querySelectorAll("[data-toggle-pickup-record]").forEach(el => el.onclick = () => {
+    const record = drawerContent.querySelector(`[data-pickup-record="${CSS.escape(el.dataset.togglePickupRecord)}"]`);
+    if (!record) return;
+    const opening = record.hidden;
+    record.hidden = !opening;
+    el.setAttribute("aria-expanded", String(opening));
+  });
+  document.querySelectorAll("[data-view-signature]").forEach(el => el.onclick = () => {
+    const job = state.jobs.find(item => String(item.id) === String(el.dataset.viewSignature));
+    const url = job?.pickupSummary?.signatureUrl;
+    if (url) window.open(url, "_blank", "noopener");
+  });
   document.querySelectorAll("[data-complete-details]").forEach(el => el.onclick = () => openCompleteDetails(el.dataset.completeDetails));
   view.querySelector("[data-hard-refresh-cms]")?.addEventListener("click",hardRefreshCms);
   view.querySelectorAll("[data-review-job]").forEach(el => el.onclick = () => openJob(el.dataset.reviewJob));
