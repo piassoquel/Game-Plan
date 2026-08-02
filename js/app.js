@@ -20,6 +20,9 @@ const state = {
   ready: false,
   cached: false,
   refreshing: false,
+  refreshQueued: false,
+  forceRefreshQueued: false,
+  dataRevision: 0,
   loadError: "",
   lastUpdated: "",
   loadDurationMs: 0,
@@ -1433,6 +1436,7 @@ async function changeJobStatus(jobId, newStatus, {piggyback=false} = {}) {
     );
     await api.updateJobStatus(jobId, newStatus, piggyback?"Approved as manager-authorized piggyback overlap":"Updated from Job Details", pinToken, approvalToken, overrideSchedule, scheduleOverrideType);
     touchPinSession();
+    state.dataRevision += 1;
     job.status = newStatus;
     if (piggyback) {
       job.piggyback = true;
@@ -2146,7 +2150,11 @@ function go(route) {
 }
 
 async function loadLiveData({forceLoading = false, forceCms = false} = {}) {
-  if(state.refreshing)return false;
+  if(state.refreshing){
+    state.refreshQueued=true;
+    state.forceRefreshQueued=state.forceRefreshQueued||forceCms;
+    return false;
+  }
   if (!state.authenticated) {
     showAuthGate("Sign in with an approved Google account.");
     return;
@@ -2160,6 +2168,7 @@ async function loadLiveData({forceLoading = false, forceCms = false} = {}) {
     return;
   }
   const started = performance.now();
+  const revisionAtStart=state.dataRevision;
   state.refreshing = true;
   state.loadError = "";
   updateDataStatus();
@@ -2167,6 +2176,12 @@ async function loadLiveData({forceLoading = false, forceCms = false} = {}) {
   go(location.hash.slice(1) || "today");
   try {
     const data = await api.getBootstrap(forceCms);
+    if(revisionAtStart!==state.dataRevision){
+      state.refreshQueued=true;
+      state.forceRefreshQueued=true;
+      console.info("[GamePlan] Ignored a stale CMS response after a newer job update.");
+      return false;
+    }
     const timestamp = new Date().toISOString();
     applyBootstrapData(data, {cached:false, timestamp});
     state.loadDurationMs = Math.round(performance.now() - started);
@@ -2185,10 +2200,15 @@ async function loadLiveData({forceLoading = false, forceCms = false} = {}) {
     if (state.cached) toast("Could not refresh. Showing the last successful live data.");
     return false;
   } finally {
+    const refreshAgain=state.refreshQueued;
+    const forceAgain=state.forceRefreshQueued;
+    state.refreshQueued=false;
+    state.forceRefreshQueued=false;
     state.refreshing = false;
     updateDataStatus();
     go(location.hash.slice(1) || "today");
     if (!state.ready) dismissStartupSplash();
+    if(refreshAgain)setTimeout(()=>loadLiveData({forceCms:forceAgain}),0);
   }
 }
 
