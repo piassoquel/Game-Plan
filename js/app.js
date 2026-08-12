@@ -1,4 +1,4 @@
-import { GamePlanApi } from "./api.js?v=4.2.0-fix06c";
+import { GamePlanApi } from "./api.js?v=4.3.1-perf1";
 
 const CACHE_KEY = "gameplan-live-bootstrap-v2";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -98,9 +98,22 @@ function refreshLiveDataInBackground() {
   });
 }
 
-function managerSyncPanel(){
+function syncPanel(){
   const stamp=state.lastUpdated?new Date(state.lastUpdated).toLocaleTimeString([],{hour:"numeric",minute:"2-digit"}):"Not yet synced";
-  return `<section class="manager-sync-panel"><span><b>CMS data</b><small>${state.live?`Last synced ${esc(stamp)}`:state.cached?`Cached from ${esc(stamp)}`:"Not connected"}</small></span><button type="button" data-hard-refresh-cms ${state.refreshing?"disabled":""}><i aria-hidden="true">↻</i>${state.refreshing?"Syncing…":"Sync CMS"}</button></section>`;
+  const lastSeconds=state.loadDurationMs?` · ${(state.loadDurationMs/1000).toFixed(1)}s`:"";
+  return `<section class="manager-sync-panel"><span><b>CMS data</b><small>${state.live?`Last synced ${esc(stamp)}${lastSeconds}`:state.cached?`Cached from ${esc(stamp)}`:"Not connected"}</small></span><button type="button" data-hard-refresh-cms ${state.refreshing?"disabled":""}><i aria-hidden="true">↻</i>${state.refreshing?"Syncing…":"Sync CMS"}</button></section>`;
+}
+
+function persistOptimisticJobs() {
+  try {
+    const cached=JSON.parse(localStorage.getItem(CACHE_KEY)||"{}");
+    if(!cached?.data)return;
+    cached.data.jobs=state.jobs.map(job=>JSON.parse(JSON.stringify(job,(key,value)=>String(key).endsWith("DataUrl")?undefined:value)));
+    cached.timestamp=new Date().toISOString();
+    localStorage.setItem(CACHE_KEY,JSON.stringify(cached));
+  } catch (error) {
+    console.warn("GamePlan could not update its local job cache.",error);
+  }
 }
 
 function decodeJwtPayload(token) {
@@ -701,6 +714,7 @@ function renderEmployeeHome() {
   const selectedJobs = jobsForDate(today);
   const selectedTitle = new Intl.DateTimeFormat("en-US",{weekday:"long",month:"long",day:"numeric"}).format(today);
   return `<div class="employee-home">
+    ${syncPanel()}
     ${employeeHomeStatusButtons()}
 
     <section class="card employee-day-agenda">
@@ -882,7 +896,7 @@ function bindCompleteDetails(job, items) {
       go("today");
       hideTaskProgress();
       toast("Equipment details saved.");
-      refreshLiveDataInBackground();
+      persistOptimisticJobs();
     }
     catch(error){console.error(error);hideTaskProgress();errorBox.textContent=error.message||"The details could not be saved.";button.disabled=false;button.textContent="▣  Save Details";}
   };
@@ -944,7 +958,7 @@ function renderJobSummaryCard(job, options = {}) {
 
 function equipmentImage(item, preferredPhotoUrl = "") {
   if (preferredPhotoUrl) {
-    return `<img class="equipment-photo" src="${esc(preferredPhotoUrl)}" alt="Pickup equipment photo" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><div class="equipment-photo equipment-photo--generic" hidden>${gpIcon(iconNameFor(item))}</div>`;
+    return `<img class="equipment-photo" src="${esc(preferredPhotoUrl)}" alt="Pickup equipment photo" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'equipment-photo equipment-photo--generic',textContent:'Equipment'}))">`;
   }
   const pickupOnly = item?.pickupRequired === true && item?.deliveryRequired === false;
   if (pickupOnly) {
@@ -1248,7 +1262,7 @@ function openPickupInspection(jobId) {
       openJob(job.id);
       hideTaskProgress();
       toast("Pickup inspection finalized.");
-      refreshLiveDataInBackground();
+      persistOptimisticJobs();
     } catch (error) {
       console.error(error);
       hideTaskProgress();
@@ -1488,7 +1502,7 @@ async function changeJobStatus(jobId, newStatus, {piggyback=false} = {}) {
     go(newStatus === "Scheduled" ? "schedule" : "jobs");
     hideTaskProgress();
     toast(newStatus === "Scheduled" ? "Appointment confirmed and added to the Weekly Planner." : `Job marked ${newStatus}.`);
-    refreshLiveDataInBackground();
+    persistOptimisticJobs();
   } catch (error) {
     console.error(error);
     hideTaskProgress();
@@ -1525,7 +1539,7 @@ async function markBuildComplete(jobId, jobEquipmentId) {
     openJob(jobId);
     hideTaskProgress();
     toast("Equipment build marked complete.");
-    refreshLiveDataInBackground();
+    persistOptimisticJobs();
   } catch (error) {
     console.error(error);
     hideTaskProgress();
@@ -1796,7 +1810,7 @@ const views = {
   today: {
     title:"Today's GamePlan", sub:todayDate,
     html:()=>{if(!isManager())return renderEmployeeHome();const attention=state.jobs.filter(jobNeedsOfficeAttention);const todayJobs=jobsForDate(new Date());return `<div class="home-dashboard">
-      ${managerSyncPanel()}
+      ${syncPanel()}
       ${homeStatusButtons()}
       <section class="card needs-attention-card ${managerHomePanels.attentionOpen?"expanded":"collapsed"}">
         <button class="needs-attention-toggle" type="button" data-toggle-manager-attention aria-expanded="${managerHomePanels.attentionOpen}"><span><h2>Needs Attention</h2><em class="attention-count">${attention.length}</em></span><i>${managerHomePanels.attentionOpen?"⌃":"⌄"}</i></button>
@@ -2222,12 +2236,13 @@ async function loadLiveData({forceLoading = false, forceCms = false} = {}) {
     return;
   }
   const started = performance.now();
+  const routeAtStart=location.hash.slice(1)||"today";
   const revisionAtStart=state.dataRevision;
   state.refreshing = true;
   state.loadError = "";
   updateDataStatus();
   if (forceLoading && !state.cached) state.ready = false;
-  go(location.hash.slice(1) || "today");
+  if(!state.ready||forceLoading)go(routeAtStart);
   try {
     const data = await api.getBootstrap(forceCms);
     if(revisionAtStart!==state.dataRevision){
@@ -2260,7 +2275,7 @@ async function loadLiveData({forceLoading = false, forceCms = false} = {}) {
     state.forceRefreshQueued=false;
     state.refreshing = false;
     updateDataStatus();
-    go(location.hash.slice(1) || "today");
+    if((location.hash.slice(1)||"today")===routeAtStart)go(routeAtStart);
     if (!state.ready) dismissStartupSplash();
     if(refreshAgain)setTimeout(()=>loadLiveData({forceCms:forceAgain}),0);
   }
@@ -3560,7 +3575,7 @@ wizardNext.onclick=async()=>{
       openJob(returnJobId);
       hideTaskProgress();
       toast(wasPiggyback?"Appointment rescheduled and linked as a Piggyback.":"Appointment rescheduled. Review the job before manager approval.");
-      refreshLiveDataInBackground();
+      persistOptimisticJobs();
     }catch(error){console.error(error);hideTaskProgress();toast(error.message||"The appointment could not be rescheduled.");wizardNext.disabled=false;wizardBack.disabled=false;renderWizard();}
     return;
   }
@@ -3633,7 +3648,7 @@ wizardNext.onclick=async()=>{
       hideTaskProgress();
       await showQuoteReserved(result,savedJob);
       showEquipmentDetailsChoice(savedJob);
-      refreshLiveDataInBackground();
+      persistOptimisticJobs();
     }else{
       hideTaskProgress();
       go("today");

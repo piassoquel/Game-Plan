@@ -19,6 +19,7 @@ export class GamePlanApi {
   async post(action, data = {}) {
     if (!this.isConfigured) throw new Error("API URL is not configured.");
     if (!this.googleIdToken) throw new Error("Google sign-in is required.");
+    const started = performance.now();
     const response = await fetch(this.config.apiBaseUrl, {
       method: "POST",
       cache: "no-store",
@@ -31,6 +32,13 @@ export class GamePlanApi {
     });
     if (!response.ok) throw new Error(`API returned ${response.status}`);
     const payload = await response.json();
+    const durationMs = Math.round(performance.now() - started);
+    try {
+      const timings = JSON.parse(localStorage.getItem("gameplan-api-timings-v1") || "{}");
+      timings[action] = { durationMs, completedAt: new Date().toISOString() };
+      localStorage.setItem("gameplan-api-timings-v1", JSON.stringify(timings));
+    } catch (_) {}
+    console.info(`[GamePlan] ${action} ${durationMs} ms`);
     if (!payload.ok) throw new Error(payload.error || "API error");
     return payload.data;
   }
