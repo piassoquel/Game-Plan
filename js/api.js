@@ -47,6 +47,8 @@ export class GamePlanApi {
   getBootstrap(forceRefresh = false) {
     return this.post("bootstrap", forceRefresh ? { forceRefresh: true, requestedAt: new Date().toISOString() } : {});
   }
+  getDirectory() { return this.post("directory"); }
+  getHistory() { return this.post("history"); }
   calculateRoute(destinationAddress, destinationPlaceId = "") {
     return this.post("calculateRoute", { destinationAddress, destinationPlaceId });
   }

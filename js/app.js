@@ -1,4 +1,4 @@
-import { GamePlanApi } from "./api.js?v=4.3.1-perf1";
+import { GamePlanApi } from "./api.js?v=4.4.0-perf2";
 
 const CACHE_KEY = "gameplan-live-bootstrap-v2";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -33,6 +33,7 @@ const state = {
   authenticated: false,
   staffManagement: { loaded: false, loading: false, profiles: [], roles: [], loginAccounts: [] }
 };
+state.datasets = { directoryLoaded:false, historyLoaded:false, directoryLoading:false, historyLoading:false };
 const api = new GamePlanApi(window.GAMEPLAN_CONFIG);
 
 const authGate = document.querySelector("#authGate");
@@ -950,6 +951,7 @@ function renderJobSummaryCard(job, options = {}) {
       <div class="job-summary-top"><span>Job #${esc(job.number || job.id)}</span><span class="badge ${badgeClass(job.status)}">${esc(job.status)}</span></div>
       <h3>${esc(job.customer)}</h3>
       <div class="customer-address">${esc(job.address)}</div>
+      <div class="customer-phone"><span>Phone</span><a href="tel:${esc(job.phone || "")}">${esc(job.phone || "No phone number saved")}</a></div>
       <div class="detail-line"><span>Appointment</span><strong>${esc(job.date)}, ${esc(job.time)}</strong></div>
       <div class="detail-line"><span>Estimated duration</span><strong>${esc(job.duration || "—")}</strong></div>${countLines}
       <div class="detail-line summary-created-by"><span>Set up by</span><strong>${esc(createdByName)}</strong></div>
@@ -1409,7 +1411,20 @@ function equipmentBuildControl(job, item) {
   return `<button class="button build-complete-button" data-build-complete="${esc(item.id)}" data-job-id="${esc(job.id)}">Mark Build Complete</button>`;
 }
 
-function openJob(jobId) {
+async function openJob(jobId) {
+  const existing = state.jobs.find(j => j.id === jobId);
+  if (existing?.hasPickup && pickupInspectionComplete(existing) && !existing.pickupDetailsLoaded) {
+    showTaskProgress("Loading pickup details…","Retrieving this job’s photos, checklist, and signature.");
+    try {
+      const detailed = await api.getJob(jobId);
+      detailed.pickupDetailsLoaded = true;
+      const index = state.jobs.findIndex(job => String(job.id) === String(jobId));
+      if (index >= 0) state.jobs[index] = { ...state.jobs[index], ...detailed };
+    } catch (error) {
+      console.error(error);
+      toast(error.message || "Pickup details could not be loaded.");
+    } finally { hideTaskProgress(); }
+  }
   const job = state.jobs.find(j => j.id === jobId);
   if (!job) return;
   drawerContent.innerHTML = `
@@ -1829,6 +1844,7 @@ const views = {
   jobs: {
     title:"Job History", sub:"Find previous and active jobs",
     html:()=>{
+      if(!state.datasets.historyLoaded)return datasetLoadingView("job history");
       const weekStart = jobsViewWeekStart ? new Date(`${jobsViewWeekStart}T12:00:00`) : null;
       const weekKeys = weekStart ? new Set(Array.from({length:7}, (_,i)=>toDateKey(addDays(weekStart,i)))) : null;
       let filteredJobs = state.jobs;
@@ -1912,7 +1928,7 @@ const views = {
 
   roster: {
     title:"Customer Roster", sub:"Customers, saved addresses, and job history",
-    html:()=>renderRoster()
+    html:()=>state.datasets.directoryLoaded?renderRoster():datasetLoadingView("customer roster")
   },
 
   more: {
@@ -2167,7 +2183,7 @@ function updateDataStatus() {
 
 function applyBootstrapData(data, {cached = false, timestamp = new Date().toISOString()} = {}) {
   state.jobs = Array.isArray(data.jobs) ? data.jobs : [];
-  state.customers = Array.isArray(data.customers) ? data.customers : [];
+  if (Array.isArray(data.customers) && data.customers.length) state.customers = data.customers;
   state.equipmentTypes = Array.isArray(data.equipmentTypes) ? data.equipmentTypes : [];
   state.jobTypes = Array.isArray(data.jobTypes) ? data.jobTypes : [];
   state.accessConditions = Array.isArray(data.accessConditions) ? data.accessConditions : [];
@@ -2187,6 +2203,34 @@ function applyBootstrapData(data, {cached = false, timestamp = new Date().toISOS
   state.live = !cached;
   state.lastUpdated = timestamp;
   state.loadError = "";
+}
+
+async function ensureDataset(kind) {
+  const loadedKey = `${kind}Loaded`;
+  const loadingKey = `${kind}Loading`;
+  if (state.datasets[loadedKey] || state.datasets[loadingKey]) return;
+  state.datasets[loadingKey] = true;
+  go(location.hash.slice(1) || "today");
+  try {
+    const data = kind === "directory" ? await api.getDirectory() : await api.getHistory();
+    if (Array.isArray(data.customers) && data.customers.length) state.customers = data.customers;
+    if (Array.isArray(data.jobs)) {
+      const merged = new Map(state.jobs.map(job => [String(job.id), job]));
+      data.jobs.forEach(job => merged.set(String(job.id), { ...(merged.get(String(job.id)) || {}), ...job }));
+      state.jobs = [...merged.values()];
+    }
+    state.datasets[loadedKey] = true;
+  } catch (error) {
+    console.error(error);
+    toast(error.message || `${kind === "directory" ? "Customer roster" : "Job history"} could not be loaded.`);
+  } finally {
+    state.datasets[loadingKey] = false;
+    go(location.hash.slice(1) || "today");
+  }
+}
+
+function datasetLoadingView(label) {
+  return `<section class="card on-demand-loading"><div class="body"><span class="spinner"></span><h2>Loading ${esc(label)}…</h2><p>GamePlan is retrieving this information only when it is needed.</p></div></section>`;
 }
 
 function loadCachedBootstrap() {
@@ -2215,6 +2259,8 @@ function go(route) {
   bindDynamic();
   document.querySelector("[data-retry-load]")?.addEventListener("click", () => loadLiveData({forceLoading:true}));
   history.replaceState({}, "", `#${selected}`);
+  if(selected === "jobs" && !state.datasets.historyLoaded && !state.datasets.historyLoading) ensureDataset("history");
+  if(selected === "roster" && !state.datasets.directoryLoaded && !state.datasets.directoryLoading) ensureDataset("directory");
 }
 
 async function loadLiveData({forceLoading = false, forceCms = false} = {}) {
@@ -2609,7 +2655,13 @@ function crewSize(){return Math.max(1,...draft.equipment.map(item=>{
   const type=selectedType(item);const product=state.products.find(value=>value.id===item.productId);
   return Number(product?.defaultCrewSize||type.defaultCrewSize||type.minimumCrewSize||2);
 }));}
-function openWizard(){
+async function openWizard(){
+  if(!state.datasets.directoryLoaded){
+    showTaskProgress("Loading customer directory…","Preparing customer search for the new appointment.");
+    await ensureDataset("directory");
+    hideTaskProgress();
+    if(!state.datasets.directoryLoaded)return;
+  }
   // A tap on New Job always begins a new workflow. Draft data is preserved only
   // while moving between screens in the currently open wizard.
   localStorage.removeItem(DRAFT_KEY);

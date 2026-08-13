@@ -638,3 +638,4 @@ body{background:var(--gp-bg);color:var(--gp-text)}
 .pickup-equipment-card .equipment-copy strong,.pickup-equipment-card .equipment-copy small{overflow-wrap:break-word}
 .pickup-equipment-card .equipment-copy em{margin-top:6px}
 .pickup-equipment-card .equipment-build-action{grid-column:1/-1;margin-top:2px}
+.customer-phone{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:-2px 0 12px;padding:9px 0;border-top:1px solid rgba(255,255,255,.06)}.customer-phone span{color:var(--gp-muted)}.customer-phone a{color:var(--gp-blue);font-weight:700;text-decoration:none}.on-demand-loading{text-align:center}.on-demand-loading .body{display:grid;justify-items:center;gap:10px;padding:38px 20px}.on-demand-loading h2,.on-demand-loading p{margin:0}.on-demand-loading p{color:var(--gp-muted)}
