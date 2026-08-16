@@ -1,4 +1,4 @@
-import { GamePlanApi } from "./api.js?v=4.4.0-perf2";
+import { GamePlanApi } from "./api.js?v=4.5.0-perf3";
 
 const CACHE_KEY = "gameplan-live-bootstrap-v2";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -28,6 +28,8 @@ const state = {
   loadDurationMs: 0,
   currentUser: { displayName: "", email: "", roleName: "Employee", permissions: {} },
   staffChoices: [],
+  pendingPickupCount: 0,
+  syncingPickups: false,
   pinSession: null,
   googleIdentity: null,
   authenticated: false,
@@ -102,7 +104,49 @@ function refreshLiveDataInBackground() {
 function syncPanel(){
   const stamp=state.lastUpdated?new Date(state.lastUpdated).toLocaleTimeString([],{hour:"numeric",minute:"2-digit"}):"Not yet synced";
   const lastSeconds=state.loadDurationMs?` · ${(state.loadDurationMs/1000).toFixed(1)}s`:"";
-  return `<section class="manager-sync-panel"><span><b>CMS data</b><small>${state.live?`Last synced ${esc(stamp)}${lastSeconds}`:state.cached?`Cached from ${esc(stamp)}`:"Not connected"}</small></span><button type="button" data-hard-refresh-cms ${state.refreshing?"disabled":""}><i aria-hidden="true">↻</i>${state.refreshing?"Syncing…":"Sync CMS"}</button></section>`;
+  return `<section class="manager-sync-panel"><span><b>CMS data</b><small>${state.live?`Last synced ${esc(stamp)}${lastSeconds}`:state.cached?`Cached from ${esc(stamp)}`:"Not connected"}${state.pendingPickupCount?` · ${state.pendingPickupCount} pickup pending`:""}</small></span><div class="sync-panel-actions">${state.pendingPickupCount?`<button type="button" class="pending-sync-button" data-sync-pickup-queue ${state.syncingPickups?"disabled":""}><i aria-hidden="true">↑</i>${state.syncingPickups?"Uploading…":`Sync ${state.pendingPickupCount}`}</button>`:""}<button type="button" data-hard-refresh-cms ${state.refreshing?"disabled":""}><i aria-hidden="true">↻</i>${state.refreshing?"Syncing…":"Sync CMS"}</button></div></section>`;
+}
+
+const OFFLINE_DB_NAME = "gameplan-offline-v1";
+const OFFLINE_PICKUP_STORE = "pickupQueue";
+
+function openOfflineDb() {
+  return new Promise((resolve,reject) => {
+    if (!window.indexedDB) return reject(new Error("Offline storage is unavailable on this device."));
+    const request = indexedDB.open(OFFLINE_DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(OFFLINE_PICKUP_STORE)) db.createObjectStore(OFFLINE_PICKUP_STORE, {keyPath:"id"});
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("Offline storage could not be opened."));
+  });
+}
+
+async function pickupQueueTransaction(mode, operation) {
+  const db = await openOfflineDb();
+  try {
+    return await new Promise((resolve,reject) => {
+      const tx = db.transaction(OFFLINE_PICKUP_STORE, mode);
+      const request = operation(tx.objectStore(OFFLINE_PICKUP_STORE));
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error("Offline pickup storage failed."));
+    });
+  } finally { db.close(); }
+}
+
+const getQueuedPickups = () => pickupQueueTransaction("readonly", store => store.getAll());
+const deleteQueuedPickup = id => pickupQueueTransaction("readwrite", store => store.delete(id));
+const saveQueuedPickup = record => pickupQueueTransaction("readwrite", store => store.put(record));
+
+async function refreshPendingPickupCount({render=false} = {}) {
+  try { state.pendingPickupCount = (await getQueuedPickups()).length; }
+  catch (error) { console.warn("Offline pickup queue is unavailable.", error); state.pendingPickupCount = 0; }
+  if (render && state.ready) go(location.hash.slice(1) || "today");
+}
+
+function isNetworkFailure(error) {
+  return !navigator.onLine || /network|failed to fetch|internet|offline|load failed/i.test(String(error?.message || error || ""));
 }
 
 function persistOptimisticJobs() {
@@ -829,8 +873,31 @@ function openCompleteDetails(jobId) {
   bindCompleteDetails(job, allItems);
 }
 
-function fileToDataUrl(file) {
+function rawFileToDataUrl(file) {
   return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(new Error("The photo could not be read."));reader.readAsDataURL(file);});
+}
+
+async function fileToDataUrl(file, {maxDimension=1600, quality=.78} = {}) {
+  if (!file?.type?.startsWith("image/")) return rawFileToDataUrl(file);
+  try {
+    const objectUrl = URL.createObjectURL(file);
+    const source = await new Promise((resolve,reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error("The photo could not be prepared."));
+      image.src = objectUrl;
+    });
+    const scale = Math.min(1, maxDimension / Math.max(source.naturalWidth, source.naturalHeight));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(source.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(source.naturalHeight * scale));
+    canvas.getContext("2d", {alpha:false}).drawImage(source, 0, 0, canvas.width, canvas.height);
+    URL.revokeObjectURL(objectUrl);
+    return canvas.toDataURL("image/jpeg", quality);
+  } catch (error) {
+    console.warn("Photo compression was unavailable; using the original photo.", error);
+    return rawFileToDataUrl(file);
+  }
 }
 
 function bindCompleteDetails(job, items) {
@@ -1238,28 +1305,31 @@ function openPickupInspection(jobId) {
     const signatureName = screen.querySelector('[name="signatureName"]').value.trim();
     if (!signatureName) return void(errorBox.textContent = "Enter the customer name for the signature.");
 
+    const inspection = {
+      pickupType,
+      overallCondition,
+      notes: screen.querySelector('[name="pickupInspectionNotes"]').value.trim(),
+      signatureName,
+      signatureDataUrl: signature.dataUrl(),
+      items
+    };
     button.disabled = true;
     button.textContent = "Finalizing…";
     try {
+      if (!navigator.onLine) {
+        showTaskProgress("Saving on this device…","There is no connection. GamePlan is preserving the checklist, photos, and signature for later sync.");
+        await queuePickupForSync(job, inspection);
+        closeJob();
+        go("today");
+        hideTaskProgress();
+        toast("Pickup saved on this device · Sync required when service returns.");
+        return;
+      }
       const pinToken = await requestPin("canCreateQuote","Enter your employee PIN to finalize this pickup.");
-      showTaskProgress("Finalizing pickup…","Saving the inspection, photos, and customer signature.");
-      await api.finalizePickupInspection(job.id, {
-        pickupType,
-        overallCondition,
-        notes: screen.querySelector('[name="pickupInspectionNotes"]').value.trim(),
-        signatureName,
-        signatureDataUrl: signature.dataUrl(),
-        items
-      }, pinToken);
+      showTaskProgress("Finalizing pickup…",`Compressing and uploading ${items.length} photo${items.length===1?"":"s"}, the checklist, and customer signature.`);
+      await api.finalizePickupInspection(job.id, inspection, pinToken);
       touchPinSession();
-      job.pickupInspectionStatus = "Complete";
-      job.pickupSummary = {
-        pickupType,
-        overallCondition,
-        issueCount: items.reduce((count,item)=>count+Object.values(item.responses||{}).filter(response=>response.result==="Issue").length,0),
-        photoCount: items.length,
-        completedBy: effectiveUser()?.displayName || "Employee"
-      };
+      applyPickupCompletion(job, inspection);
       closeJob();
       openJob(job.id);
       hideTaskProgress();
@@ -1267,6 +1337,19 @@ function openPickupInspection(jobId) {
       persistOptimisticJobs();
     } catch (error) {
       console.error(error);
+      if (isNetworkFailure(error)) {
+        try {
+          await queuePickupForSync(job, inspection);
+          closeJob();
+          go("today");
+          hideTaskProgress();
+          toast("Connection was lost · Pickup safely saved on this device for later sync.");
+          return;
+        } catch (storageError) {
+          console.error(storageError);
+          error = storageError;
+        }
+      }
       hideTaskProgress();
       errorBox.textContent = error.message || "The pickup inspection could not be finalized.";
       button.disabled = false;
@@ -1287,6 +1370,76 @@ function openPickupPhotoRebind(control, item) {
     const img = control.querySelector("img");
     if (img) img.src = item.inspectionPhotoDataUrl;
   });
+}
+
+function applyPickupCompletion(job, inspection) {
+  const items = inspection.items || [];
+  job.pickupInspectionStatus = "Complete";
+  job.pickupSummary = {
+    pickupType: inspection.pickupType,
+    overallCondition: inspection.overallCondition,
+    issueCount: items.reduce((count,item)=>count+Object.values(item.responses||{}).filter(response=>response.result==="Issue").length,0),
+    photoCount: items.length,
+    completedBy: effectiveUser()?.displayName || "Employee"
+  };
+}
+
+async function queuePickupForSync(job, inspection) {
+  await saveQueuedPickup({
+    id: `pickup-${job.id}`,
+    jobId: job.id,
+    jobNumber: job.number || job.id,
+    customer: job.customer || "Customer",
+    inspection,
+    createdAt: new Date().toISOString(),
+    attempts: 0,
+    lastError: ""
+  });
+  job.pickupInspectionStatus = "Pending Sync";
+  await refreshPendingPickupCount();
+  persistOptimisticJobs();
+}
+
+async function syncPendingPickups() {
+  if (state.syncingPickups) return;
+  if (!navigator.onLine) return toast("No internet connection yet. The pickup remains safely saved on this device.");
+  const records = await getQueuedPickups();
+  if (!records.length) { await refreshPendingPickupCount({render:true}); return toast("There are no pickups waiting to sync."); }
+  state.syncingPickups = true;
+  go(location.hash.slice(1) || "today");
+  try {
+    const pinToken = await requestPin("canCreateQuote",`Enter your employee PIN to sync ${records.length} saved pickup${records.length===1?"":"s"}.`);
+    for (let index=0; index<records.length; index++) {
+      const record = records[index];
+      showTaskProgress(`Syncing pickup ${index+1} of ${records.length}`,`${record.customer} · Uploading saved photos, signature, and checklist.`);
+      try {
+        await api.finalizePickupInspection(record.jobId, record.inspection, pinToken);
+        const job = state.jobs.find(item=>String(item.id)===String(record.jobId));
+        if (job) applyPickupCompletion(job, record.inspection);
+        await deleteQueuedPickup(record.id);
+      } catch (error) {
+        if (/already been finalized/i.test(error.message || "")) {
+          await deleteQueuedPickup(record.id);
+          continue;
+        }
+        record.attempts = Number(record.attempts || 0) + 1;
+        record.lastError = error.message || "Sync failed";
+        await saveQueuedPickup(record);
+        throw error;
+      }
+    }
+    touchPinSession();
+    persistOptimisticJobs();
+    toast("Saved pickup work is now synced with the CMS.");
+    refreshLiveDataInBackground();
+  } catch (error) {
+    console.error(error);
+    toast(isNetworkFailure(error)?"Connection was lost. The pickup remains safely saved on this device.":(error.message || "The saved pickup could not be synced."));
+  } finally {
+    hideTaskProgress();
+    state.syncingPickups = false;
+    await refreshPendingPickupCount({render:true});
+  }
 }
 
 function pickupSummaryMarkup(job) {
@@ -1957,6 +2110,7 @@ function bindDynamic() {
   });
   document.querySelectorAll("[data-complete-details]").forEach(el => el.onclick = () => openCompleteDetails(el.dataset.completeDetails));
   view.querySelector("[data-hard-refresh-cms]")?.addEventListener("click",hardRefreshCms);
+  view.querySelector("[data-sync-pickup-queue]")?.addEventListener("click",syncPendingPickups);
   view.querySelectorAll("[data-review-job]").forEach(el => el.onclick = () => openJob(el.dataset.reviewJob));
   view.querySelector("[data-toggle-manager-attention]")?.addEventListener("click",()=>{
     managerHomePanels.attentionOpen=!managerHomePanels.attentionOpen;
@@ -3743,7 +3897,14 @@ if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => navigator.serviceWorker.register("./service-worker.js").catch(console.error));
 }
 
+window.addEventListener("online", async () => {
+  await refreshPendingPickupCount({render:true});
+  if (state.pendingPickupCount) toast(`${state.pendingPickupCount} saved pickup${state.pendingPickupCount===1?" is":"s are"} ready to sync.`);
+});
+window.addEventListener("offline", () => toast("GamePlan is offline. Pickup work can still be saved on this device."));
+
 loadPinSession();
+refreshPendingPickupCount();
 updateDataStatus();
 go(location.hash.slice(1) || "today");
 if (googleSignOutButton) {

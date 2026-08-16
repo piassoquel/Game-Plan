@@ -620,7 +620,9 @@ body{background:var(--gp-bg);color:var(--gp-text)}
 .manager-sync-panel{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:13px 15px;border:1px solid rgba(59,130,246,.36);border-radius:16px;background:rgba(59,130,246,.055)}
 .manager-sync-panel>span{display:grid;gap:3px}.manager-sync-panel b{color:var(--gp-text);font-size:14px}.manager-sync-panel small{color:var(--gp-muted);font-size:12px}
 .manager-sync-panel button{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:42px;padding:0 15px;border:1px solid rgba(59,130,246,.72);border-radius:12px;background:rgba(59,130,246,.08);color:#78adff;font:700 13px/1 inherit;white-space:nowrap}.manager-sync-panel button i{font-style:normal;font-size:18px}.manager-sync-panel button:disabled{opacity:.58}
+.sync-panel-actions{display:flex;align-items:center;gap:8px}.manager-sync-panel .pending-sync-button{border-color:rgba(34,197,94,.72);background:rgba(34,197,94,.1);color:#52d77b}
 @media(max-width:430px){.manager-sync-panel{padding:12px}.manager-sync-panel button{padding:0 12px}}
+@media(max-width:390px){.manager-sync-panel{align-items:flex-start}.sync-panel-actions{flex-direction:column;align-items:stretch}.manager-sync-panel button{min-height:38px}}
 
 /* Fix 06C.1 — constrain raster equipment icons everywhere they are rendered */
 .ux-selected-item>i .gp-icon-raster{width:100%;height:100%}
