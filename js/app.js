@@ -1,4 +1,4 @@
-import { GamePlanApi } from "./api.js?v=4.5.0-perf3";
+import { GamePlanApi } from "./api.js?v=4.5.1-modifiers";
 
 const CACHE_KEY = "gameplan-live-bootstrap-v2";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -1564,6 +1564,18 @@ function equipmentBuildControl(job, item) {
   return `<button class="button build-complete-button" data-build-complete="${esc(item.id)}" data-job-id="${esc(job.id)}">Mark Build Complete</button>`;
 }
 
+function deliveryModifiersMarkup(job) {
+  const hasDelivery = (job.equipment || []).some(item => item.deliveryRequired !== false);
+  if (!hasDelivery) return "";
+  const modifiers = Array.isArray(job.access) ? job.access : [];
+  return `<section class="detail-card delivery-modifiers-card">
+    <div class="delivery-modifiers-heading"><div><small>ACCESS CONDITIONS</small><h3>Delivery Modifiers</h3></div><i>${gpIcon("stairs")}</i></div>
+    ${modifiers.length
+      ? `<div class="delivery-modifier-list">${modifiers.map(modifier => `<div class="delivery-modifier-row"><i>${gpIcon(iconNameFor(modifier,"access"))}</i><span><b>${esc(modifier.name || modifier.accessConditionId || "Access condition")}</b>${Number(modifier.quantity || 1)>1?`<small>Quantity: ${Number(modifier.quantity)}</small>`:""}</span><strong>✓</strong></div>`).join("")}</div>`
+      : `<div class="delivery-modifiers-empty"><b>No delivery modifiers recorded</b><span>Confirm access with the customer before departure. Add any undisclosed stairs or access conditions before completing the job.</span></div>`}
+  </section>`;
+}
+
 async function openJob(jobId) {
   const existing = state.jobs.find(j => j.id === jobId);
   if (existing?.hasPickup && pickupInspectionComplete(existing) && !existing.pickupDetailsLoaded) {
@@ -1584,6 +1596,8 @@ async function openJob(jobId) {
     ${renderLifecycle(job.status)}
     ${job.status==="Tentative"&&scheduledConflictsFor(job).length?`<div class="job-conflict-banner"><strong>⚠ Schedule Conflict</strong><span>This requested time now overlaps an approved appointment.</span></div>`:""}
     ${renderJobSummaryCard(job)}
+
+    ${deliveryModifiersMarkup(job)}
 
     <section class="detail-card">
       <h3>Equipment (${job.equipment?.length || 0})</h3>
