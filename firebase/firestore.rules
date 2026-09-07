@@ -42,17 +42,17 @@ service cloud.firestore {
       match /{document=**} { allow read, write: if gpStoreUser(); }
     }
 
-    match /gpEquipmentTypes/{id}    { allow read: if gpStoreUser(); allow write: if gpStoreUser(); }
-    match /gpAccessConditions/{id}  { allow read: if gpStoreUser(); allow write: if gpStoreUser(); }
-    match /gpJobTypes/{id}          { allow read: if gpStoreUser(); allow write: if gpStoreUser(); }
-    match /gpProducts/{id}          { allow read: if gpStoreUser(); allow write: if gpStoreUser(); }
-    match /gpBrands/{id}            { allow read: if gpStoreUser(); allow write: if gpStoreUser(); }
-    match /gpBlackoutDates/{id}     { allow read: if gpStoreUser(); allow write: if gpStoreUser(); }
-    match /gpAvailabilityRules/{id} { allow read: if gpStoreUser(); allow write: if gpStoreUser(); }
-    match /gpConfig/{doc}           { allow read: if gpStoreUser(); allow write: if gpStoreUser(); }
-    match /gpRoles/{roleId}         { allow read: if gpStoreUser(); allow write: if gpStoreUser(); }
-    match /gpLoginAccounts/{email}  { allow read: if gpStoreUser(); allow write: if gpStoreUser(); }
-    match /gpStaff/{staffId}        { allow read: if gpStoreUser(); allow write: if gpStoreUser(); }
+    match /gpEquipmentTypes/{id}    { allow read, write: if gpStoreUser(); }
+    match /gpAccessConditions/{id}  { allow read, write: if gpStoreUser(); }
+    match /gpJobTypes/{id}          { allow read, write: if gpStoreUser(); }
+    match /gpProducts/{id}          { allow read, write: if gpStoreUser(); }
+    match /gpBrands/{id}            { allow read, write: if gpStoreUser(); }
+    match /gpBlackoutDates/{id}     { allow read, write: if gpStoreUser(); }
+    match /gpAvailabilityRules/{id} { allow read, write: if gpStoreUser(); }
+    match /gpConfig/{doc}           { allow read, write: if gpStoreUser(); }
+    match /gpRoles/{roleId}         { allow read, write: if gpStoreUser(); }
+    match /gpLoginAccounts/{email}  { allow read, write: if gpStoreUser(); }
+    match /gpStaff/{staffId}        { allow read, write: if gpStoreUser(); }
 
     match /gpAudit/{id} {
       allow read, create: if gpStoreUser();
