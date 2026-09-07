@@ -144,7 +144,7 @@ GamePlan writes (server-side only, Admin SDK) to the dashboard's collection.
 | field | value |
 |---|---|
 | `kind` | `delivery` \| `pickup` \| `build` |
-| `date` | `YYYY-MM-DD`, America/Los_Angeles. delivery/pickup = local date of `scheduledAt`. **build** = first appears 48h before the appointment, then a daily function rolls `date` forward to the current day until the build is done or the appointment passes — so a pending build stays on "today" in both apps until it's handled |
+| `date` | `YYYY-MM-DD`, America/Los_Angeles. delivery/pickup = local date of `scheduledAt`, **but** if the job is past its date and still `scheduled` (not closed), a daily function rolls `date` forward to today so it stays visible until closed. **build** = first appears 48h before the appointment, then rolls `date` forward the same way until the build is done or the appointment passes |
 | `scheduledAt` | Timestamp of the appointment; for `build`, the appointment it's prepping for (dashboard may show it as context) |
 | `buildDueBy` | (build only) Timestamp = appointment − 48h — when the build should be finished |
 | `window` | `null` (GamePlan always has an exact time once scheduled) |

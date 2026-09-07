@@ -36,6 +36,25 @@ GP-2026-0009 (pickup, 2026-08-03) and GP-2026-0019 (pickup, 2026-08-24).
   then the Complete flag. On sync, the server re-checks the job was Scheduled
   and the inspection is done.
 
+### 1b. Past-due unclosed jobs must raise an alert
+
+A `scheduled` job whose local `scheduledAt` date is **before today** is
+"past due — needs closing". The app must actively draw attention to it, not
+let it scroll away:
+
+- **Today screen** — a "Past due" band at the top (reuse the existing
+  attention-rail treatment used for "details needed" / "schedule conflict"),
+  listing each past-due job with its age ("3 days overdue") and a primary
+  **Complete** action (plus Reschedule / Cancel).
+- **Schedule screen** — past-due jobs render with a warning style and stay
+  pinned/visible rather than falling off the bottom of past weeks.
+- **Nav** — a count indicator so it's visible from any screen.
+- **Daily Dashboard feed** — a past-due delivery/pickup rolls its feed `date`
+  forward to the current day (same mechanism as pending builds) so it stays on
+  the dashboard's "today" until closed. `status` stays `scheduled`.
+- Threshold is date-based (`scheduledDate < todayLA`). A softer "still open at
+  end of day" nudge for same-day jobs is optional, later.
+
 ## 2. Schedule block / price go stale after a job is edited
 
 Editing a job's equipment, access conditions, or address does not recompute
