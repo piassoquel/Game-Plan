@@ -1,6 +1,6 @@
-import { GamePlanApi } from "./gameplan-api.js";
-import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js";
-import { computeQuote } from "./pricing.mjs";
+import { GamePlanApi } from "./gameplan-api.js?v=fb6";
+import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb6";
+import { computeQuote } from "./pricing.mjs?v=fb6";
 
 const CACHE_KEY = "gameplan-live-bootstrap-v2";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
