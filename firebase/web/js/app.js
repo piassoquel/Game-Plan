@@ -755,6 +755,7 @@ function renderEmployeeHome() {
   const selectedTitle = new Intl.DateTimeFormat("en-US",{weekday:"long",month:"long",day:"numeric"}).format(today);
   return `<div class="employee-home">
     ${syncPanel()}
+    ${pastDueBand()}
     ${employeeHomeStatusButtons()}
 
     <section class="card employee-day-agenda">
@@ -768,6 +769,43 @@ function renderEmployeeHome() {
 
 function employeeDisplayName(value) {
   return String(value || "").replace(/\s*\[[^\]]+\]\s*$/, "").trim();
+}
+
+function pastDueJobs() {
+  const todayKey = toDateKey(new Date());
+  return state.jobs.filter(job => {
+    if (!["Scheduled", "Tentative"].includes(job.status)) return false;
+    const date = parseJobDate(job);
+    if (!date) return false;
+    return toDateKey(date) < todayKey;
+  }).sort((a, b) => parseJobDate(a) - parseJobDate(b));
+}
+
+function daysOverdue(job) {
+  const start = parseJobDate(job);
+  if (!start) return 0;
+  const s = new Date(start); s.setHours(0, 0, 0, 0);
+  const t = new Date(); t.setHours(0, 0, 0, 0);
+  return Math.max(1, Math.round((t - s) / 86400000));
+}
+
+function pastDueBand() {
+  const jobs = pastDueJobs();
+  if (!jobs.length) return "";
+  return `<section class="card past-due-card">
+    <div class="head"><div class="attention-symbol">!</div><div><h2>Past Due — Needs Closing</h2><span class="agenda-subtitle">${jobs.length} job${jobs.length === 1 ? "" : "s"} scheduled before today and not completed</span></div></div>
+    <div class="body attention-list">${jobs.map(job => {
+      const n = daysOverdue(job);
+      return `<article class="past-due-row" data-open-job="${esc(job.id)}">
+        <div class="past-due-row__main">
+          <strong>${esc(job.customer)}</strong>
+          <span>${esc(jobTypeLabel(job))} · ${esc(job.date)}${job.number ? ` · #${esc(job.number)}` : ""}</span>
+        </div>
+        <span class="past-due-age">${n} day${n === 1 ? "" : "s"} overdue</span>
+        <button class="button neutral" type="button" data-open-job="${esc(job.id)}">Review</button>
+      </article>`;
+    }).join("")}</div>
+  </section>`;
 }
 
 function needsAttentionCard(job) {
@@ -1988,6 +2026,7 @@ const views = {
     title:"Today's GamePlan", sub:todayDate,
     html:()=>{if(!isManager())return renderEmployeeHome();const attention=state.jobs.filter(jobNeedsOfficeAttention);const todayJobs=jobsForDate(new Date());return `<div class="home-dashboard">
       ${syncPanel()}
+      ${pastDueBand()}
       ${homeStatusButtons()}
       <section class="card needs-attention-card ${managerHomePanels.attentionOpen?"expanded":"collapsed"}">
         <button class="needs-attention-toggle" type="button" data-toggle-manager-attention aria-expanded="${managerHomePanels.attentionOpen}"><span><h2>Needs Attention</h2><em class="attention-count">${attention.length}</em></span><i>${managerHomePanels.attentionOpen?"⌃":"⌄"}</i></button>
