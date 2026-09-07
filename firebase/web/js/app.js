@@ -1,6 +1,6 @@
-import { GamePlanApi } from "./gameplan-api.js?v=fb8";
-import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb8";
-import { computeQuote } from "./pricing.mjs?v=fb8";
+import { GamePlanApi } from "./gameplan-api.js?v=fb9";
+import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb9";
+import { computeQuote } from "./pricing.mjs?v=fb9";
 
 const CACHE_KEY = "gameplan-live-bootstrap-v2";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -782,6 +782,12 @@ function pastDueJobs() {
   }).sort((a, b) => parseJobDate(a) - parseJobDate(b));
 }
 
+function isJobPastDue(job) {
+  if (!["Scheduled", "Tentative"].includes(job.status)) return false;
+  const d = parseJobDate(job);
+  return Boolean(d) && toDateKey(d) < toDateKey(new Date());
+}
+
 function daysOverdue(job) {
   const start = parseJobDate(job);
   if (!start) return 0;
@@ -1555,20 +1561,25 @@ function workflowActions(job) {
       ${conflicts.length?"":`<button class="button neutral" data-reschedule-job="${esc(job.id)}">Edit / Reschedule</button>`}
       <button class="button red" data-status-action="Cancelled" data-job-id="${esc(job.id)}">Cancel Job</button>`;
   }
-  if (job.status === "Scheduled" && today) {
+  if (job.status === "Scheduled" && (today || isJobPastDue(job))) {
+    const overdue = !today && isJobPastDue(job);
     const pickupAction = job.hasPickup
       ? (pickupInspectionComplete(job)
           ? `<span class="pickup-ready-note">Pickup inspection complete ✓</span>`
           : `<button class="button pickup-inspection-action" data-pickup-inspection="${esc(job.id)}">Begin Pickup Inspection</button>`)
       : "";
     const completeAction = job.hasPickup && !pickupInspectionComplete(job)
-      ? `<button class="button green primary-action" disabled title="Finalize the pickup inspection first">✓ Complete Job</button>`
+      ? (isManager()
+          ? `<button class="button green" data-complete-no-inspection="${esc(job.id)}">✓ Complete Without Inspection</button>`
+          : `<button class="button green primary-action" disabled title="Finalize the pickup inspection first">✓ Complete Job</button>`)
       : `<button class="button green primary-action" data-status-action="Completed" data-job-id="${esc(job.id)}">✓ Complete Job</button>`;
     return `
+      ${overdue ? `<div class="job-conflict-banner"><strong>⚠ Past due</strong><span>${daysOverdue(job)} day${daysOverdue(job) === 1 ? "" : "s"} overdue — close this out.</span></div>` : ""}
       <a class="button call-action" href="tel:${esc(job.phone)}">Call Customer</a>
       <a class="button neutral map-action" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(job.address || "")}" target="_blank" rel="noopener">View on Map</a>
       ${pickupAction}
-      ${completeAction}`;
+      ${completeAction}
+      <button class="button red" data-status-action="Cancelled" data-job-id="${esc(job.id)}">Cancel Job</button>`;
   }
   if (job.status === "Scheduled") {
     const pickupAction = job.hasPickup && !pickupInspectionComplete(job)
@@ -1656,7 +1667,7 @@ async function openJob(jobId) {
   bindDynamic();
 }
 
-async function changeJobStatus(jobId, newStatus, {piggyback=false} = {}) {
+async function changeJobStatus(jobId, newStatus, {piggyback=false, overridePickupInspection=false} = {}) {
   const job = state.jobs.find(item => item.id === jobId);
   if (!job) return;
   const managerOnly = newStatus === "Scheduled" || (job.status === "Scheduled" && ["Tentative", "Cancelled"].includes(newStatus));
@@ -1699,14 +1710,16 @@ async function changeJobStatus(jobId, newStatus, {piggyback=false} = {}) {
   buttons.forEach(button => button.disabled = true);
   try {
     const pinToken = await requestPin("canCreateQuote", "Enter your employee PIN to record this action.");
-    const approvalToken = managerOnly
-      ? await requestManagerApproval("A manager PIN is required to finalize or change the schedule. The active employee will remain signed in.")
+    const approvalToken = (managerOnly || (overridePickupInspection && !isManager()))
+      ? await requestManagerApproval(overridePickupInspection
+          ? "A manager PIN is required to complete a pickup without an inspection."
+          : "A manager PIN is required to finalize or change the schedule. The active employee will remain signed in.")
       : "";
     showTaskProgress(
       newStatus === "Completed" ? "Completing delivery…" : newStatus === "Scheduled" ? "Confirming appointment…" : "Updating job…",
       "Saving the confirmed change to the GamePlan CMS."
     );
-    await api.updateJobStatus(jobId, newStatus, piggyback?"Approved as manager-authorized piggyback overlap":"Updated from Job Details", pinToken, approvalToken, overrideSchedule, scheduleOverrideType);
+    await api.updateJobStatus(jobId, newStatus, piggyback?"Approved as manager-authorized piggyback overlap":"Updated from Job Details", pinToken, approvalToken, overrideSchedule, scheduleOverrideType, overridePickupInspection);
     touchPinSession();
     state.dataRevision += 1;
     job.status = newStatus;
@@ -2240,6 +2253,12 @@ function bindDynamic() {
   });
   document.querySelectorAll("[data-status-action]").forEach(el => {
     el.onclick = () => changeJobStatus(el.dataset.jobId, el.dataset.statusAction);
+  });
+  document.querySelectorAll("[data-complete-no-inspection]").forEach(el => {
+    el.onclick = () => {
+      if (!window.confirm("Complete this pickup WITHOUT a pickup inspection?\n\nNo signature or condition record will be captured. This is recorded as a manager override in the job history.")) return;
+      changeJobStatus(el.dataset.completeNoInspection, "Completed", { overridePickupInspection: true });
+    };
   });
   document.querySelectorAll("[data-piggyback-job]").forEach(el => {
     el.onclick = () => changeJobStatus(el.dataset.piggybackJob, "Scheduled", {piggyback:true});

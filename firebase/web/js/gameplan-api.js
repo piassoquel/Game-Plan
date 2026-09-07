@@ -7,7 +7,7 @@
 import {
   collection, query, where, getDocs, doc, getDoc,
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
-import { db, auth, functions, httpsCallable } from "./firebase-app.js?v=fb8";
+import { db, auth, functions, httpsCallable } from "./firebase-app.js?v=fb9";
 
 const call = (name) => httpsCallable(functions, name);
 
@@ -199,8 +199,8 @@ export class GamePlanApi {
     return res.data;
   }
 
-  async updateJobStatus(jobId, newStatus, statusNote = "", pinToken = "", approvalToken = "", overrideSchedule = false, scheduleOverrideType = "") {
-    const res = await call("updateJobStatus")({ jobId, newStatus, statusNote, pinToken, approvalToken, overrideSchedule, scheduleOverrideType });
+  async updateJobStatus(jobId, newStatus, statusNote = "", pinToken = "", approvalToken = "", overrideSchedule = false, scheduleOverrideType = "", overridePickupInspection = false) {
+    const res = await call("updateJobStatus")({ jobId, newStatus, statusNote, pinToken, approvalToken, overrideSchedule, scheduleOverrideType, overridePickupInspection });
     return res.data;
   }
 

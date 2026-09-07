@@ -331,10 +331,13 @@ export const createJob = onCall(async (request) => {
     createdBy: actorLabel(actor), createdAt: now, updatedBy: actorLabel(actor), updatedAt: now,
   });
 
+  const jobEquipmentIds = [];
   equipmentIn.forEach((it, i) => {
     const n = norm(it);
     const buildRequired = n.deliveryRequired && n.condition === "new" && n.fulfillmentConditionId === "NIB";
-    batch.set(d.doc(`gpJobs/${jobId}/equipment/${newId("JEQ")}`), {
+    const lineId = newId("JEQ");
+    jobEquipmentIds.push(lineId);
+    batch.set(d.doc(`gpJobs/${jobId}/equipment/${lineId}`), {
       equipmentTypeId: n.equipmentTypeId, condition: n.condition,
       brand: str(it.brand), model: str(it.model), itemDescription: str(it.notes) || str(it.model),
       productId: str(it.productId) || null, quantity: n.quantity, imageUrl: str(it.imageUrl),
@@ -365,7 +368,7 @@ export const createJob = onCall(async (request) => {
 
   await batch.commit();
   return {
-    jobId, jobNumber, customerId, addressId, status,
+    jobId, jobNumber, customerId, addressId, status, jobEquipmentIds,
     message: status === "scheduled" ? "Job scheduled" : "Quote created",
   };
 });
@@ -415,10 +418,19 @@ export const updateJobStatus = onCall(async (request) => {
     requirePermission(approver, "canApproveSchedule", "Manager approval is required for this change.");
   }
 
+  let pickupOverride = false;
   if (target === "completed") {
-    if (job.pickupInspectionStatus && job.pickupInspectionStatus !== "not-needed"
-        && job.pickupInspectionStatus !== "complete") {
-      throw new HttpsError("failed-precondition", "Finalize the pickup inspection before completing this job.");
+    const inspectionOutstanding = job.pickupInspectionStatus &&
+      job.pickupInspectionStatus !== "not-needed" && job.pickupInspectionStatus !== "complete";
+    if (inspectionOutstanding) {
+      if (!data.overridePickupInspection) {
+        throw new HttpsError("failed-precondition", "Finalize the pickup inspection before completing this job.");
+      }
+      const mgr = actor.permissions?.canApproveSchedule
+        ? actor
+        : await resolveActor(request, { pinToken: data.approvalToken });
+      requirePermission(mgr, "canApproveSchedule", "A manager must approve completing a pickup without an inspection.");
+      pickupOverride = true;
     }
   }
 
@@ -438,6 +450,7 @@ export const updateJobStatus = onCall(async (request) => {
     eventType: "Status Changed",
     description: (str(data.statusNote) || `Status changed from ${current} to ${target}`) +
       (approver && approver !== actor ? ` · Approved by ${actorLabel(approver)}` : "") +
+      (pickupOverride ? " · Completed without pickup inspection (manager override)" : "") +
       (clashes.length ? ` · Manager override: overlaps ${clashes.join(", ")}` : ""),
     previousValue: current, newValue: target,
     performedBy: actorLabel(actor), performedAt: now, source: "GamePlan App",
