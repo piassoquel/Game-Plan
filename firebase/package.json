@@ -1,0 +1,9 @@
+{
+  "name": "gameplan-firebase",
+  "private": true,
+  "description": "GamePlan on Firebase — hosting (web/), functions/, and the one-time importer.",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "sync-pricing": "node -e \"require('fs').copyFileSync('web/js/pricing.mjs','functions/pricing.mjs')\""
+  }
+}

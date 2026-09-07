@@ -1,14 +1,15 @@
-const CACHE_NAME = "gameplan-firebase-preview-v3";
+const CACHE_NAME = "gameplan-firebase-preview-v4";
 // Same-origin shell only. The Firebase SDK (gstatic) and everything else is
 // cached lazily by the fetch handler on first use.
 const APP_SHELL = [
   "./index.html",
   "./manifest.json",
-  "./css/app.css?v=fb2",
-  "./js/config.js?v=fb2",
-  "./js/app.js?v=fb2",
+  "./css/app.css?v=fb3",
+  "./js/config.js?v=fb3",
+  "./js/app.js?v=fb3",
   "./js/gameplan-api.js",
   "./js/firebase-app.js",
+  "./js/pricing.mjs",
   "./firebase-config.js",
   "./assets/logo/gameplan-logo.svg",
 ];

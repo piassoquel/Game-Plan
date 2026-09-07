@@ -1,5 +1,6 @@
 import { GamePlanApi } from "./gameplan-api.js";
 import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js";
+import { computeQuote } from "./pricing.mjs";
 
 const CACHE_KEY = "gameplan-live-bootstrap-v2";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -2818,39 +2819,55 @@ function availableSlotsForDate(dateKey){
 }
 function timeSlotsForSelectedDate(){return draft.scheduledDate?availableSlotsForDate(draft.scheduledDate):[];}
 function quoteBreakdown(){
-  const settings=state.pricingSettings||{};const crew=crewSize();
-  const roundTripMiles=Number(draft.route?.roundTripDistanceMiles||0);
-  const travelMinutes=Number(draft.route?.roundTripTravelMinutes||0);
-  let serviceMinutes=0,assemblyCharge=0,disposalCharge=0,usedItemCharge=0;
-  const pickupType=normalizedPickupType(draft.pickupType);
-  const disposal=pickupType==="Disposal";
-  let hasPickupItem=false;
-  draft.equipment.forEach(item=>{
-    const type=selectedType(item);const qty=Math.max(1,Number(item.quantity||1));
-    if(itemMovement(item)==="pickup"){
-      hasPickupItem=true;
-      serviceMinutes+=qty*Number(type.pickupMinutes||0);
-      if(disposal)disposalCharge+=qty*Number(type.defaultDisposalCharge??50);
-    }else{
-      serviceMinutes+=qty*Number(type.deliveryMinutes||0);
-      if(item.condition==="New")assemblyCharge+=qty*Number(type.defaultAssemblyCharge??50);
-      else usedItemCharge+=qty*Number(settings.usedItemDeliveryCharge||0);
-    }
-  });
-  const selectedAccess=draft.access.map(id=>state.accessConditions.find(a=>String(a.id)===String(id))).filter(Boolean);
-  const accessMinutes=selectedAccess.reduce((n,a)=>n+Number(a.defaultMinutes||0),0);
-  const accessFlatCharge=selectedAccess.reduce((n,a)=>n+Number(a.flatCharge||0),0);
-  const laborMinutes=travelMinutes+serviceMinutes+accessMinutes;
-  const laborCharge=laborMinutes/60*crew*Number(settings.laborRatePerEmployeeHour||0);
-  const mileageCharge=roundTripMiles*Number(settings.vehicleRatePerMile||0);
-  const baseTripCharge=Number(settings.baseTripCharge||0);
-  const tradeInPickupDiscount=pickupType==="Trade-In"&&hasPickupItem
-    ? Math.max(0,Number(settings.tradeInPickupDiscount||0))
-    : 0;
-  const subtotal=Math.max(0,baseTripCharge+mileageCharge+laborCharge+usedItemCharge+assemblyCharge+disposalCharge+accessFlatCharge-tradeInPickupDiscount);
-  const minimum=Math.max(0,Number(settings.minimumServiceCharge||0)-subtotal);
-  const increment=Math.max(1,Number(settings.priceRoundingIncrement||5));
-  return {crew,roundTripMiles,travelMinutes,serviceMinutes,accessMinutes,laborMinutes,baseTripCharge,mileageCharge,laborCharge,usedItemCharge,assemblyCharge,disposalCharge,accessFlatCharge,tradeInPickupDiscount,subtotal,minimum,roundedTotal:Math.round((subtotal+minimum)/increment)*increment};
+  // Delegates to the single pricing engine (pricing.mjs) so the wizard preview
+  // and the server-side createJob can never diverge.
+  const pickupTypeUi=normalizedPickupType(draft.pickupType); // "Trade-In"|"Disposal"|""
+  const route=draft.route||{};
+  let q;
+  try {
+    q=computeQuote({
+      equipment:draft.equipment.map(item=>({
+        equipmentTypeId:(selectedType(item)||{}).id||item.equipmentTypeId,
+        condition:item.condition==="New"?"new":"used",
+        quantity:Math.max(1,Number(item.quantity||1)),
+        deliveryRequired:itemMovement(item)!=="pickup",
+        pickupRequired:itemMovement(item)==="pickup",
+        fulfillmentConditionId:item.fulfillmentConditionId||"NIB",
+      })),
+      access:draft.access.map(id=>({accessConditionId:String(id),quantity:1})),
+      route:{
+        roundTripMiles:Number(route.roundTripDistanceMiles||route.roundTripMiles||0),
+        outboundMinutes:Number(route.outboundTravelMinutes||route.outboundMinutes||0),
+        returnMinutes:Number(route.returnTravelMinutes||route.returnMinutes||0),
+      },
+      pickupType:pickupTypeUi==="Trade-In"?"trade-in":pickupTypeUi==="Disposal"?"disposal":null,
+      equipmentTypes:state.equipmentTypes,
+      accessConditions:state.accessConditions,
+      settings:state.pricingSettings||{},
+    });
+  } catch (_) {
+    return {crew:1,roundTripMiles:0,travelMinutes:0,serviceMinutes:0,accessMinutes:0,laborMinutes:0,baseTripCharge:0,mileageCharge:0,laborCharge:0,usedItemCharge:0,assemblyCharge:0,disposalCharge:0,accessFlatCharge:0,tradeInPickupDiscount:0,subtotal:0,minimum:0,roundedTotal:0};
+  }
+  const p=q.pricing;
+  return {
+    crew:q.crewSize,
+    roundTripMiles:q.roundTripMiles,
+    travelMinutes:q.travelMinutes,
+    serviceMinutes:q.equipmentServiceMinutes,
+    accessMinutes:q.accessMinutes,
+    laborMinutes:q.laborMinutes,
+    baseTripCharge:p.baseTripCharge,
+    mileageCharge:p.mileageCharge,
+    laborCharge:p.travelLaborCharge,
+    usedItemCharge:p.usedItemDeliveryCharge,
+    assemblyCharge:p.assemblyCharge,
+    disposalCharge:p.disposalCharge,
+    accessFlatCharge:p.accessLaborCharge,
+    tradeInPickupDiscount:p.tradeInPickupDiscount,
+    subtotal:p.calculatedSubtotal,
+    minimum:p.minimumChargeAdjustment,
+    roundedTotal:p.roundedTotal,
+  };
 }
 function quoteEstimate(){return quoteBreakdown().roundedTotal;}
 function crewSize(){return Math.max(1,...draft.equipment.map(item=>{
