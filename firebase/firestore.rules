@@ -1,0 +1,70 @@
+rules_version = '2';
+
+// =============================================================================
+// GamePlan — PROPOSED rule additions for the daily-inventory-operations project.
+//
+// DO NOT DEPLOY THIS FILE STANDALONE. This project already has a canonical
+// firestore.rules owned by the Daily Inventory Operations (dashboard) app.
+// Deploying replaces the ENTIRE ruleset. These blocks must be merged into that
+// canonical file before any deploy. `isApproved()` below is the dashboard's
+// existing helper (allowedUsers/{email}); it is assumed in scope after merge.
+// =============================================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // --- GamePlan gate: signed-in + on GamePlan's own allow-list ------------
+    // Most staff sign in through a SHARED device account (employee@playitagain
+    // soquel.com, and piasemployee@gmail.com) and identify themselves per-action
+    // with a PIN (enforced server-side in Phase 3). So the gate is allow-list
+    // membership, not domain match — the Gmail shared account is legitimate.
+    function gpStoreUser() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && exists(/databases/$(database)/documents/gpLoginAccounts/$(request.auth.token.email))
+        && get(/databases/$(database)/documents/gpLoginAccounts/$(request.auth.token.email)).data.active == true;
+    }
+
+    // --- GamePlan application data (top-level, gp-prefixed) ------------------
+    // v1: any store user may read/write. Role/permission enforcement (canApprove
+    // schedule, canOverridePrice, PIN approvals, etc.) is applied server-side in
+    // the GamePlan Cloud Functions in Phase 3, not here.
+
+    match /gpJobs/{jobId} {
+      allow read, create, update: if gpStoreUser();
+      allow delete: if false;
+      match /{document=**} { allow read, write: if gpStoreUser(); }
+    }
+
+    match /gpCustomers/{customerId} {
+      allow read, create, update: if gpStoreUser();
+      allow delete: if false;
+      match /{document=**} { allow read, write: if gpStoreUser(); }
+    }
+
+    match /gpEquipmentTypes/{id}    { allow read: if gpStoreUser(); allow write: if gpStoreUser(); }
+    match /gpAccessConditions/{id}  { allow read: if gpStoreUser(); allow write: if gpStoreUser(); }
+    match /gpJobTypes/{id}          { allow read: if gpStoreUser(); allow write: if gpStoreUser(); }
+    match /gpProducts/{id}          { allow read: if gpStoreUser(); allow write: if gpStoreUser(); }
+    match /gpBrands/{id}            { allow read: if gpStoreUser(); allow write: if gpStoreUser(); }
+    match /gpBlackoutDates/{id}     { allow read: if gpStoreUser(); allow write: if gpStoreUser(); }
+    match /gpAvailabilityRules/{id} { allow read: if gpStoreUser(); allow write: if gpStoreUser(); }
+    match /gpConfig/{doc}           { allow read: if gpStoreUser(); allow write: if gpStoreUser(); }
+    match /gpRoles/{roleId}         { allow read: if gpStoreUser(); allow write: if gpStoreUser(); }
+    match /gpLoginAccounts/{email}  { allow read: if gpStoreUser(); allow write: if gpStoreUser(); }
+    match /gpStaff/{staffId}        { allow read: if gpStoreUser(); allow write: if gpStoreUser(); }
+
+    match /gpAudit/{id} {
+      allow read, create: if gpStoreUser();
+      allow update, delete: if false;
+    }
+
+    // --- Today feed consumed by the Daily Dashboard ------------------------
+    // Written ONLY by the GamePlan Cloud Function via the Admin SDK, which
+    // bypasses rules; all client writes are denied.
+    match /stores/soquel/deliveries/{id} {
+      allow read: if isApproved();
+      allow write: if false;
+    }
+  }
+}
