@@ -7,7 +7,7 @@
 import {
   collection, query, where, getDocs, doc, getDoc,
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
-import { db, auth, functions, httpsCallable } from "./firebase-app.js?v=fb6";
+import { db, auth, functions, httpsCallable } from "./firebase-app.js?v=fb7";
 
 const call = (name) => httpsCallable(functions, name);
 
@@ -197,10 +197,22 @@ export class GamePlanApi {
     return res.data;
   }
 
-  async updateJobStatus() { throw notYet(); }
-  async updateJobDetails() { throw notYet(); }
+  async updateJobStatus(jobId, newStatus, statusNote = "", pinToken = "", approvalToken = "", overrideSchedule = false, scheduleOverrideType = "") {
+    const res = await call("updateJobStatus")({ jobId, newStatus, statusNote, pinToken, approvalToken, overrideSchedule, scheduleOverrideType });
+    return res.data;
+  }
+
+  async updateJobDetails(jobId, equipment, pickupType = "", pickupNotes = "", pinToken = "") {
+    const res = await call("updateJobDetails")({ jobId, equipment, pickupType, pickupNotes, pinToken });
+    return res.data;
+  }
+
   async updateJobSchedule() { throw notYet(); }
-  async updateEquipmentBuildStatus() { throw notYet(); }
+
+  async updateEquipmentBuildStatus(jobId, jobEquipmentId, buildComplete = true, pinToken = "", approvalToken = "") {
+    const res = await call("updateEquipmentBuildStatus")({ jobId, jobEquipmentId, buildComplete, pinToken, approvalToken });
+    return res.data;
+  }
   async finalizePickupInspection() { throw notYet(); }
   async getStaffManagement() { throw notYet(); }
   async saveStaffProfile() { throw notYet(); }

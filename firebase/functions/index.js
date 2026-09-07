@@ -19,6 +19,7 @@ import {
   resolveActor, requirePermission, actorLabel,
 } from "./lib/common.mjs";
 import { combineLocalDateTime, laDateString, assertNoConflict } from "./lib/schedule.mjs";
+import { uploadDataUrl } from "./lib/photos.mjs";
 import { computeQuote } from "./pricing.mjs";
 
 initializeApp();
@@ -367,4 +368,214 @@ export const createJob = onCall(async (request) => {
     jobId, jobNumber, customerId, addressId, status,
     message: status === "scheduled" ? "Job scheduled" : "Quote created",
   };
+});
+
+// ------------------------------------------------------------- updateJobStatus
+const UI_TO_ENUM = { Scheduled: "scheduled", Completed: "completed", Cancelled: "cancelled", Tentative: "unscheduled" };
+const VALID_NEXT = {
+  unscheduled: ["scheduled", "cancelled"],
+  scheduled: ["completed", "cancelled", "unscheduled"],
+  completed: [],
+  cancelled: [],
+};
+
+export const updateJobStatus = onCall(async (request) => {
+  const d = db();
+  const data = request.data || {};
+  const now = Timestamp.now();
+  const jobId = str(data.jobId);
+  const target = UI_TO_ENUM[str(data.newStatus)] || str(data.newStatus).toLowerCase();
+  if (!jobId) throw new HttpsError("invalid-argument", "jobId is required.");
+  if (!["scheduled", "completed", "cancelled", "unscheduled"].includes(target)) {
+    throw new HttpsError("invalid-argument", `Unsupported status: ${data.newStatus}`);
+  }
+
+  const actor = await resolveActor(request, { pinToken: data.pinToken });
+  requirePermission(actor, "canCreateQuote", "You do not have permission to change job status.");
+
+  const ref = d.doc(`gpJobs/${jobId}`);
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpsError("not-found", "Job not found.");
+  const job = snap.data();
+  const current = job.status;
+  if (current === target) return { jobId, status: target, unchanged: true };
+
+  if (!(VALID_NEXT[current] || []).includes(target)) {
+    throw new HttpsError("failed-precondition", `Cannot change a ${current} job to ${target}.`);
+  }
+
+  // Manager approval for schedule-affecting changes.
+  const managerOnly = target === "scheduled" ||
+    (current === "scheduled" && ["cancelled", "unscheduled"].includes(target));
+  let approver = null;
+  if (managerOnly) {
+    approver = actor.permissions?.canApproveSchedule
+      ? actor
+      : await resolveActor(request, { pinToken: data.approvalToken });
+    requirePermission(approver, "canApproveSchedule", "Manager approval is required for this change.");
+  }
+
+  if (target === "completed") {
+    if (job.pickupInspectionStatus && job.pickupInspectionStatus !== "not-needed"
+        && job.pickupInspectionStatus !== "complete") {
+      throw new HttpsError("failed-precondition", "Finalize the pickup inspection before completing this job.");
+    }
+  }
+
+  let clashes = [];
+  if (target === "scheduled") {
+    if (!job.scheduledAt) throw new HttpsError("failed-precondition", "Give this job a date and time before scheduling it.");
+    clashes = await assertNoConflict(job.scheduledAt.toDate(), job.durationMinutes, jobId, Boolean(data.overrideSchedule));
+    if (clashes.length) requirePermission(approver, "canOverrideConflict", "This manager cannot override schedule conflicts.");
+  }
+
+  const updates = { status: target, updatedBy: actorLabel(actor), updatedAt: now };
+  if (target === "completed") updates.completedAt = now;
+  if (target === "scheduled" && approver) { updates.approvedBy = actorLabel(approver); updates.approvedAt = now; }
+  await ref.update(updates);
+
+  await d.doc(`gpJobs/${jobId}/history/${newId("HIS")}`).set({
+    eventType: "Status Changed",
+    description: (str(data.statusNote) || `Status changed from ${current} to ${target}`) +
+      (approver && approver !== actor ? ` · Approved by ${actorLabel(approver)}` : "") +
+      (clashes.length ? ` · Manager override: overlaps ${clashes.join(", ")}` : ""),
+    previousValue: current, newValue: target,
+    performedBy: actorLabel(actor), performedAt: now, source: "GamePlan App",
+  });
+
+  return {
+    jobId, previousStatus: current, status: target,
+    approvedBy: approver && approver !== actor ? actorLabel(approver) : "",
+  };
+});
+
+// ----------------------------------------------- updateEquipmentBuildStatus
+export const updateEquipmentBuildStatus = onCall(async (request) => {
+  const d = db();
+  const data = request.data || {};
+  const now = Timestamp.now();
+  const jobId = str(data.jobId);
+  const lineId = str(data.jobEquipmentId);
+  const buildComplete = data.buildComplete !== false;
+  if (!jobId || !lineId) throw new HttpsError("invalid-argument", "jobId and jobEquipmentId are required.");
+
+  const actor = await resolveActor(request, { pinToken: data.pinToken });
+  requirePermission(actor, "canCreateQuote", "You do not have permission to update build status.");
+
+  const lineRef = d.doc(`gpJobs/${jobId}/equipment/${lineId}`);
+  const lineSnap = await lineRef.get();
+  if (!lineSnap.exists) throw new HttpsError("not-found", "Equipment item not found for this job.");
+  if (!lineSnap.data().buildRequired) throw new HttpsError("failed-precondition", "This item does not require a build.");
+
+  await lineRef.update({
+    buildComplete,
+    buildCompletedBy: buildComplete ? actorLabel(actor) : "",
+    buildCompletedAt: buildComplete ? now : null,
+    updatedBy: actorLabel(actor), updatedAt: now,
+  });
+
+  const all = await d.collection(`gpJobs/${jobId}/equipment`).where("active", "==", true).get();
+  const buildRows = all.docs.filter((x) => x.data().buildRequired);
+  const allItemsBuilt = buildRows.length === 0 || buildRows.every((x) =>
+    x.id === lineId ? buildComplete : x.data().buildComplete === true);
+
+  await d.doc(`gpJobs/${jobId}`).update({
+    hasBuildItems: buildRows.length > 0, allItemsBuilt,
+    updatedBy: actorLabel(actor), updatedAt: now,
+  });
+
+  await d.doc(`gpJobs/${jobId}/history/${newId("HIS")}`).set({
+    eventType: "Build Status Changed",
+    description: buildComplete ? "Equipment build marked complete" : "Equipment build reopened",
+    previousValue: lineSnap.data().buildComplete ? "Complete" : "Incomplete",
+    newValue: buildComplete ? "Complete" : "Incomplete",
+    performedBy: actorLabel(actor), performedAt: now, source: "GamePlan App",
+  });
+
+  return { jobId, jobEquipmentId: lineId, buildComplete, allItemsBuilt };
+});
+
+// ------------------------------------------------------------ updateJobDetails
+export const updateJobDetails = onCall(async (request) => {
+  const d = db();
+  const data = request.data || {};
+  const now = Timestamp.now();
+  const jobId = str(data.jobId);
+  const items = Array.isArray(data.equipment) ? data.equipment : [];
+  if (!jobId) throw new HttpsError("invalid-argument", "jobId is required.");
+  if (!items.length) throw new HttpsError("invalid-argument", "Equipment details are required.");
+
+  const actor = await resolveActor(request, { pinToken: data.pinToken });
+  requirePermission(actor, "canCreateQuote", "You do not have permission to update job details.");
+
+  const jobRef = d.doc(`gpJobs/${jobId}`);
+  const jobSnap = await jobRef.get();
+  if (!jobSnap.exists) throw new HttpsError("not-found", "Job not found.");
+
+  const [brandsSnap, productsSnap] = await Promise.all([
+    d.collection("gpBrands").get(),
+    d.collection("gpProducts").get(),
+  ]);
+  const brandName = Object.fromEntries(brandsSnap.docs.map((x) => [x.id, x.data().name]));
+  const products = Object.fromEntries(productsSnap.docs.map((x) => [x.id, x.data()]));
+
+  for (const item of items) {
+    const lineId = str(item.jobEquipmentId);
+    const lineRef = d.doc(`gpJobs/${jobId}/equipment/${lineId}`);
+    const lineSnap = await lineRef.get();
+    if (!lineSnap.exists) throw new HttpsError("not-found", "An equipment item could not be found.");
+    const line = lineSnap.data();
+
+    const pickupOnly = line.pickupRequired === true && line.deliveryRequired === false;
+    if (pickupOnly) continue;
+
+    const isNew = String(line.condition || "").toLowerCase() === "new";
+    let brand, model, productId = str(item.productId), imageUrl = str(line.imageUrl);
+
+    if (isNew) {
+      const p = products[productId];
+      if (!p) throw new HttpsError("invalid-argument", "Choose a valid model for every new item.");
+      brand = brandName[p.brandId] || p.brandId;
+      model = p.model;
+      imageUrl = str(p.imageUrl) || imageUrl;
+    } else {
+      brand = str(item.manufacturer);
+      model = str(item.model);
+      if (!brand) throw new HttpsError("invalid-argument", "Enter the manufacturer for every used delivery item.");
+      if (!model) throw new HttpsError("invalid-argument", "Enter the model for every used delivery item.");
+      if (str(item.photoDataUrl)) {
+        imageUrl = await uploadDataUrl(item.photoDataUrl, `gameplan/jobs/${jobId}/${lineId}-${Date.now()}.jpg`);
+      }
+      if (!imageUrl) throw new HttpsError("invalid-argument", "Add a photo for every used delivery item.");
+    }
+
+    await lineRef.update({
+      brand, model, productId: productId || null, imageUrl,
+      itemDescription: isNew ? model : (str(item.notes) || line.itemDescription || ""),
+      updatedBy: actorLabel(actor), updatedAt: now,
+    });
+  }
+
+  const job = jobSnap.data();
+  const jobHasPickup = job.jobType !== "delivery";
+  let pickupType = str(data.pickupType).toLowerCase().replace(/\s+/g, "-") || job.pickupType || null;
+  if (pickupType === "sale") pickupType = "trade-in";
+  if (jobHasPickup && !["trade-in", "disposal"].includes(pickupType)) {
+    throw new HttpsError("invalid-argument", "Choose Trade-In or Disposal for the pickup.");
+  }
+
+  await jobRef.update({
+    detailsStatus: "complete",
+    detailsCompletedAt: now, detailsCompletedBy: actorLabel(actor),
+    pickupType, pickupNotes: str(data.pickupNotes) || job.pickupNotes || "",
+    updatedBy: actorLabel(actor), updatedAt: now,
+  });
+
+  await d.doc(`gpJobs/${jobId}/history/${newId("HIS")}`).set({
+    eventType: "Details Completed", description: "Equipment and pickup details completed",
+    previousValue: "", newValue: "complete",
+    performedBy: actorLabel(actor), performedAt: now, source: "GamePlan App",
+  });
+
+  return { jobId, detailsStatus: "complete" };
 });
