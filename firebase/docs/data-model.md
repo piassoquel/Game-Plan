@@ -99,8 +99,8 @@ address-match), latitude, longitude, accessNotes, isDefault, active`.
 | `gpConfig/pricing` | `Settings` (subset) | `laborRatePerEmployeeHour, vehicleRatePerMile, baseTripCharge, minimumServiceCharge, priceRoundingIncrement, usedItemDeliveryCharge, tradeInPickupDiscount` |
 | `gpConfig/scheduling` | `Settings` (subset) | `storeAddress, confirmationBufferMinutes, tentativeExpirationHours, buildAlertHours, workingSetRetentionDays` |
 | `gpRoles/{roleId}` | `Roles` | `name, permissions{ canCreateQuote, canCreateTentative, canApproveSchedule, canOverrideConflict, canOverridePrice, canOverrideDuration, canEditCMS }` |
-| `gpLoginAccounts/{email}` | `LoginAccounts` | doc ID = lowercased Google email (the rules gate). `loginAccountId, sharedAccount (bool), active` |
-| `gpStaff/{staffId}` | `StaffProfiles` | `displayName, loginEmail, roleId, pinEnabled, pinHash, pinSalt, active, legacyId`. 7 employees share `employee@playitagainsoquel.com`; Parker Brown on `piasemployee@gmail.com`; James/Andrew/Dustin on personal Workspace logins |
+| `gpLoginAccounts/{email}` | `LoginAccounts` | doc ID = lowercased Google email (the rules gate). `loginAccountId, sharedAccount (bool), active`. `piasemployee@gmail.com` imported as **`active: false`** so historical `performedBy` strings still resolve, but it cannot sign in. *(Also remove it from the dashboard's `allowedUsers` — flagged to that thread.)* |
+| `gpStaff/{staffId}` | `StaffProfiles` | `displayName, loginEmail, roleId, pinEnabled, pinHash, pinSalt, active, legacyId`. **8** employees share `employee@playitagainsoquel.com` (incl. Parker Brown, moved off the retired gmail account); James, Andrew, Dustin Moore on personal Workspace logins |
 | `gpAudit/{id}` | `StaffAuditLog` + `CustomerAuditLog` + future | `entity, entityId, action, oldValue, newValue, performedBy, performedAt` |
 
 ## Working set vs. history
@@ -142,8 +142,9 @@ GamePlan writes (server-side only, Admin SDK) to the dashboard's collection.
 | field | value |
 |---|---|
 | `kind` | `delivery` \| `pickup` \| `build` |
-| `date` | `YYYY-MM-DD`, America/Los_Angeles. delivery/pickup = local date of `scheduledAt`; build = the delivery's date *(v1; may shift earlier if you want the 48h build-alert lead)* |
-| `scheduledAt` | Timestamp of the appointment; `null` for `build` |
+| `date` | `YYYY-MM-DD`, America/Los_Angeles. delivery/pickup = local date of `scheduledAt`. **build** = first appears 48h before the appointment, then a daily function rolls `date` forward to the current day until the build is done or the appointment passes — so a pending build stays on "today" in both apps until it's handled |
+| `scheduledAt` | Timestamp of the appointment; for `build`, the appointment it's prepping for (dashboard may show it as context) |
+| `buildDueBy` | (build only) Timestamp = appointment − 48h — when the build should be finished |
 | `window` | `null` (GamePlan always has an exact time once scheduled) |
 | `status` | `scheduled` \| `done` \| `cancelled` (v1). `en-route` / `in-progress` reserved |
 | `customerName` | string |
@@ -231,19 +232,12 @@ The importer normalizes:
   exist. Assign fresh sequential IDs, keep the original in `legacyId`.
 - **`LoginAccounts.CreatedAt/UpdatedAt`** — several blank. Backfill with import
   timestamp; not load-bearing.
-- **Two "Dustin" staff rows** — `STF-003` (Manager, personal login) and `SFT-009`
-  (Employee, shared login). Kept as two distinct people unless you say otherwise.
-
-## Open questions
-
-1. **Build feed date** — show a `build` on the delivery date (v1), or a day
-   earlier per the 48h `buildAlertHours` lead?
-2. **`durationMinutes` for imported historical jobs** — recompute, or trust the
-   stored `ScheduledDurationMinutes`? (Proposed: trust stored; only new/edited
-   jobs use the new recompute path.)
-3. **Historical pricing** — recompute imported jobs' `pricing` map from current
-   settings, or store what the sheet has? (Proposed: store the sheet's values
-   as-is; they're historical record, not live quotes.)
+- **Two Dustins (confirmed two people):** `STF-003` → **Dustin Moore** (Manager,
+  personal login `dustin@playitagainsoquel.com`); `SFT-009` → **Dustin Van Zandt**
+  (Employee, shared `employee@playitagainsoquel.com`). Import sets full display
+  names; the sheet has both as just "Dustin".
+- **Parker Brown** — repoint `loginEmail` from `piasemployee@gmail.com` to the
+  shared `employee@playitagainsoquel.com`.
 
 ## Answered
 
@@ -251,6 +245,12 @@ The importer normalizes:
 - Statuses: `unscheduled` / `scheduled` / `completed` / `cancelled` (Quote retired).
 - Auth: **shared device accounts + per-person PINs stay.** Gate = `gpLoginAccounts`
   allow-list; PIN/role checks are server-side (Phase 3).
-- History import: everything, marked `archived: true`.
+  `piasemployee@gmail.com` disabled everywhere.
+- Two Dustins = two people (Moore / Van Zandt). Parker Brown → shared account.
+- History import: everything, marked `archived: true`. Imported jobs keep the
+  sheet's stored `durationMinutes` and `pricing` verbatim — records, not live
+  quotes. Only new/edited jobs use the recompute path.
 - Historical photos: leave as Drive links; only new photos go to Storage.
 - Schedule block formula unchanged; add auto-recompute on job edits.
+- Build feed: appears 48h before the appointment in **both** apps, stays on
+  "today" until the build is marked done or the appointment passes.

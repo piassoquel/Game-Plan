@@ -1,0 +1,14 @@
+{
+  "name": "gameplan-import",
+  "private": true,
+  "type": "module",
+  "description": "One-time Google Sheet CMS -> Firestore importer for GamePlan.",
+  "scripts": {
+    "dry": "node import.mjs --dry",
+    "load:prod": "node import.mjs --prod"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.7.0",
+    "xlsx": "^0.18.5"
+  }
+}
