@@ -5,7 +5,17 @@ firebase-debug.log
 firestore-debug.log
 ui-debug.log
 .emulator-data/
-scripts/import/data/*.json
-!scripts/import/data/.gitkeep
-serviceAccount*.json
 .env
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# never commit credentials or generated import output
+**/serviceAccount*.json
+**/serciveAccount*.json
+scripts/import/*.json
+!scripts/import/package.json
+!scripts/import/package-lock.json
+scripts/import/data/
+!scripts/import/data/.gitkeep
