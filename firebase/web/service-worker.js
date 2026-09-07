@@ -1,6 +1,7 @@
-const CACHE_NAME = "gameplan-firebase-preview-v1";
+const CACHE_NAME = "gameplan-firebase-preview-v2";
+// Same-origin shell only. The Firebase SDK (gstatic) and everything else is
+// cached lazily by the fetch handler on first use.
 const APP_SHELL = [
-  "./",
   "./index.html",
   "./manifest.json",
   "./css/app.css?v=fb1",
@@ -10,33 +11,13 @@ const APP_SHELL = [
   "./js/firebase-app.js",
   "./firebase-config.js",
   "./assets/logo/gameplan-logo.svg",
-  "./assets/icons/icon.svg",
-  "./assets/icons/icon-192.png",
-  "./assets/icons/icon-512.png",
-  "./assets/icons/apple-touch-icon-180.png",
-  "./assets/icons/favicon-32.png",
-  "./assets/icons/upright-bike.png",
-  "./assets/icons/recumbent-bike.png",
-  "./assets/icons/treadmill.png",
-  "./assets/icons/elliptical.png",
-  "./assets/icons/rower.png",
-  "./assets/icons/bench.png",
-  "./assets/icons/weights.png",
-  "./assets/icons/squat-rack.png",
-  "./assets/icons/home-gym.png",
-  "./assets/icons/basketball.png",
-  "./assets/icons/table-tennis.png",
-  "./assets/icons/mobile-home.png",
-  "https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js",
-  "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js",
-  "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js",
 ];
 
 self.addEventListener("install", event => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then(cache =>
-      Promise.allSettled(APP_SHELL.map(url => cache.add(url)))
-    )
+    caches.open(CACHE_NAME)
+      .then(cache => Promise.allSettled(APP_SHELL.map(url => cache.add(url))))
+      .catch(() => {})
   );
   self.skipWaiting();
 });
