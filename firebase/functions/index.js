@@ -592,3 +592,102 @@ export const updateJobDetails = onCall(async (request) => {
 
   return { jobId, detailsStatus: "complete" };
 });
+
+// ----------------------------------------------- finalizePickupInspection
+const CONDITIONS = ["Excellent", "Good", "Fair", "Poor"];
+const RESULTS = ["Pass", "Issue", "N/A"];
+
+export const finalizePickupInspection = onCall(async (request) => {
+  const d = db();
+  const data = request.data || {};
+  const now = Timestamp.now();
+  const jobId = str(data.jobId);
+  const insp = data.inspection || {};
+  if (!jobId) throw new HttpsError("invalid-argument", "jobId is required.");
+
+  const pickupType = str(insp.pickupType).toLowerCase().replace(/\s+/g, "-");
+  if (!["trade-in", "disposal"].includes(pickupType)) {
+    throw new HttpsError("invalid-argument", "Choose Trade-In or Disposal.");
+  }
+  if (!CONDITIONS.includes(str(insp.overallCondition))) {
+    throw new HttpsError("invalid-argument", "Choose an overall condition.");
+  }
+  if (!str(insp.signatureName)) throw new HttpsError("invalid-argument", "Customer name is required.");
+  if (!str(insp.signatureDataUrl)) throw new HttpsError("invalid-argument", "Customer signature is required.");
+  const itemsIn = Array.isArray(insp.items) ? insp.items : [];
+  if (!itemsIn.length) throw new HttpsError("invalid-argument", "At least one pickup item is required.");
+
+  const actor = await resolveActor(request, { pinToken: data.pinToken });
+  requirePermission(actor, "canCreateQuote", "You do not have permission to finalize pickups.");
+
+  const jobRef = d.doc(`gpJobs/${jobId}`);
+  const jobSnap = await jobRef.get();
+  if (!jobSnap.exists) throw new HttpsError("not-found", "Job not found.");
+
+  const existing = await d.collection(`gpJobs/${jobId}/pickupInspection`).limit(1).get();
+  if (!existing.empty) throw new HttpsError("failed-precondition", "This pickup inspection is already finalized.");
+
+  const inspectionId = newId("PINSP");
+  let issueCount = 0;
+  let photoCount = 0;
+  const items = [];
+
+  for (const item of itemsIn) {
+    const lineId = str(item.jobEquipmentId);
+    const lineSnap = await d.doc(`gpJobs/${jobId}/equipment/${lineId}`).get();
+    if (!lineSnap.exists) throw new HttpsError("not-found", "A pickup equipment item could not be found.");
+    if (!lineSnap.data().pickupRequired) throw new HttpsError("failed-precondition", "That item is not marked for pickup.");
+
+    const responses = item.responses && typeof item.responses === "object" ? item.responses : {};
+    const keys = Object.keys(responses);
+    if (!keys.length) throw new HttpsError("invalid-argument", "Inspection responses are required for every item.");
+    const issues = [];
+    for (const k of keys) {
+      const r = responses[k] || {};
+      if (!RESULTS.includes(str(r.result))) throw new HttpsError("invalid-argument", "Every question needs Pass, Issue, or N/A.");
+      if (str(r.result) === "Issue") {
+        if (!str(r.note)) throw new HttpsError("invalid-argument", "Every reported issue needs a note.");
+        issues.push(str(r.note));
+        issueCount++;
+      }
+    }
+    if (!str(item.photoDataUrl)) throw new HttpsError("invalid-argument", "A current photo is required for every pickup item.");
+    if (item.disassembled && !str(item.disassemblyNotes)) {
+      throw new HttpsError("invalid-argument", "Describe the disassembly for every disassembled item.");
+    }
+    const photoUrl = await uploadDataUrl(item.photoDataUrl, `gameplan/jobs/${jobId}/pickup-${lineId}-${Date.now()}.jpg`);
+    photoCount++;
+
+    items.push({
+      jobEquipmentId: lineId, responses,
+      issueSummary: issues.join(" | "), photoUrl,
+      disassembled: !!item.disassembled, disassemblyNotes: str(item.disassemblyNotes),
+      notes: str(item.notes),
+    });
+  }
+
+  const signatureUrl = await uploadDataUrl(insp.signatureDataUrl, `gameplan/jobs/${jobId}/signature-${Date.now()}.png`);
+
+  const batch = d.batch();
+  batch.set(d.doc(`gpJobs/${jobId}/pickupInspection/${inspectionId}`), {
+    pickupType, overallCondition: str(insp.overallCondition),
+    additionalNotes: str(insp.notes),
+    customerName: str(insp.signatureName), signatureUrl,
+    completedBy: actorLabel(actor), completedAt: now,
+    issueCount, photoCount, status: "Complete", items,
+    createdAt: now, updatedAt: now,
+  });
+  batch.update(jobRef, {
+    pickupType, pickupInspectionStatus: "complete", pickupInspectionId: inspectionId,
+    updatedBy: actorLabel(actor), updatedAt: now,
+  });
+  batch.set(d.doc(`gpJobs/${jobId}/history/${newId("HIS")}`), {
+    eventType: "Pickup Inspection Finalized",
+    description: `${pickupType} pickup finalized · ${str(insp.overallCondition)} condition · ${issueCount} issue${issueCount === 1 ? "" : "s"} noted`,
+    previousValue: "", newValue: inspectionId,
+    performedBy: actorLabel(actor), performedAt: now, source: "GamePlan App",
+  });
+  await batch.commit();
+
+  return { jobId, pickupInspectionId: inspectionId, pickupInspectionStatus: "complete", issueCount, photoCount };
+});
