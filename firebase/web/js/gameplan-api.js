@@ -7,7 +7,7 @@
 import {
   collection, query, where, getDocs, doc, getDoc,
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
-import { db, auth, functions, httpsCallable } from "./firebase-app.js?v=fb7";
+import { db, auth, functions, httpsCallable } from "./firebase-app.js?v=fb8";
 
 const call = (name) => httpsCallable(functions, name);
 
@@ -104,9 +104,10 @@ export class GamePlanApi {
   // --- bootstrap (working set + reference data) -------------------
   async getBootstrap() {
     const [
-      jobDocs, customers, equipmentTypes, jobTypes, accessConditions,
+      auth0, jobDocs, customers, equipmentTypes, jobTypes, accessConditions,
       brands, products, availabilityRules, blackoutDates, pricingDoc, schedulingDoc,
     ] = await Promise.all([
+      this.authenticate(),
       getDocs(query(collection(db, "gpJobs"), where("archived", "==", false))),
       this.#customersWithAddresses(),
       readCollection("gpEquipmentTypes"),
@@ -151,7 +152,8 @@ export class GamePlanApi {
         usedItemDeliveryCharge: pricing.usedItemDeliveryCharge || 0,
         tradeInPickupDiscount: Math.max(0, pricing.tradeInPickupDiscount || 0),
       },
-      staffChoices: [],
+      currentUser: auth0.currentUser,
+      staffChoices: auth0.staffChoices || [],
     };
   }
 
