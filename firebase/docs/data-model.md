@@ -111,7 +111,9 @@ address-match), latitude, longitude, accessNotes, isDefault, active`.
   customer's past deliveries".
 - A scheduled Cloud Function (Phase 3) sets `archived = true` on jobs that are
   `completed`/`cancelled` and older than `gpConfig/scheduling.workingSetRetentionDays`
-  (default 30). Import marks historical jobs `archived = true` up front.
+  (default 30). The import sets `archived = true` for jobs already
+  `completed`/`cancelled`; `scheduled`/`unscheduled` jobs stay in the working set
+  so the live pipeline is populated at cutover.
 
 ## Scheduling / duration (unchanged formula + one improvement)
 

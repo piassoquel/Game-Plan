@@ -259,14 +259,18 @@ export function transform(sheets) {
     const cust = customerById[str(r.CustomerID)] || {};
     const addr = addressById[str(r.ServiceAddressID)] || {};
     const scheduledAt = excelSerialToDate(r.ScheduledConfirmationTime);
+    const status = statusEnum(statusNameById[str(r.StatusID)]);
+    const kind = jobTypeKind(jobTypeById[str(r.JobTypeID)]);
+    const hasPickup = kind !== "delivery";
 
     w("gpJobs", jobId, {
       jobNumber: str(r.JobNumber),
-      status: statusEnum(statusNameById[str(r.StatusID)]),
+      status,
       legacyStatus: statusNameById[str(r.StatusID)] || str(r.StatusID),
-      jobType: jobTypeKind(jobTypeById[str(r.JobTypeID)]),
+      jobType: kind,
       jobTypeName: jobTypeById[str(r.JobTypeID)] || str(r.JobTypeID),
-      archived: true, // every imported job is history
+      // completed/cancelled -> history; open jobs stay in the working set
+      archived: status === "completed" || status === "cancelled",
 
       customerId: str(r.CustomerID),
       customerName: cust.name || "",
@@ -308,12 +312,14 @@ export function transform(sheets) {
       },
       finalTotal: num(r.FinalTotal || r.RoundedTotal),
 
-      pickupType: str(r.PickupType) || null,
+      pickupType: str(r.PickupType).toLowerCase().replace(/\s+/g, "-") || null,
       pickupNotes: str(r.PickupNotes),
-      pickupInspectionStatus: str(r.PickupInspectionStatus) || "not-needed",
+      pickupInspectionStatus:
+        str(r.PickupInspectionStatus).toLowerCase() ||
+        (hasPickup ? "needed" : "not-needed"),
       hasBuildItems: bool(r.HasBuildRequiredItems),
       allItemsBuilt: bool(r.AllItemsBuilt),
-      detailsStatus: str(r.DetailsStatus) || "needed",
+      detailsStatus: str(r.DetailsStatus).toLowerCase() || "needed",
 
       internalNotes: str(r.InternalNotes),
       customerNotes: str(r.CustomerNotes),
