@@ -30,6 +30,17 @@ export function normalizedAddressKey(value) {
     .replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
 }
 
+/** Just checks the caller is a signed-in, active GamePlan login. No PIN, no role. */
+export async function requireAuthorizedLogin(request) {
+  if (!request.auth) throw new HttpsError("unauthenticated", "Sign in first.");
+  const email = String(request.auth.token.email || "").toLowerCase();
+  const loginSnap = await db().doc(`gpLoginAccounts/${email}`).get();
+  if (!loginSnap.exists || loginSnap.data().active !== true) {
+    throw new HttpsError("permission-denied", `This account is not authorized for GamePlan: ${email}`);
+  }
+  return { email, ...loginSnap.data() };
+}
+
 /**
  * Resolve who is performing an action.
  * - personal Google account -> that staff member (no PIN)
@@ -37,15 +48,9 @@ export function normalizedAddressKey(value) {
  * Returns { email, sharedAccount, staffId, displayName, roleId, roleName, permissions }.
  */
 export async function resolveActor(request, { pinToken } = {}) {
-  if (!request.auth) throw new HttpsError("unauthenticated", "Sign in first.");
-  const email = String(request.auth.token.email || "").toLowerCase();
+  const login = await requireAuthorizedLogin(request);
+  const email = login.email;
   const d = db();
-
-  const loginSnap = await d.doc(`gpLoginAccounts/${email}`).get();
-  if (!loginSnap.exists || loginSnap.data().active !== true) {
-    throw new HttpsError("permission-denied", `This account is not authorized for GamePlan: ${email}`);
-  }
-  const login = loginSnap.data();
 
   if (!login.sharedAccount) {
     const staff = await staffByLogin(email);

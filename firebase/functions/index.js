@@ -8,12 +8,14 @@
 // hook so the wizard preview and server pricing stay identical.
 import { setGlobalOptions } from "firebase-functions/v2";
 import { onCall, HttpsError } from "firebase-functions/v2/https";
+import { defineSecret } from "firebase-functions/params";
 import { initializeApp } from "firebase-admin/app";
 import { Timestamp } from "firebase-admin/firestore";
 import { randomUUID } from "node:crypto";
 
 import {
   db, str, num, newId, phoneDigits, pinMatchesHash, normalizedAddressKey,
+  requireAuthorizedLogin,
   resolveActor, requirePermission, actorLabel,
 } from "./lib/common.mjs";
 import { combineLocalDateTime, laDateString, assertNoConflict } from "./lib/schedule.mjs";
@@ -22,7 +24,72 @@ import { computeQuote } from "./pricing.mjs";
 initializeApp();
 setGlobalOptions({ region: "us-central1", maxInstances: 10 });
 
+const ROUTES_API_KEY = defineSecret("GOOGLE_MAPS_ROUTES_API_KEY");
 const PIN_TTL_MS = 15 * 60 * 1000;
+
+const MILES_PER_METER = 1 / 1609.344;
+
+async function routeLeg(origin, destination, apiKey) {
+  const res = await fetch("https://routes.googleapis.com/directions/v2:computeRoutes", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Goog-Api-Key": apiKey,
+      "X-Goog-FieldMask": "routes.distanceMeters,routes.duration",
+    },
+    body: JSON.stringify({
+      origin: { address: origin },
+      destination: { address: destination },
+      travelMode: "DRIVE",
+      routingPreference: "TRAFFIC_UNAWARE",
+      units: "IMPERIAL",
+    }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok || !body.routes?.[0]) {
+    throw new HttpsError("failed-precondition",
+      `Google could not calculate this route. ${body.error?.message || res.statusText}`);
+  }
+  return {
+    meters: num(body.routes[0].distanceMeters),
+    seconds: Number(String(body.routes[0].duration || "0s").replace("s", "")) || 0,
+  };
+}
+
+// ---------------------------------------------------------------- calculateRoute
+export const calculateRoute = onCall({ secrets: [ROUTES_API_KEY] }, async (request) => {
+  await requireAuthorizedLogin(request); // any signed-in store user; no PIN
+  const destination = str(request.data?.destinationAddress);
+  if (!destination) throw new HttpsError("invalid-argument", "A destination address is required.");
+
+  const cfg = await db().doc("gpConfig/scheduling").get();
+  const origin = str(cfg.exists && cfg.data().storeAddress);
+  if (!origin) throw new HttpsError("failed-precondition", "Store address is not configured.");
+
+  const apiKey = ROUTES_API_KEY.value();
+  if (!apiKey) throw new HttpsError("failed-precondition", "Routes API key is not configured.");
+
+  const [out, back] = await Promise.all([
+    routeLeg(origin, destination, apiKey),
+    routeLeg(destination, origin, apiKey),
+  ]);
+  const outboundTravelMinutes = Math.ceil(out.seconds / 60);
+  const returnTravelMinutes = Math.ceil(back.seconds / 60);
+  const round2 = (v) => Math.round(v * 100) / 100;
+
+  return {
+    provider: "Google Routes",
+    originAddress: origin,
+    destinationAddress: destination,
+    destinationPlaceId: str(request.data?.destinationPlaceId),
+    oneWayDistanceMiles: round2(out.meters * MILES_PER_METER),
+    roundTripDistanceMiles: round2((out.meters + back.meters) * MILES_PER_METER),
+    outboundTravelMinutes,
+    returnTravelMinutes,
+    roundTripTravelMinutes: outboundTravelMinutes + returnTravelMinutes,
+    calculatedAt: new Date().toISOString(),
+  };
+});
 
 function employeeView(email, staff, role) {
   return {

@@ -205,7 +205,11 @@ export class GamePlanApi {
   async getStaffManagement() { throw notYet(); }
   async saveStaffProfile() { throw notYet(); }
   async saveCustomer() { throw notYet(); }
-  async calculateRoute() { throw notYet(); }
+
+  async calculateRoute(destinationAddress, destinationPlaceId = "") {
+    const res = await call("calculateRoute")({ destinationAddress, destinationPlaceId });
+    return res.data;
+  }
 
   // --- internals ----------------------------------------------
   async #customersWithAddresses() {
