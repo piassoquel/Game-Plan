@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#0f1316">
+  <meta name="description" content="GamePlan delivery and installation operations app">
+  <link rel="manifest" href="./manifest.json">
+  <link rel="icon" href="./assets/icons/favicon-32.png" sizes="32x32" type="image/png">
+  <link rel="icon" href="./assets/icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="./assets/icons/apple-touch-icon-180.png">
+  <link rel="stylesheet" href="./css/app.css?v=fb1">
+  <title>GamePlan</title>
+</head>
+<body data-gameplan-build="firebase-preview">
+  <div class="startup-splash" id="startupSplash" role="status" aria-live="polite">
+    <div class="startup-splash__mark"><img src="./assets/logo/gameplan-logo.svg" alt=""></div>
+    <div class="startup-splash__name">Game<span>Plan</span></div>
+    <p>Preparing today's plan…</p>
+    <div class="startup-splash__progress"><i></i></div>
+  </div>
+  <div class="shell">
+    <aside class="side">
+      <div class="brand">
+        <img src="./assets/logo/gameplan-logo.svg" alt="">
+        <div>
+          <b>Game<span>Plan</span></b>
+          <small>Delivery & Installation</small>
+        </div>
+      </div>
+
+      <nav>
+        <button class="nav active" data-route="today">⌂ <span>Today's GamePlan</span></button>
+        <button class="nav" data-route="schedule">▣ <span>Schedule</span></button>
+        <button class="nav" data-route="jobs">☷ <span>History</span></button>
+        <button class="nav" data-route="roster">◎ <span>Roster</span></button>
+        <button class="nav" data-route="more">••• <span>More</span></button>
+      </nav>
+
+      <div class="profile">
+        <i id="profileAvatar">J</i>
+        <div class="profile-copy"><b id="profileName">Not signed in</b><small id="profileRole">Google verification required</small></div>
+        <button class="profile-signout" id="googleSignOut" type="button">Sign out</button>
+      </div>
+    </aside>
+
+    <main>
+      <header>
+        <img class="page-brand-mark" src="./assets/logo/gameplan-logo.svg" alt="">
+        <div class="page-heading">
+          <h1 id="title">Today's GamePlan</h1>
+          <p id="subtitle"></p>
+        </div>
+        <div class="header-status"><span class="build-badge">Firebase Preview</span><span class="demo loading" id="dataStatus">Loading…</span></div>
+      </header>
+
+      <section id="view"></section>
+    </main>
+
+    <nav class="bottom">
+      <button class="active" data-route="today">⌂<small>Today</small></button>
+      <button data-route="schedule">▣<small>Schedule</small></button>
+      <button data-route="jobs">☷<small>History</small></button>
+      <button data-route="roster">◎<small>Roster</small></button>
+      <button data-route="more">•••<small>More</small></button>
+    </nav>
+
+    <div class="drawer-backdrop" id="drawerBackdrop"></div>
+    <aside class="drawer" id="jobDrawer" aria-hidden="true">
+      <div class="drawer__header">
+        <button class="drawer__back" id="closeDrawer" aria-label="Close job details">←</button>
+        <strong>Job Details</strong>
+        <button class="drawer__more" aria-label="More options">•••</button>
+      </div>
+      <div id="drawerContent" class="drawer__content"></div>
+    </aside>
+
+
+    <div class="wizard-backdrop" id="wizardBackdrop"></div>
+    <section class="wizard" id="jobWizard" aria-hidden="true">
+      <header class="wizard__header">
+        <button class="drawer__back" id="closeWizard" aria-label="Close new job">×</button>
+        <div><strong id="wizardTitle">New Job</strong><small id="wizardStepLabel">Step 1 of 5</small></div>
+        <span aria-hidden="true"></span>
+      </header>
+      <div class="wizard__progress" id="wizardProgress"></div>
+      <form id="jobWizardForm" class="wizard__body"></form>
+      <footer class="wizard__footer">
+        <button type="button" class="button neutral" id="wizardBack">Back</button>
+        <button type="button" class="button" id="wizardNext">Continue</button>
+      </footer>
+    </section>
+
+    <div id="toast"></div>
+    <div class="auth-gate open" id="authGate" aria-hidden="false">
+      <section class="auth-card" role="dialog" aria-modal="true" aria-labelledby="authTitle">
+        <div class="auth-logo"><img src="./assets/logo/gameplan-logo.svg" alt=""></div>
+        <h2 id="authTitle">Sign in to GamePlan</h2>
+        <p>Use an approved Play It Again Sports Google account. Employee identity is confirmed only when an accountable action requires a PIN. Manager approvals use a one-time manager PIN without switching employees.</p>
+        <div id="googleSignInButton" class="google-signin-slot"></div>
+        <div class="auth-status" id="authStatus">Preparing secure sign-in…</div>
+      </section>
+    </div>
+  </div>
+
+  <script src="./js/config.js?v=fb1"></script>
+  <script type="module" src="./js/app.js?v=fb1"></script>
+</body>
+</html>

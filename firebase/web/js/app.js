@@ -1,0 +1,3925 @@
+import { GamePlanApi } from "./gameplan-api.js";
+import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js";
+
+const CACHE_KEY = "gameplan-live-bootstrap-v2";
+const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const GOOGLE_TOKEN_KEY = "gameplan-google-id-token-v1";
+
+const state = {
+  jobs: [],
+  customers: [],
+  equipmentTypes: [],
+  jobTypes: [],
+  accessConditions: [],
+  products: [],
+  brands: [],
+  fulfillmentConditions: [],
+  availabilityRules: [],
+  blackoutDates: [],
+  pricingSettings: {},
+  live: false,
+  ready: false,
+  cached: false,
+  refreshing: false,
+  refreshQueued: false,
+  forceRefreshQueued: false,
+  dataRevision: 0,
+  loadError: "",
+  lastUpdated: "",
+  loadDurationMs: 0,
+  currentUser: { displayName: "", email: "", roleName: "Employee", permissions: {} },
+  staffChoices: [],
+  pendingPickupCount: 0,
+  syncingPickups: false,
+  pinSession: null,
+  googleIdentity: null,
+  authenticated: false,
+  staffManagement: { loaded: false, loading: false, profiles: [], roles: [], loginAccounts: [] }
+};
+state.datasets = { directoryLoaded:false, historyLoaded:false, directoryLoading:false, historyLoading:false };
+const api = new GamePlanApi(window.GAMEPLAN_CONFIG);
+
+const authGate = document.querySelector("#authGate");
+const authStatus = document.querySelector("#authStatus");
+const googleSignInButton = document.querySelector("#googleSignInButton");
+const googleSignOutButton = document.querySelector("#googleSignOut");
+const startupSplash = document.querySelector("#startupSplash");
+let startupSplashStartedAt = performance.now();
+let startupSplashCycle = 0;
+
+function dismissStartupSplash() {
+  if (!startupSplash || startupSplash.classList.contains("leaving")) return;
+  const cycle = startupSplashCycle;
+  const delay = Math.max(0, 650 - (performance.now() - startupSplashStartedAt));
+  setTimeout(() => {
+    if (cycle !== startupSplashCycle) return;
+    startupSplash.classList.add("leaving");
+  }, delay);
+}
+
+function showStartupSplash(message = "Preparing today's plan…") {
+  if (!startupSplash) return;
+  startupSplashCycle += 1;
+  startupSplashStartedAt = performance.now();
+  const copy = startupSplash.querySelector("p");
+  if (copy) copy.textContent = message;
+  startupSplash.classList.remove("leaving");
+}
+
+let taskProgressOverlay = null;
+
+function showTaskProgress(title, message) {
+  taskProgressOverlay?.remove();
+  const overlay = document.createElement("section");
+  overlay.className = "task-progress-overlay";
+  overlay.setAttribute("role", "status");
+  overlay.setAttribute("aria-live", "polite");
+  overlay.innerHTML = `<div class="task-progress-card">
+    <div class="task-progress-mark"><img src="./assets/logo/gameplan-logo.svg" alt=""></div>
+    <small>GAMEPLAN IS WORKING</small>
+    <h2>${esc(title)}</h2>
+    <p>${esc(message)}</p>
+    <div class="task-progress-bar"><i></i></div>
+  </div>`;
+  document.body.appendChild(overlay);
+  taskProgressOverlay = overlay;
+  requestAnimationFrame(() => overlay.classList.add("show"));
+  return overlay;
+}
+
+function hideTaskProgress() {
+  const overlay = taskProgressOverlay;
+  if (!overlay) return;
+  taskProgressOverlay = null;
+  overlay.classList.remove("show");
+  setTimeout(() => overlay.remove(), 180);
+}
+
+function refreshLiveDataInBackground() {
+  loadLiveData().catch(error => {
+    console.error("Background refresh failed.", error);
+    toast("Saved successfully. Live data will refresh automatically.");
+  });
+}
+
+function syncPanel(){
+  const stamp=state.lastUpdated?new Date(state.lastUpdated).toLocaleTimeString([],{hour:"numeric",minute:"2-digit"}):"Not yet synced";
+  const lastSeconds=state.loadDurationMs?` · ${(state.loadDurationMs/1000).toFixed(1)}s`:"";
+  return `<section class="manager-sync-panel"><span><b>CMS data</b><small>${state.live?`Last synced ${esc(stamp)}${lastSeconds}`:state.cached?`Cached from ${esc(stamp)}`:"Not connected"}${state.pendingPickupCount?` · ${state.pendingPickupCount} pickup pending`:""}</small></span><div class="sync-panel-actions">${state.pendingPickupCount?`<button type="button" class="pending-sync-button" data-sync-pickup-queue ${state.syncingPickups?"disabled":""}><i aria-hidden="true">↑</i>${state.syncingPickups?"Uploading…":`Sync ${state.pendingPickupCount}`}</button>`:""}<button type="button" data-hard-refresh-cms ${state.refreshing?"disabled":""}><i aria-hidden="true">↻</i>${state.refreshing?"Syncing…":"Sync CMS"}</button></div></section>`;
+}
+
+const OFFLINE_DB_NAME = "gameplan-offline-v1";
+const OFFLINE_PICKUP_STORE = "pickupQueue";
+
+function openOfflineDb() {
+  return new Promise((resolve,reject) => {
+    if (!window.indexedDB) return reject(new Error("Offline storage is unavailable on this device."));
+    const request = indexedDB.open(OFFLINE_DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(OFFLINE_PICKUP_STORE)) db.createObjectStore(OFFLINE_PICKUP_STORE, {keyPath:"id"});
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("Offline storage could not be opened."));
+  });
+}
+
+async function pickupQueueTransaction(mode, operation) {
+  const db = await openOfflineDb();
+  try {
+    return await new Promise((resolve,reject) => {
+      const tx = db.transaction(OFFLINE_PICKUP_STORE, mode);
+      const request = operation(tx.objectStore(OFFLINE_PICKUP_STORE));
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error("Offline pickup storage failed."));
+    });
+  } finally { db.close(); }
+}
+
+const getQueuedPickups = () => pickupQueueTransaction("readonly", store => store.getAll());
+const deleteQueuedPickup = id => pickupQueueTransaction("readwrite", store => store.delete(id));
+const saveQueuedPickup = record => pickupQueueTransaction("readwrite", store => store.put(record));
+
+async function refreshPendingPickupCount({render=false} = {}) {
+  try { state.pendingPickupCount = (await getQueuedPickups()).length; }
+  catch (error) { console.warn("Offline pickup queue is unavailable.", error); state.pendingPickupCount = 0; }
+  if (render && state.ready) go(location.hash.slice(1) || "today");
+}
+
+function isNetworkFailure(error) {
+  return !navigator.onLine || /network|failed to fetch|internet|offline|load failed/i.test(String(error?.message || error || ""));
+}
+
+function persistOptimisticJobs() {
+  try {
+    const cached=JSON.parse(localStorage.getItem(CACHE_KEY)||"{}");
+    if(!cached?.data)return;
+    cached.data.jobs=state.jobs.map(job=>JSON.parse(JSON.stringify(job,(key,value)=>String(key).endsWith("DataUrl")?undefined:value)));
+    cached.timestamp=new Date().toISOString();
+    localStorage.setItem(CACHE_KEY,JSON.stringify(cached));
+  } catch (error) {
+    console.warn("GamePlan could not update its local job cache.",error);
+  }
+}
+
+function decodeJwtPayload(token) {
+  try {
+    const payload = token.split(".")[1];
+    const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
+    return JSON.parse(decodeURIComponent(atob(normalized).split("").map(c => "%" + c.charCodeAt(0).toString(16).padStart(2, "0")).join("")));
+  } catch (_) {
+    return null;
+  }
+}
+
+function tokenIsUsable(token) {
+  const payload = decodeJwtPayload(token);
+  return Boolean(payload && payload.exp && payload.exp * 1000 > Date.now() + 60_000);
+}
+
+function setAuthStatus(message, error = false) {
+  if (!authStatus) return;
+  authStatus.textContent = message;
+  authStatus.classList.toggle("error", error);
+}
+
+function showAuthGate(message = "Sign in with an approved Google account.", error = false) {
+  state.authenticated = false;
+  state.googleIdentity = null;
+  api.clearGoogleIdToken();
+  authGate?.classList.add("open");
+  authGate?.setAttribute("aria-hidden", "false");
+  setAuthStatus(message, error);
+  dismissStartupSplash();
+}
+
+function hideAuthGate() {
+  authGate?.classList.remove("open");
+  authGate?.setAttribute("aria-hidden", "true");
+}
+
+function acceptGoogleCredential(token) {
+  const payload = decodeJwtPayload(token);
+  if (!payload || !tokenIsUsable(token)) throw new Error("Google returned an expired or invalid sign-in token.");
+  sessionStorage.setItem(GOOGLE_TOKEN_KEY, token);
+  api.setGoogleIdToken(token);
+  state.googleIdentity = { email: payload.email || "", name: payload.name || payload.email || "" };
+}
+
+async function authorizeGoogleCredential(token) {
+  acceptGoogleCredential(token);
+  const authorization = await api.authenticate();
+  state.currentUser = authorization.currentUser || state.currentUser;
+  state.staffChoices = authorization.staffChoices || [];
+  state.authenticated = true;
+  hideAuthGate();
+  renderCurrentUser();
+}
+
+function loadGoogleIdentityLibrary() {
+  return new Promise((resolve, reject) => {
+    if (window.google?.accounts?.id) return resolve();
+    const existing = document.querySelector('script[data-gameplan-google-identity]');
+    if (existing) {
+      existing.addEventListener("load", resolve, { once: true });
+      existing.addEventListener("error", () => reject(new Error("Google sign-in could not load.")), { once: true });
+      return;
+    }
+    const script = document.createElement("script");
+    script.src = "https://accounts.google.com/gsi/client";
+    script.async = true;
+    script.defer = true;
+    script.dataset.gameplanGoogleIdentity = "true";
+    script.onload = resolve;
+    script.onerror = () => reject(new Error("Google sign-in could not load."));
+    document.head.appendChild(script);
+  });
+}
+
+let gpAuthWired = false;
+async function initializeGoogleAuthentication() {
+  googleSignInButton.innerHTML =
+    '<button type="button" class="button" id="gpFirebaseSignIn">Sign in with Google</button>';
+  document.querySelector("#gpFirebaseSignIn").onclick = async () => {
+    try {
+      setAuthStatus("Opening Google sign-in…");
+      await signInWithGoogle();
+    } catch (error) {
+      showAuthGate(error?.message || "Sign-in was cancelled.", true);
+    }
+  };
+
+  if (gpAuthWired) return;
+  gpAuthWired = true;
+  onAuthStateChanged(auth, async user => {
+    if (!user) {
+      state.authenticated = false;
+      state.currentUser = { displayName: "", email: "", roleName: "Employee", permissions: {} };
+      showAuthGate("Sign in with an approved Google account.");
+      return;
+    }
+    try {
+      setAuthStatus("Verifying your account…");
+      state.googleIdentity = { email: user.email || "", name: user.displayName || user.email || "" };
+      const authorization = await api.authenticate();
+      state.currentUser = authorization.currentUser || state.currentUser;
+      state.staffChoices = authorization.staffChoices || [];
+      state.authenticated = true;
+      hideAuthGate();
+      renderCurrentUser();
+      showStartupSplash("Loading today's GamePlan…");
+      const hasCachedBootstrap = loadCachedBootstrap();
+      updateDataStatus();
+      go("today");
+      await loadLiveData({ forceLoading: !hasCachedBootstrap });
+    } catch (error) {
+      console.error(error);
+      await signOutOfGoogle().catch(() => {});
+      showAuthGate(error?.message || "This account isn't authorized for GamePlan.", true);
+    }
+  });
+}
+
+function signOutOfGamePlan() {
+  clearPinSession(false);
+  sessionStorage.removeItem(GOOGLE_TOKEN_KEY);
+  api.clearGoogleIdToken();
+  state.authenticated = false;
+  state.currentUser = { displayName: "", email: "", roleName: "Employee", permissions: {} };
+  state.staffChoices = [];
+  state.ready = false;
+  state.live = false;
+  state.cached = false;
+  signOutOfGoogle().catch(() => {});
+  showAuthGate("Signed out. Use an approved Google account to continue.");
+  go(location.hash.slice(1) || "today");
+}
+
+
+const scheduleState = {
+  weekStart: startOfWeek(new Date()),
+  selectedDay: toDateKey(new Date())
+};
+const expandedAgenda = {
+  schedule: "",
+  employeeHome: "",
+  managerHome: ""
+};
+const managerHomePanels = {
+  attentionOpen: false
+};
+const employeeHomeState = {
+  weekStart: startOfWeek(new Date()),
+  selectedDay: toDateKey(new Date())
+};
+
+let jobsViewFilter = "all";
+let jobsViewWeekStart = "";
+let jobHistoryFilter = "all";
+let jobHistorySearch = "";
+let rosterSearch = "";
+
+const view = document.querySelector("#view");
+const title = document.querySelector("#title");
+const sub = document.querySelector("#subtitle");
+const toastBox = document.querySelector("#toast");
+const dataStatus = document.querySelector("#dataStatus");
+const drawer = document.querySelector("#jobDrawer");
+const drawerBackdrop = document.querySelector("#drawerBackdrop");
+const drawerContent = document.querySelector("#drawerContent");
+
+const todayDate = new Intl.DateTimeFormat("en-US",{weekday:"long",month:"long",day:"numeric"}).format(new Date());
+
+const PIN_SESSION_KEY = "gameplan-pin-session-v2";
+const PIN_IDLE_TIMEOUT_MS = 15 * 60 * 1000;
+
+function loadPinSession() {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(PIN_SESSION_KEY) || "null");
+    if (saved && saved.token && saved.expiresAt > Date.now()) state.pinSession = saved;
+    else sessionStorage.removeItem(PIN_SESSION_KEY);
+  } catch (_) {
+    sessionStorage.removeItem(PIN_SESSION_KEY);
+  }
+}
+
+function touchPinSession() {
+  if (!state.pinSession?.token) return;
+  state.pinSession.expiresAt = Date.now() + PIN_IDLE_TIMEOUT_MS;
+  sessionStorage.setItem(PIN_SESSION_KEY, JSON.stringify(state.pinSession));
+}
+
+function effectiveUser() {
+  if (state.currentUser?.sharedAccount && state.pinSession?.employee && state.pinSession.expiresAt > Date.now()) {
+    return state.pinSession.employee;
+  }
+  return state.currentUser || {};
+}
+
+function clearPinSession(showMessage = false) {
+  state.pinSession = null;
+  sessionStorage.removeItem(PIN_SESSION_KEY);
+  renderCurrentUser();
+  if (showMessage) toast("GamePlan locked. The next accountable action will require an employee PIN.");
+}
+
+function pinModalHtml({ purpose = "Enter your PIN to continue.", managerApproval = false } = {}) {
+  return `<div class="pin-backdrop open" id="pinBackdrop">
+    <section class="pin-modal ${managerApproval ? "manager-approval" : ""}" role="dialog" aria-modal="true" aria-labelledby="pinTitle">
+      <button class="pin-close" id="pinClose" aria-label="Cancel">×</button>
+      <div class="pin-icon">●●●●</div>
+      <h2 id="pinTitle">${managerApproval ? "Manager approval" : "Employee verification"}</h2>
+      <p>${esc(purpose)}</p>
+      <label class="field"><span>${managerApproval ? "Manager PIN" : "Employee PIN"}</span><input id="pinInput" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="off" placeholder="4–8 digits"></label>
+      <div class="pin-error" id="pinError"></div>
+      <button class="button primary-action" id="pinSubmit">${managerApproval ? "Approve Action" : "Verify & Continue"}</button>
+    </section>
+  </div>`;
+}
+
+function promptForPin({ requiredPermission = "", purpose = "", managerApproval = false, saveEmployeeSession = true } = {}) {
+  return new Promise((resolve, reject) => {
+    document.body.insertAdjacentHTML("beforeend", pinModalHtml({ purpose, managerApproval }));
+    const backdrop = document.querySelector("#pinBackdrop");
+    const input = document.querySelector("#pinInput");
+    const submit = document.querySelector("#pinSubmit");
+    const errorBox = document.querySelector("#pinError");
+    const close = () => { backdrop?.remove(); reject(new Error("Verification cancelled.")); };
+    document.querySelector("#pinClose").onclick = close;
+    backdrop.onclick = event => { if (event.target === backdrop) close(); };
+    input.addEventListener("keydown", event => { if (event.key === "Enter") submit.click(); });
+    submit.onclick = async () => {
+      const pin = input.value.trim();
+      if (!/^\d{4,8}$/.test(pin)) {
+        errorBox.textContent = "Enter your 4–8 digit PIN.";
+        return;
+      }
+      submit.disabled = true;
+      submit.textContent = "Verifying…";
+      errorBox.textContent = "";
+      try {
+        const result = await api.verifyPin(pin, requiredPermission);
+        const expiresAt = Date.now() + Number(result.expiresInSeconds || 900) * 1000;
+        if (saveEmployeeSession) {
+          state.pinSession = { token: result.token, employee: result.employee, expiresAt };
+          sessionStorage.setItem(PIN_SESSION_KEY, JSON.stringify(state.pinSession));
+          renderCurrentUser();
+        }
+        backdrop.remove();
+        resolve({ token: result.token, employee: result.employee, expiresAt });
+      } catch (error) {
+        errorBox.textContent = error.message || "PIN verification failed.";
+        submit.disabled = false;
+        submit.textContent = managerApproval ? "Approve Action" : "Verify & Continue";
+        input.value = "";
+        input.focus();
+      }
+    };
+    setTimeout(() => input.focus(), 0);
+  });
+}
+
+async function requestPin(requiredPermission = "", purpose = "") {
+  if (!state.currentUser?.sharedAccount) return "";
+  const active = state.pinSession;
+  if (active?.token && active.expiresAt > Date.now()) {
+    const allowed = !requiredPermission || Boolean(active.employee?.permissions?.[requiredPermission]);
+    if (allowed) {
+      touchPinSession();
+      return active.token;
+    }
+  }
+  const result = await promptForPin({ requiredPermission, purpose, managerApproval: false, saveEmployeeSession: true });
+  return result.token;
+}
+
+async function requestManagerApproval(purpose = "Manager approval is required for this action.") {
+  if (!state.currentUser?.sharedAccount) {
+    if (!can("canApproveSchedule")) throw new Error("Manager authorization is required for this action.");
+    return "";
+  }
+  if (state.pinSession?.token && state.pinSession.expiresAt > Date.now() && state.pinSession.employee?.permissions?.canApproveSchedule) {
+    touchPinSession();
+    return state.pinSession.token;
+  }
+  const result = await promptForPin({
+    requiredPermission: "canApproveSchedule",
+    purpose,
+    managerApproval: true,
+    saveEmployeeSession: false
+  });
+  return result.token;
+}
+
+function renderCurrentUser() {
+  const name = document.querySelector("#profileName");
+  const role = document.querySelector("#profileRole");
+  const avatar = document.querySelector("#profileAvatar");
+  const user = effectiveUser();
+  const shared = Boolean(state.currentUser?.sharedAccount);
+  if (name) name.textContent = shared && !state.pinSession ? "Shared Employee Account" : (user.displayName || user.email || "GamePlan User");
+  if (role) role.textContent = shared && !state.pinSession ? "PIN required only for accountable actions" : `${user.roleName || "Employee"}${shared ? " · Tap to lock / switch" : ""}`;
+  if (avatar) avatar.textContent = (user.displayName || user.email || "G").trim().charAt(0).toUpperCase();
+  const profile = document.querySelector(".profile");
+  if (googleSignOutButton) googleSignOutButton.hidden = !state.authenticated;
+  if (profile) {
+    profile.classList.toggle("profile-action", shared);
+    profile.onclick = shared ? event => {
+      if (event.target === googleSignOutButton) return;
+      clearPinSession(true);
+    } : null;
+    profile.title = shared ? "Lock GamePlan / Switch Employee" : "";
+  }
+}
+
+
+function startOfWeek(value) {
+  const date = new Date(value);
+  date.setHours(0, 0, 0, 0);
+  const day = date.getDay();
+  date.setDate(date.getDate() - ((day + 6) % 7));
+  return date;
+}
+
+function addDays(value, amount) {
+  const date = new Date(value);
+  date.setDate(date.getDate() + amount);
+  return date;
+}
+
+function toDateKey(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function parseJobDate(job) {
+  const raw = job.scheduledDate || job.dateISO || job.appointmentDate || job.dateTime || job.date || "";
+  if (!raw) return null;
+  const normalized = String(raw).trim().toLowerCase();
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  if (normalized === "today") return now;
+  if (normalized === "tomorrow") return addDays(now, 1);
+  if (normalized === "yesterday") return addDays(now, -1);
+  const isoOnly = /^\d{4}-\d{2}-\d{2}$/.test(String(raw));
+  const parsed = isoOnly ? new Date(`${raw}T12:00:00`) : new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function parseDurationHours(job) {
+  const numeric = Number(job.durationHours || job.estimatedHours || 0);
+  if (numeric > 0) return numeric;
+  const text = String(job.duration || "").toLowerCase();
+  const hours = Number((text.match(/([\d.]+)\s*h/) || [])[1] || 0);
+  const minutes = Number((text.match(/([\d.]+)\s*m/) || [])[1] || 0);
+  return hours + minutes / 60 || 1;
+}
+
+function timeSortValue(job) {
+  const raw = job.scheduledTime || job.time || "";
+  const match = String(raw).trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
+  if (!match) return 9999;
+  let hour = Number(match[1]);
+  const minute = Number(match[2]);
+  const suffix = (match[3] || "").toUpperCase();
+  if (suffix === "PM" && hour !== 12) hour += 12;
+  if (suffix === "AM" && hour === 12) hour = 0;
+  return hour * 60 + minute;
+}
+
+function jobsForDate(date) {
+  const key = toDateKey(date);
+  return state.jobs
+    .filter(job => ["Scheduled", "Completed"].includes(job.status))
+    .filter(job => toDateKey(parseJobDate(job)) === key)
+    .sort((a, b) => timeSortValue(a) - timeSortValue(b));
+}
+
+function isTodayJob(job) {
+  const date = parseJobDate(job);
+  return Boolean(date) && toDateKey(date) === toDateKey(new Date()) && ["Scheduled", "Completed"].includes(job.status);
+}
+
+function isScheduledBuildAlert(job) {
+  return job.status === "Scheduled" && job.buildRequired && !job.buildComplete && Boolean(parseJobDate(job));
+}
+
+function scheduleLoadInfo(jobs) {
+  const hours = jobs.reduce((sum, job) => sum + parseDurationHours(job), 0);
+  const capacity = 8;
+  const percent = Math.round((hours / capacity) * 100);
+  const level = percent > 100 ? "over" : percent >= 80 ? "heavy" : percent >= 45 ? "steady" : "open";
+  const label = level === "over" ? "Over capacity" : level === "heavy" ? "Nearly full" : level === "steady" ? "Steady" : "Open";
+  return { hours, percent, level, label };
+}
+
+function weekLabel(start) {
+  const end = addDays(start, 6);
+  const sameMonth = start.getMonth() === end.getMonth();
+  const first = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(start);
+  const lastDay = new Intl.DateTimeFormat("en-US", { day: "numeric" }).format(end);
+  const lastMonthDay = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" }).format(end);
+  return `${first}–${sameMonth ? lastDay : lastMonthDay}, ${end.getFullYear()}`;
+}
+
+function jobTypeLabel(job) {
+  return String(job.type || job.jobType || "Job").split("·")[0].trim() || "Job";
+}
+
+function crewDisplay(job) {
+  const raw = String(job.crewSize || "").trim();
+  if (!raw) return "Not assigned";
+  const numeric = Number(raw);
+  if (Number.isFinite(numeric)) return `${numeric} ${numeric === 1 ? "person" : "people"}`;
+  return /crew|person|people/i.test(raw) ? raw : `${raw} crew`;
+}
+
+function agendaJobCard(job, context = "schedule") {
+  const expanded = expandedAgenda[context] === String(job.id);
+  const needsBuild = job.buildRequired && !job.buildComplete;
+  const time = job.time || job.scheduledTime || "Time TBD";
+  return `<article class="agenda-job agenda-job--expandable ${expanded ? "expanded" : "collapsed"}" data-agenda-toggle="${esc(job.id)}" data-agenda-context="${context}" aria-expanded="${expanded}">
+    <div class="agenda-job__summary">
+      <div class="agenda-time"><strong>${esc(time)}</strong>${expanded && job.duration ? `<span>${esc(job.duration)}</span>` : ""}</div>
+      <div class="agenda-line"></div>
+      <div class="agenda-main">
+        <div class="agenda-main__top">
+          <div class="agenda-identity"><h3>${esc(job.customer)}</h3><p>${esc(jobTypeLabel(job))}</p></div>
+          <span class="agenda-statuses">
+            <span class="badge ${badgeClass(job.status)}">${esc(job.status)}</span>
+            ${job.piggyback ? `<span class="piggyback-badge">Piggyback</span>` : ""}
+            ${needsBuild ? `<span class="build-warning">Needs Build</span>` : ""}
+          </span>
+        </div>
+      </div>
+      <button class="agenda-chevron" type="button" aria-label="${expanded ? "Collapse" : "Expand"} ${esc(job.customer)} job">${expanded ? "⌃" : "⌄"}</button>
+    </div>
+    ${expanded ? `<div class="agenda-job__details">
+      <div class="agenda-detail"><span>Address</span><strong>${esc(job.address || "Address not listed")}</strong></div>
+      <div class="agenda-detail-grid">
+        <div class="agenda-detail"><span>Crew</span><strong>${esc(crewDisplay(job))}</strong></div>
+        <div class="agenda-detail"><span>Duration</span><strong>${esc(job.duration || "—")}</strong></div>
+      </div>
+      <button class="button neutral agenda-open-job" type="button" data-open-job="${esc(job.id)}">Open Job</button>
+    </div>` : ""}
+  </article>`;
+}
+
+function renderSchedule() {
+  const days = Array.from({ length: 7 }, (_, index) => addDays(scheduleState.weekStart, index));
+  const selectedDate = days.find(day => toDateKey(day) === scheduleState.selectedDay) || days[0];
+  scheduleState.selectedDay = toDateKey(selectedDate);
+  const selectedJobs = jobsForDate(selectedDate);
+  const weekJobs = days.flatMap(jobsForDate);
+  const weekKeys = new Set(days.map(toDateKey));
+  const tentativeWeekJobs = state.jobs
+    .filter(job => job.status === "Tentative")
+    .filter(job => weekKeys.has(toDateKey(parseJobDate(job))))
+    .sort((a, b) => parseJobDate(a) - parseJobDate(b) || timeSortValue(a) - timeSortValue(b));
+  const weekBuildJobs = weekJobs.filter(isScheduledBuildAlert);
+  const unscheduled = state.jobs.filter(job => !parseJobDate(job) && job.status !== "Cancelled");
+  const selectedTitle = new Intl.DateTimeFormat("en-US", { weekday: "long", month: "long", day: "numeric" }).format(selectedDate);
+
+  return `<div class="schedule-planner">
+    <section class="schedule-toolbar">
+      <button class="button neutral schedule-nav" data-week-nav="-1" aria-label="Previous week">←</button>
+      <div class="schedule-range"><span>Weekly operations plan</span><strong>${weekLabel(scheduleState.weekStart)}</strong></div>
+      <button class="button neutral schedule-nav" data-week-nav="1" aria-label="Next week">→</button>
+      <button class="button schedule-today" data-week-today>This Week</button>
+    </section>
+
+    <section class="schedule-summary">
+      <button class="stat stat-action" data-summary-filter="scheduled"><b>${weekJobs.length}</b><span>Scheduled jobs</span></button>
+      <button class="stat stat-action" data-summary-filter="tentative"><b>${tentativeWeekJobs.length}</b><span>Awaiting confirmation</span></button>
+      <button class="stat stat-action" data-summary-filter="builds"><b>${weekBuildJobs.length}</b><span>Needs Build</span></button>
+      <button class="stat stat-action" data-summary-filter="unscheduled"><b>${unscheduled.length}</b><span>Unscheduled</span></button>
+    </section>
+
+    <section class="week-grid" aria-label="Weekly schedule">
+      ${days.map(day => {
+        const jobs = jobsForDate(day);
+        const tentativeJobs = state.jobs.filter(job => job.status === "Tentative" && toDateKey(parseJobDate(job)) === toDateKey(day));
+        const load = scheduleLoadInfo(jobs);
+        const selected = toDateKey(day) === scheduleState.selectedDay;
+        const today = toDateKey(day) === toDateKey(new Date());
+        return `<button class="week-day ${selected ? "selected" : ""} ${today ? "today" : ""}" data-select-day="${toDateKey(day)}">
+          <div class="week-day__top"><span>${new Intl.DateTimeFormat("en-US", { weekday: "short" }).format(day)}</span><b>${day.getDate()}</b></div>
+          <div class="capacity-track"><i class="${load.level}" style="width:${Math.min(load.percent, 100)}%"></i></div>
+          <div class="week-day__meta"><strong>${jobs.length} ${jobs.length === 1 ? "job" : "jobs"}</strong><span>${tentativeJobs.length ? `${tentativeJobs.length} Pending` : jobs.filter(isScheduledBuildAlert).length ? `${jobs.filter(isScheduledBuildAlert).length} Needs Build` : load.label}</span></div>
+          <div class="status-dots">${jobs.slice(0, 5).map(job => `<i class="${badgeClass(job.status)}" title="${esc(job.status)}"></i>`).join("")}${tentativeJobs.length ? `<i class="tentative pending-marker" title="${tentativeJobs.length} awaiting confirmation"></i>` : ""}</div>
+        </button>`;
+      }).join("")}
+    </section>
+
+    <section class="card schedule-agenda">
+      <div class="head"><div><h2>${selectedTitle}</h2><span class="agenda-subtitle">${selectedJobs.length ? `${selectedJobs.length} scheduled ${selectedJobs.length === 1 ? "job" : "jobs"}` : "No jobs scheduled"}</span></div><button class="button" data-demo-action="New Job">＋ New Job</button></div>
+      <div class="body agenda-list">
+        ${selectedJobs.length ? selectedJobs.map(job => agendaJobCard(job, "schedule")).join("") : `<div class="empty-agenda"><b>Open day</b><span>This day currently has no scheduled work.</span><button class="button" data-demo-action="New Job">Schedule a Job</button></div>`}
+      </div>
+    </section>
+
+    ${unscheduled.length ? `<section class="card unscheduled-card"><div class="head"><h2>Unscheduled Jobs</h2><span class="badge tentative">${unscheduled.length}</span></div><div class="body list">${unscheduled.slice(0, 8).map(job => `<div class="row" data-open-job="${esc(job.id)}"><div><b>${esc(job.customer)}</b><span>${esc(job.type)} · ${esc(job.address)}</span></div><span class="badge ${badgeClass(job.status)}">${esc(job.status)}</span></div>`).join("")}</div></section>` : ""}
+  </div>`;
+}
+
+function toast(message) {
+  toastBox.innerHTML = `<div class="toast">${message}</div>`;
+  setTimeout(() => toastBox.innerHTML = "", 2800);
+}
+
+function badgeClass(status) {
+  return ({
+    Scheduled:"scheduled",
+    Tentative:"tentative",
+    Completed:"completed",
+    Cancelled:"cancelled",
+    "Needs Attention":"attention"
+  })[status] || "";
+}
+
+
+function jobDetailsComplete(job) {
+  return String(job.detailsStatus || "").toLowerCase() === "complete";
+}
+
+function jobNeedsDetails(job) {
+  const status = String(job.status || "").toLowerCase();
+  if (["completed", "cancelled"].includes(status)) return false;
+  return !jobDetailsComplete(job);
+}
+
+function jobHasFutureAppointment(job) {
+  if (!job || !job.dateTime) return false;
+  const appointment = new Date(job.dateTime);
+  return !Number.isNaN(appointment.getTime()) && appointment.getTime() >= Date.now();
+}
+
+function jobNeedsOfficeAttention(job) {
+  const status = String(job.status || "").toLowerCase();
+  if (status !== "tentative" || !jobHasFutureAppointment(job)) return false;
+  return jobNeedsDetails(job) || scheduledConflictsFor(job).length > 0;
+}
+
+function statusCount(status) {
+  if (status === "Needs Attention") return state.jobs.filter(jobNeedsOfficeAttention).length;
+  if (status === "Needs Build") return upcomingBuildAlerts().length;
+  if (status === "Deliveries Today") return state.jobs.filter(isTodayJob).length;
+  return state.jobs.filter(job => job.status === status).length;
+}
+
+function homeStatusButtons() {
+  const cards = [
+    ["Tentative", "tentative", "calendar"],
+    ["Needs Attention", "attention", "attention"],
+    ["Needs Build", "builds", "assembly"],
+    ["Deliveries Today", "today", "delivery-truck"]
+  ];
+  return `<section class="home-status-grid" aria-label="Job status filters">${cards.map(([label,tone,icon]) =>
+    `<button class="home-status-card ${tone}" type="button" data-home-status="${esc(label)}"><i>${gpIcon(icon)}</i><b>${statusCount(label)}</b><span>${esc(label)}</span></button>`
+  ).join("")}</section>`;
+}
+
+function upcomingBuildAlerts() {
+  const now = Date.now();
+  const cutoff = now + 48 * 60 * 60 * 1000;
+  return state.jobs.filter(job => {
+    if (!isScheduledBuildAlert(job)) return false;
+    const appointment = parseJobDate(job);
+    if (!appointment) return false;
+    const appointmentTime = appointment.getTime();
+    return appointmentTime >= now && appointmentTime <= cutoff;
+  }).sort((a,b) => parseJobDate(a)-parseJobDate(b) || timeSortValue(a)-timeSortValue(b));
+}
+
+function employeeHomeJob(job) {
+  return agendaJobCard(job, "employeeHome");
+}
+
+function employeeHomeStatusButtons() {
+  const cards = [
+    ["Needs Build", "builds", "assembly"],
+    ["Deliveries Today", "today", "delivery-truck"]
+  ];
+  return `<section class="home-status-grid employee-home-status-grid" aria-label="Today's employee status">${cards.map(([label,tone,icon]) =>
+    `<button class="home-status-card ${tone}" type="button" data-home-status="${esc(label)}"><i>${gpIcon(icon)}</i><b>${statusCount(label)}</b><span>${esc(label)}</span></button>`
+  ).join("")}</section>`;
+}
+
+function renderEmployeeHome() {
+  const today = new Date(); today.setHours(0,0,0,0);
+  const selectedJobs = jobsForDate(today);
+  const selectedTitle = new Intl.DateTimeFormat("en-US",{weekday:"long",month:"long",day:"numeric"}).format(today);
+  return `<div class="employee-home">
+    ${syncPanel()}
+    ${employeeHomeStatusButtons()}
+
+    <section class="card employee-day-agenda">
+      <div class="head"><div><h2>Today's Schedule</h2><span class="agenda-subtitle">${selectedTitle} · ${selectedJobs.length?`${selectedJobs.length} scheduled ${selectedJobs.length===1?"job":"jobs"}`:"No jobs scheduled"}</span></div><button class="text-button" data-route="schedule">View Schedule ›</button></div>
+      <div class="body agenda-list">${selectedJobs.length?selectedJobs.map(employeeHomeJob).join(""):`<div class="empty-agenda compact"><b>Open day</b><span>This day currently has no scheduled work.</span></div>`}</div>
+    </section>
+
+    <button class="manager-new-job employee-new-job" data-demo-action="New Job"><span>＋</span> New Job</button>
+  </div>`;
+}
+
+function employeeDisplayName(value) {
+  return String(value || "").replace(/\s*\[[^\]]+\]\s*$/, "").trim();
+}
+
+function needsAttentionCard(job) {
+  const equipment = job.equipment || [];
+  const deliveryCount = equipment.reduce((sum,item) => item.deliveryRequired === false ? sum : sum + Math.max(1,Number(item.quantity || 1)), 0);
+  const pickupCount = equipment.reduce((sum,item) => item.pickupRequired === true ? sum + Math.max(1,Number(item.quantity || 1)) : sum, 0);
+  const equipmentLines = equipment.map(item => {
+    const quantity = Math.max(1, Number(item.quantity || 1));
+    const movement = item.pickupRequired === true && item.deliveryRequired === false ? "Pickup" : (String(item.condition || "").toLowerCase() === "new" ? "New" : "Used");
+    return `${quantity > 1 ? `${quantity}× ` : ""}${movement} ${equipmentTypeName(item)}`;
+  });
+  const itemLines = [
+    deliveryCount ? `${deliveryCount} Item${deliveryCount === 1 ? "" : "s"} Delivery` : "",
+    pickupCount ? `${pickupCount} Item${pickupCount === 1 ? "" : "s"} Pickup` : ""
+  ].filter(Boolean).join("<br>");
+  const createdByName = employeeDisplayName(job.createdBy) || "Unknown employee";
+  const detailsComplete = jobDetailsComplete(job);
+  const conflicts = scheduledConflictsFor(job);
+  const hasConflict = job.status === "Tentative" && conflicts.length > 0;
+  const label = hasConflict ? "SCHEDULE CONFLICT" : detailsComplete ? "AWAITING MANAGER APPROVAL" : "DETAILS NEEDED";
+  const action = detailsComplete
+    ? `<button class="button attention-complete" type="button" data-review-job="${esc(job.id)}">Review Appointment</button>`
+    : `<button class="button attention-complete" type="button" data-complete-details="${esc(job.id)}">Complete Details</button>`;
+  const stageClass = hasConflict ? "schedule-conflict" : detailsComplete ? "awaiting-approval" : "details-needed";
+  return `<article class="attention-job-card ${stageClass}" data-job-id="${esc(job.id)}">
+    <div class="attention-rail"></div><div class="attention-symbol">${hasConflict ? "!" : detailsComplete ? "✓" : "!"}</div>
+    <div class="attention-copy"><strong>${label}</strong><h3>${esc(job.customer)}</h3>
+      <p>${esc(job.date)} · ${esc(job.time)}${hasConflict?`<br><b class="attention-conflict-copy">Time taken by ${esc(conflicts.map(item=>`Job #${item.number||item.id} — ${item.customer}`).join(", "))}</b>`:""}<br>${equipmentLines.length ? equipmentLines.map(esc).join("<br>") : (itemLines || esc(job.type))}<br><span class="attention-created-by">Job #${esc(job.number || job.id)} · Set up by: ${esc(createdByName)}</span></p>
+      <span class="badge tentative">${esc(job.status)}</span></div>
+    ${action}
+  </article>`;
+}
+
+function equipmentTypeName(item) {
+  return state.equipmentTypes.find(type => type.id === item.equipmentTypeId)?.name || item.typeName || item.type || "Equipment";
+}
+
+function detailsItemIcon(item) {
+  const type = state.equipmentTypes.find(value => value.id === item.equipmentTypeId) || { id:item.equipmentTypeId, name:equipmentTypeName(item) };
+  return gpIcon(iconNameFor(type));
+}
+
+function productOptionsFor(item) {
+  return state.products.filter(product => product.equipmentTypeId === item.equipmentTypeId)
+    .map(product => `<option value="${esc(product.id)}" ${product.id===item.productId?"selected":""}>${esc([product.brand,product.model].filter(Boolean).join(" "))}</option>`).join("");
+}
+
+function productImageHtml(imageUrl, altText = "Selected equipment") {
+  const unavailable = `<span>▧<small>Product image is not available</small></span>`;
+  if (!imageUrl) return unavailable;
+  return `<img src="${esc(imageUrl)}" alt="${esc(altText)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.hidden=true;this.nextElementSibling.hidden=false"><span hidden>▧<small>Product image is not available</small></span>`;
+}
+
+function completeDetailsItemCard(item,index) {
+  const pickupOnly = item.pickupRequired === true && item.deliveryRequired === false;
+  const isNew = String(item.condition).toLowerCase() === "new";
+  const title = pickupOnly ? equipmentTypeName(item) : `${isNew ? "New" : "Used"} ${equipmentTypeName(item)}`;
+  if (pickupOnly) return `<section class="complete-item-card pickup-only-detail-card" data-details-item="${index}">
+    <div class="complete-item-head"><span class="item-number">${index+1}</span><i class="equipment-reference-icon">${detailsItemIcon(item)}</i><div><h3>${esc(title)}</h3><p>Quantity: ${Math.max(1,Number(item.quantity||1))}</p></div></div>
+    <div class="pickup-detail-notice"><b>No equipment details required</b><span>Manufacturer, model, condition, and photos will be recorded during the Pickup Item Checklist.</span></div>
+  </section>`;
+  if (isNew) return `<section class="complete-item-card" data-details-item="${index}">
+    <div class="complete-item-head"><span class="item-number">${index+1}</span><i class="equipment-reference-icon">${detailsItemIcon(item)}</i><div><h3>${esc(title)}</h3><p>Quantity: ${Math.max(1,Number(item.quantity||1))}</p></div></div>
+    <label class="details-field"><span>Model</span><select data-detail-product><option value="">Select model…</option>${productOptionsFor(item)}</select></label>
+    <div class="details-product-image" data-product-image>${item.imageUrl?productImageHtml(item.imageUrl,[item.brand,item.model].filter(Boolean).join(" ")||"Selected equipment"):`<span>▧<small>Image will appear when<br>model is selected</small></span>`}</div>
+  </section>`;
+  return `<section class="complete-item-card" data-details-item="${index}">
+    <div class="complete-item-head"><span class="item-number">${index+1}</span><i class="equipment-reference-icon">${detailsItemIcon(item)}</i><div><h3>${esc(title)}</h3><p>Quantity: ${Math.max(1,Number(item.quantity||1))}</p></div></div>
+    <label class="details-field"><span>Manufacturer</span><input data-detail-manufacturer value="${esc(item.brand||"")}" placeholder="Enter manufacturer"></label>
+    <label class="details-field"><span>Equipment Type</span><input value="${esc(equipmentTypeName(item))}" readonly aria-readonly="true"></label>
+    <label class="details-field"><span>Model</span><input data-detail-model value="${esc(item.model && item.model !== equipmentTypeName(item) ? item.model : "")}" placeholder="Enter model or identifying description"></label>
+    <label class="details-photo-field"><span>Photo <small>(Required)</small></span><div class="details-photo-control ${item.imageUrl?"has-photo":""}" data-photo-control>
+      ${item.imageUrl?`<img src="${esc(item.imageUrl)}" alt="Used equipment photo">`:`<b>▣</b><em>Tap to take photo</em>`}
+      <input type="file" accept="image/*" capture="environment" data-detail-photo aria-label="Take equipment photo">
+    </div></label>
+  </section>`;
+}
+
+function openCompleteDetails(jobId) {
+  const job = state.jobs.find(item => item.id === jobId);
+  if (!job) return;
+  const deliveryItems = (job.equipment || []).filter(item => item.deliveryRequired !== false && !item.pickupRequired);
+  const pickupItems = (job.equipment || []).filter(item => item.pickupRequired);
+  const allItems = [...deliveryItems,...pickupItems];
+  const pickupPurpose = normalizedPickupType(job.pickupType);
+  drawerContent.innerHTML = `<div class="complete-details-screen" data-details-job="${esc(job.id)}">
+    ${renderLifecycle(job.status)}
+    ${renderJobSummaryCard(job, { showItemCounts: true })}
+    <p class="complete-instruction">Complete the required details for delivery items. Pickup items will be documented during the Pickup Item Checklist.</p>
+    ${deliveryItems.length?`<h2 class="complete-section-title">DELIVERY ITEMS (${deliveryItems.length})</h2>${deliveryItems.map((item,i)=>completeDetailsItemCard(item,i)).join("")}`:""}
+    ${pickupItems.length?`<h2 class="complete-section-title">PICKUP ITEMS (${pickupItems.length})</h2>${pickupItems.map((item,i)=>completeDetailsItemCard(item,deliveryItems.length+i)).join("")}`:""}
+    ${job.hasPickup?`<h2 class="complete-section-title">PICKUP DETAILS</h2><section class="pickup-details-card">${pickupPurpose?`<div class="pickup-purpose-readonly"><span>Pickup Purpose</span><strong>${esc(pickupPurpose)}</strong><small>Selected when the quote was created and included in pricing.</small><input type="hidden" name="pickupType" value="${esc(pickupPurpose)}"></div>`:`<fieldset><legend>Pickup Purpose <small>(Required for this older job)</small></legend><label><input type="radio" name="pickupType" value="Trade-In"> Trade-In</label><label><input type="radio" name="pickupType" value="Disposal"> Disposal</label></fieldset>`}<label class="details-field stacked"><span>Pickup Notes <small>(Optional)</small></span><textarea name="pickupNotes" placeholder="Add any notes about the pickup…">${esc(job.pickupNotes||"")}</textarea></label></section>`:""}
+    <div class="complete-details-error" data-details-error></div>
+    <button class="button save-details-button" type="button" data-save-details>▣ &nbsp; Save Details</button>
+    <button class="button neutral finish-details-later" type="button" data-finish-details-later>Enter Details Later</button>
+  </div>`;
+  drawer.classList.add("open","complete-details-open"); drawerBackdrop.classList.add("open"); drawer.setAttribute("aria-hidden","false");
+  bindCompleteDetails(job, allItems);
+}
+
+function rawFileToDataUrl(file) {
+  return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(new Error("The photo could not be read."));reader.readAsDataURL(file);});
+}
+
+async function fileToDataUrl(file, {maxDimension=1600, quality=.78} = {}) {
+  if (!file?.type?.startsWith("image/")) return rawFileToDataUrl(file);
+  try {
+    const objectUrl = URL.createObjectURL(file);
+    const source = await new Promise((resolve,reject) => {
+      const image = new Image();
+      image.onload = () => resolve(image);
+      image.onerror = () => reject(new Error("The photo could not be prepared."));
+      image.src = objectUrl;
+    });
+    const scale = Math.min(1, maxDimension / Math.max(source.naturalWidth, source.naturalHeight));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(source.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(source.naturalHeight * scale));
+    canvas.getContext("2d", {alpha:false}).drawImage(source, 0, 0, canvas.width, canvas.height);
+    URL.revokeObjectURL(objectUrl);
+    return canvas.toDataURL("image/jpeg", quality);
+  } catch (error) {
+    console.warn("Photo compression was unavailable; using the original photo.", error);
+    return rawFileToDataUrl(file);
+  }
+}
+
+function bindCompleteDetails(job, items) {
+  const screen = drawerContent.querySelector(".complete-details-screen");
+  screen.querySelector("[data-finish-details-later]")?.addEventListener("click",()=>{
+    closeJob();
+    go("today");
+    toast("Equipment details remain in Needs Attention for later.");
+  });
+  screen.querySelectorAll("[data-detail-product]").forEach(select => select.onchange = () => {
+    const card=select.closest("[data-details-item]"); const item=items[Number(card.dataset.detailsItem)]; const product=state.products.find(value=>value.id===select.value);
+    item.productId=select.value; item.brand=product?.brand||""; item.model=product?.model||""; item.imageUrl=product?.imageUrl||"";
+    const image=card.querySelector("[data-product-image]"); image.innerHTML=productImageHtml(item.imageUrl,item.model||"Selected equipment");
+  });
+  screen.querySelectorAll("[data-detail-photo]").forEach(input => input.onchange = async () => {
+    const file=input.files?.[0]; if(!file)return; const card=input.closest("[data-details-item]"); const item=items[Number(card.dataset.detailsItem)];
+    item.photoDataUrl=await fileToDataUrl(file); item.photoName=file.name||`equipment-${Date.now()}.jpg`;
+    const control=card.querySelector("[data-photo-control]"); control.classList.add("has-photo"); control.querySelectorAll("img,b,em").forEach(el=>el.remove()); control.insertAdjacentHTML("afterbegin",`<img src="${item.photoDataUrl}" alt="Equipment photo preview">`);
+  });
+  screen.querySelector("[data-save-details]").onclick = async event => {
+    const button=event.currentTarget; const errorBox=screen.querySelector("[data-details-error]"); errorBox.textContent="";
+    const payloadItems=items.map((item,index)=>{
+      const card=screen.querySelector(`[data-details-item="${index}"]`);
+      const pickupOnly=item.pickupRequired===true&&item.deliveryRequired===false;
+      const isNew=String(item.condition).toLowerCase()==="new";
+      return {
+        jobEquipmentId:item.id, condition:item.condition, equipmentTypeId:item.equipmentTypeId,
+        deliveryRequired:item.deliveryRequired!==false, pickupRequired:item.pickupRequired===true,
+        productId:!pickupOnly&&isNew?(card.querySelector("[data-detail-product]")?.value||""):"",
+        manufacturer:pickupOnly?"":(isNew?item.brand:(card.querySelector("[data-detail-manufacturer]")?.value.trim()||"")),
+        equipmentTypeText:equipmentTypeName(item),
+        model:pickupOnly?"":(isNew?item.model:(card.querySelector("[data-detail-model]")?.value.trim()||"")),
+        photoDataUrl:pickupOnly?"":(item.photoDataUrl||""), photoName:pickupOnly?"":(item.photoName||"")
+      };
+    });
+    const missing=payloadItems.find((detail,index)=>{
+      const source=items[index];
+      const pickupOnly=source.pickupRequired===true&&source.deliveryRequired===false;
+      if(pickupOnly)return false;
+      return String(detail.condition).toLowerCase()==="new"
+        ? !detail.productId
+        : !detail.manufacturer||!detail.model||(!detail.photoDataUrl&&!source.imageUrl);
+    });
+    const pickupType=screen.querySelector('[name="pickupType"]:checked')?.value||screen.querySelector('[name="pickupType"][type="hidden"]')?.value||"";
+    if(missing){errorBox.textContent="Choose a model for every new delivery item and add a manufacturer, model, and photo for every used delivery item.";return;}
+    if(job.hasPickup&&!pickupType){errorBox.textContent="Choose Pickup for Sale or Pickup for Disposal.";return;}
+    button.disabled=true;button.textContent="Saving…";
+    try{
+      const pinToken=await requestPin("canCreateQuote","Enter your employee PIN to save equipment details.");
+      showTaskProgress("Saving equipment details…","Recording models, photos, and job information in the CMS.");
+      await api.updateJobDetails(job.id,payloadItems,pickupType,screen.querySelector('[name="pickupNotes"]')?.value||"",pinToken);
+      touchPinSession();
+      job.detailsStatus="Complete";
+      job.pickupType=pickupType||job.pickupType;
+      payloadItems.forEach((detail,index)=>{
+        const target=items[index];
+        if(!target)return;
+        target.productId=detail.productId||target.productId;
+        target.brand=detail.manufacturer||target.brand;
+        target.model=detail.model||target.model;
+        if(detail.photoDataUrl)target.imageUrl=detail.photoDataUrl;
+      });
+      closeJob();
+      go("today");
+      hideTaskProgress();
+      toast("Equipment details saved.");
+      persistOptimisticJobs();
+    }
+    catch(error){console.error(error);hideTaskProgress();errorBox.textContent=error.message||"The details could not be saved.";button.disabled=false;button.textContent="▣  Save Details";}
+  };
+}
+
+function queueItem(job) {
+  const action = job.status === "Tentative" ? "Review" : "Open";
+  return `<article data-job-id="${job.id}">
+    <div class="icon">${job.status === "Tentative" ? "▣" : "◇"}</div>
+    <div>
+      <h3>${job.customer}</h3>
+      <p>${job.time} · ${job.type}<br>${job.address}</p>
+      <span class="badge ${badgeClass(job.status)}">${job.status}</span>
+      ${job.buildRequired && !job.buildComplete ? `<span class="badge tentative">Needs Build</span>` : ""}
+    </div>
+    <button class="button" data-open-job="${job.id}">${action}</button>
+  </article>`;
+}
+
+function lifecycleIcon(step) {
+  if (step === "Completed") return `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="m8 12 2.6 2.6L16.5 9"></path></svg>`;
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5.5" width="16" height="14" rx="2"></rect><path d="M8 3v5M16 3v5M4 9.5h16"></path>${step === "Quote" ? '<path d="M8 13h3M8 16h6"></path>' : step === "Tentative" ? '<path d="M8 13h3M14.5 13h1.5M8 16h8"></path>' : '<path d="m8 14 2 2 5-5"></path>'}</svg>`;
+}
+
+function renderLifecycle(status) {
+  const order = ["Quote","Tentative","Scheduled","Completed"];
+  const cancelled = status === "Cancelled";
+  const currentIndex = cancelled ? 1 : Math.max(0, order.indexOf(status));
+  return `<div class="lifecycle-wrap"><div class="lifecycle">${order.map((step,index)=>{
+    const cls = index < currentIndex ? "done" : index === currentIndex && !cancelled ? "current" : "";
+    return `<div class="life-step ${cls} life-${step.toLowerCase()}"><div class="life-icon">${lifecycleIcon(step)}</div><span>${step}</span>${index < order.length - 1 ? '<i class="life-arrow">→</i>' : ''}</div>`;
+  }).join("")}</div>${cancelled ? `<div class="cancel-branch"><span>↘</span><strong>Cancelled</strong></div>` : ""}</div>`;
+}
+
+
+function jobItemCounts(job) {
+  const equipment = job?.equipment || [];
+  return {
+    delivery: equipment.reduce((sum, item) => item.deliveryRequired === false ? sum : sum + Math.max(1, Number(item.quantity || 1)), 0),
+    pickup: equipment.reduce((sum, item) => item.pickupRequired === true ? sum + Math.max(1, Number(item.quantity || 1)) : sum, 0)
+  };
+}
+
+function renderJobSummaryCard(job, options = {}) {
+  const counts = jobItemCounts(job);
+  const createdByName = employeeDisplayName(job.createdBy) || "Unknown employee";
+  const countLines = options.showItemCounts ? `
+      ${counts.delivery ? `<div class="detail-line"><span>Delivery</span><strong>${counts.delivery} Item${counts.delivery === 1 ? "" : "s"}</strong></div>` : ""}
+      ${counts.pickup ? `<div class="detail-line"><span>Pickup</span><strong>${counts.pickup} Item${counts.pickup === 1 ? "" : "s"}</strong></div>` : ""}` : "";
+  return `<section class="detail-card job-summary-card">
+      <div class="job-summary-top"><span>Job #${esc(job.number || job.id)}</span><span class="badge ${badgeClass(job.status)}">${esc(job.status)}</span></div>
+      <h3>${esc(job.customer)}</h3>
+      <div class="customer-address">${esc(job.address)}</div>
+      <div class="customer-phone"><span>Phone</span><a href="tel:${esc(job.phone || "")}">${esc(job.phone || "No phone number saved")}</a></div>
+      <div class="detail-line"><span>Appointment</span><strong>${esc(job.date)}, ${esc(job.time)}</strong></div>
+      <div class="detail-line"><span>Estimated duration</span><strong>${esc(job.duration || "—")}</strong></div>${countLines}
+      <div class="detail-line summary-created-by"><span>Set up by</span><strong>${esc(createdByName)}</strong></div>
+    </section>`;
+}
+
+function equipmentImage(item, preferredPhotoUrl = "") {
+  if (preferredPhotoUrl) {
+    return `<img class="equipment-photo" src="${esc(preferredPhotoUrl)}" alt="Pickup equipment photo" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'equipment-photo equipment-photo--generic',textContent:'Equipment'}))">`;
+  }
+  const pickupOnly = item?.pickupRequired === true && item?.deliveryRequired === false;
+  if (pickupOnly) {
+    return `<div class="equipment-photo equipment-photo--generic" aria-label="Pickup item">${gpIcon(iconNameFor(item))}</div>`;
+  }
+  if (item?.imageUrl) {
+    return `<img class="equipment-photo" src="${esc(item.imageUrl)}" alt="${esc([item.brand, item.model].filter(Boolean).join(" ") || "Equipment")}" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'equipment-photo equipment-photo--generic',textContent:'Equipment'}))">`;
+  }
+  return `<div class="equipment-photo equipment-photo--generic" aria-label="Equipment image unavailable">${gpIcon(iconNameFor(item))}</div>`;
+}
+
+function can(permission) {
+  return Boolean(effectiveUser()?.permissions?.[permission]);
+}
+
+function isManager() {
+  return can("canApproveSchedule");
+}
+
+function permissionNotice(text) {
+  return `<div class="permission-notice"><strong>Manager approval required</strong><span>${esc(text)}</span></div>`;
+}
+
+function workflowNotice(title, text) {
+  return `<div class="permission-notice"><strong>${esc(title)}</strong><span>${esc(text)}</span></div>`;
+}
+
+function conflictEquipmentSummary(job){
+  const items=(job?.equipment||[]).map(item=>{
+    const quantity=Math.max(1,Number(item.quantity||1));
+    const movement=item.pickupRequired===true&&item.deliveryRequired===false?"Pickup":String(item.condition||"").toLowerCase()==="new"?"New":"Used";
+    return `${quantity>1?`${quantity}× `:""}${movement} ${equipmentTypeName(item)}`;
+  });
+  return items.join(" · ")||job?.type||"Equipment details unavailable";
+}
+
+function destinationCity(address){
+  const parts=String(address||"").split(",").map(part=>part.trim()).filter(Boolean);
+  return parts.length>=2?parts[parts.length-3]||parts[1]:parts[0]||"Destination unavailable";
+}
+
+function conflictJobLink(job){
+  return `<button type="button" class="conflict-job-link" data-open-job="${esc(job.id)}">
+    <span><b>Job #${esc(job.number||job.id)} — ${esc(job.customer)}</b><em>${esc(job.time)} · ${esc(destinationCity(job.address))}</em></span>
+    <small>${esc(conflictEquipmentSummary(job))}<br>${esc(job.address)}</small>
+    <i>View Job ›</i>
+  </button>`;
+}
+
+
+const PICKUP_APPEARANCE_QUESTIONS = [
+  ["covers", "Covers and end caps are intact"],
+  ["upholstery", "Upholstery is acceptable"],
+  ["wheels", "Transport wheels are intact and work"]
+];
+
+const PICKUP_FUNCTION_QUESTIONS = [
+  ["sound", "Machine sounds appropriate"],
+  ["console", "Console display works fully"],
+  ["buttons", "All buttons function properly"],
+  ["heartRate", "Heart rate monitor works"],
+  ["fans", "Fans work"],
+  ["folds", "Unit folds and locks"]
+];
+
+function pickupInspectionComplete(job) {
+  return String(job.pickupInspectionStatus || "").toLowerCase() === "complete";
+}
+
+function pickupQuestionRow(key, label) {
+  return `<div class="pickup-question" data-pickup-question="${esc(key)}">
+    <span>${esc(label)}</span>
+    <div class="pickup-response-group" role="radiogroup" aria-label="${esc(label)}">
+      ${["Pass","Issue","N/A"].map(value => `<label><input type="radio" name="pickup-${esc(key)}" value="${value}"><em>${value}</em></label>`).join("")}
+    </div>
+    <label class="pickup-issue-note"><span>Issue notes</span><textarea placeholder="Describe the issue…"></textarea></label>
+  </div>`;
+}
+
+function pickupInspectionItemCard(item, index) {
+  const title = [item.brand, item.model].filter(Boolean).join(" ") || `Used ${equipmentTypeName(item)}`;
+  return `<section class="pickup-inspection-item" data-pickup-item="${index}">
+    <div class="complete-item-head"><span class="item-number">${index + 1}</span><i class="equipment-reference-icon">${detailsItemIcon(item)}</i><div><h3>${esc(title)}</h3><p>${esc(equipmentTypeName(item))} · Quantity: ${Math.max(1, Number(item.quantity || 1))}</p></div></div>
+    <h3 class="pickup-card-title">Appearance</h3>
+    <div class="pickup-question-list">${PICKUP_APPEARANCE_QUESTIONS.map(([key,label]) => pickupQuestionRow(`${index}-appearance-${key}`, label)).join("")}</div>
+    <h3 class="pickup-card-title">Function</h3>
+    <div class="pickup-question-list">${PICKUP_FUNCTION_QUESTIONS.map(([key,label]) => pickupQuestionRow(`${index}-function-${key}`, label)).join("")}</div>
+    <label class="details-photo-field"><span>Pickup Photo <small>(Required)</small></span><div class="details-photo-control" data-pickup-photo-control>
+      <b>▣</b><em>Tap to take photo</em>
+      <input type="file" accept="image/*" capture="environment" data-pickup-photo aria-label="Take pickup equipment photo">
+    </div></label>
+    <fieldset class="pickup-disassembly"><legend>Disassembled?</legend>
+      <label><input type="radio" name="disassembled-${index}" value="No" checked> No</label>
+      <label><input type="radio" name="disassembled-${index}" value="Yes"> Yes</label>
+    </fieldset>
+    <label class="details-field stacked pickup-disassembly-notes"><span>Description of disassembly</span><textarea placeholder="Describe what was removed or disassembled…"></textarea></label>
+    <label class="details-field stacked"><span>Item Notes <small>(Optional)</small></span><textarea data-pickup-item-notes placeholder="Add any additional notes…"></textarea></label>
+  </section>`;
+}
+
+function signatureCanvasMarkup() {
+  return `<div class="signature-wrap">
+    <canvas data-customer-signature width="900" height="300" aria-label="Customer signature pad"></canvas>
+    <div class="signature-placeholder">Customer signs here</div>
+    <button type="button" class="button neutral signature-clear" data-clear-signature>Clear Signature</button>
+  </div>`;
+}
+
+function setupSignaturePad(screen) {
+  const canvas = screen.querySelector("[data-customer-signature]");
+  const placeholder = screen.querySelector(".signature-placeholder");
+  if (!canvas) return { hasSignature: () => false, dataUrl: () => "" };
+  const ctx = canvas.getContext("2d");
+  ctx.lineWidth = 5;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  let drawing = false;
+  let signed = false;
+
+  const position = event => {
+    const rect = canvas.getBoundingClientRect();
+    const point = event.touches?.[0] || event;
+    return {
+      x: (point.clientX - rect.left) * (canvas.width / rect.width),
+      y: (point.clientY - rect.top) * (canvas.height / rect.height)
+    };
+  };
+  const start = event => {
+    event.preventDefault();
+    drawing = true;
+    const p = position(event);
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y);
+  };
+  const move = event => {
+    if (!drawing) return;
+    event.preventDefault();
+    const p = position(event);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+    signed = true;
+    placeholder?.classList.add("hidden");
+  };
+  const end = () => { drawing = false; };
+
+  canvas.addEventListener("pointerdown", start);
+  canvas.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", end);
+  canvas.addEventListener("touchstart", start, { passive:false });
+  canvas.addEventListener("touchmove", move, { passive:false });
+  canvas.addEventListener("touchend", end);
+
+  screen.querySelector("[data-clear-signature]")?.addEventListener("click", () => {
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    signed = false;
+    placeholder?.classList.remove("hidden");
+  });
+
+  return {
+    hasSignature: () => signed,
+    dataUrl: () => signed ? canvas.toDataURL("image/png") : ""
+  };
+}
+
+function normalizedPickupType(value) {
+  const type = String(value || "").trim().toLowerCase();
+  if (type === "sale" || type === "trade-in" || type === "trade in") return "Trade-In";
+  if (type === "disposal") return "Disposal";
+  return "";
+}
+
+function openPickupInspection(jobId) {
+  const job = state.jobs.find(item => item.id === jobId);
+  if (!job) return;
+  const pickupItems = (job.equipment || []).filter(item => item.pickupRequired);
+  if (!pickupItems.length) return toast("This job has no pickup items.");
+
+  drawerContent.innerHTML = `<div class="complete-details-screen pickup-inspection-screen" data-pickup-job="${esc(job.id)}">
+    <section class="complete-job-summary"><div><b>${esc(job.customer)}</b><span>${esc(job.date)} at ${esc(job.time)}</span><small>${esc(job.address)}</small></div><span class="badge ${badgeClass(job.status)}">${esc(job.status)}</span><footer><span>Job #${esc(job.number||job.id)}<br>${pickupItems.length} Pickup Item${pickupItems.length===1?"":"s"}</span><span>${esc(job.type)}<br>${esc(job.duration||"")}</span></footer></section>
+    <p class="complete-instruction">Inspect each pickup item, document its condition, attach a current photo, and obtain the customer’s signature.</p>
+    <h2 class="complete-section-title">PICKUP FOR</h2>
+    <section class="pickup-details-card pickup-type-readonly"><span>Pickup Type</span><strong>${esc(normalizedPickupType(job.pickupType)||"Not selected")}</strong><small>Set when the appointment details were completed.</small></section>
+    <h2 class="complete-section-title">EQUIPMENT INSPECTION (${pickupItems.length})</h2>
+    ${pickupItems.map(pickupInspectionItemCard).join("")}
+    <h2 class="complete-section-title">OVERALL CONDITION</h2>
+    <section class="pickup-details-card overall-condition-card"><fieldset><legend>Overall Condition <small>(Required)</small></legend>
+      ${["Excellent","Good","Fair","Poor"].map(value=>`<label><input type="radio" name="overallCondition" value="${value}"> ${value}</label>`).join("")}
+    </fieldset>
+    <label class="details-field stacked"><span>Additional Notes <small>(Optional)</small></span><textarea name="pickupInspectionNotes" placeholder="Add any final notes about the pickup…"></textarea></label></section>
+    <h2 class="complete-section-title">CUSTOMER ACKNOWLEDGMENT</h2>
+    <section class="pickup-details-card signature-card"><p>I confirm that the equipment listed above was picked up and that the condition notes shown are an accurate record of the employee’s assessment at the time of pickup.</p>
+      <label class="details-field"><span>Customer Name</span><input name="signatureName" value="${esc(job.customer)}" placeholder="Customer name"></label>
+      ${signatureCanvasMarkup()}
+    </section>
+    <div class="complete-details-error" data-pickup-error></div>
+    <button class="button save-details-button" type="button" data-finalize-pickup>✓ &nbsp; Finalize Pickup</button>
+  </div>`;
+
+  drawer.classList.add("open","complete-details-open");
+  drawerBackdrop.classList.add("open");
+  drawer.setAttribute("aria-hidden","false");
+
+  const screen = drawerContent.querySelector(".pickup-inspection-screen");
+  const signature = setupSignaturePad(screen);
+
+  screen.querySelectorAll("[data-pickup-question]").forEach(row => {
+    row.querySelectorAll('input[type="radio"]').forEach(input => {
+      input.addEventListener("change", () => row.classList.toggle("has-issue", input.value === "Issue" && input.checked));
+    });
+  });
+
+  screen.querySelectorAll('[name^="disassembled-"]').forEach(input => {
+    input.addEventListener("change", () => {
+      const card = input.closest("[data-pickup-item]");
+      card?.classList.toggle("is-disassembled", input.value === "Yes" && input.checked);
+    });
+  });
+
+  screen.querySelectorAll("[data-pickup-photo]").forEach(input => {
+    input.addEventListener("change", async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      const card = input.closest("[data-pickup-item]");
+      const index = Number(card.dataset.pickupItem);
+      const dataUrl = await fileToDataUrl(file);
+      pickupItems[index].inspectionPhotoDataUrl = dataUrl;
+      pickupItems[index].inspectionPhotoName = file.name || "pickup-photo.jpg";
+      const control = card.querySelector("[data-pickup-photo-control]");
+      control.classList.add("has-photo");
+      control.innerHTML = `<img src="${esc(dataUrl)}" alt="Pickup equipment photo"><input type="file" accept="image/*" capture="environment" data-pickup-photo aria-label="Retake pickup equipment photo">`;
+      control.querySelector("input").addEventListener("change", input.onchange || (()=>{}));
+      openPickupPhotoRebind(control, pickupItems[index]);
+    });
+  });
+
+  screen.querySelector("[data-finalize-pickup]").onclick = async event => {
+    const button = event.currentTarget;
+    const errorBox = screen.querySelector("[data-pickup-error]");
+    errorBox.textContent = "";
+    const pickupType = normalizedPickupType(job.pickupType);
+    const overallCondition = screen.querySelector('[name="overallCondition"]:checked')?.value || "";
+    if (!pickupType) return void(errorBox.textContent = "Pickup type is missing. Complete the job details before beginning the inspection.");
+    if (!overallCondition) return void(errorBox.textContent = "Choose an overall condition.");
+    if (!signature.hasSignature()) return void(errorBox.textContent = "Customer signature is required.");
+
+    const items = [];
+    for (let index=0; index<pickupItems.length; index++) {
+      const card = screen.querySelector(`[data-pickup-item="${index}"]`);
+      const responses = {};
+      let missing = false;
+      card.querySelectorAll("[data-pickup-question]").forEach(row => {
+        const selected = row.querySelector('input[type="radio"]:checked');
+        if (!selected) { missing = true; return; }
+        const key = row.dataset.pickupQuestion.split("-").slice(1).join("-");
+        const note = row.querySelector("textarea")?.value.trim() || "";
+        if (selected.value === "Issue" && !note) missing = true;
+        responses[key] = { result:selected.value, note };
+      });
+      if (missing) return void(errorBox.textContent = `Complete every inspection response and add notes for issues on item ${index+1}.`);
+      if (!pickupItems[index].inspectionPhotoDataUrl) return void(errorBox.textContent = `Add a current pickup photo for item ${index+1}.`);
+      const disassembled = card.querySelector(`[name="disassembled-${index}"]:checked`)?.value === "Yes";
+      const disassemblyNotes = card.querySelector(".pickup-disassembly-notes textarea")?.value.trim() || "";
+      if (disassembled && !disassemblyNotes) return void(errorBox.textContent = `Describe the disassembly for item ${index+1}.`);
+      items.push({
+        jobEquipmentId: pickupItems[index].id,
+        responses,
+        photoDataUrl: pickupItems[index].inspectionPhotoDataUrl,
+        photoName: pickupItems[index].inspectionPhotoName,
+        disassembled,
+        disassemblyNotes,
+        notes: card.querySelector("[data-pickup-item-notes]")?.value.trim() || ""
+      });
+    }
+
+    const signatureName = screen.querySelector('[name="signatureName"]').value.trim();
+    if (!signatureName) return void(errorBox.textContent = "Enter the customer name for the signature.");
+
+    const inspection = {
+      pickupType,
+      overallCondition,
+      notes: screen.querySelector('[name="pickupInspectionNotes"]').value.trim(),
+      signatureName,
+      signatureDataUrl: signature.dataUrl(),
+      items
+    };
+    button.disabled = true;
+    button.textContent = "Finalizing…";
+    try {
+      if (!navigator.onLine) {
+        showTaskProgress("Saving on this device…","There is no connection. GamePlan is preserving the checklist, photos, and signature for later sync.");
+        await queuePickupForSync(job, inspection);
+        closeJob();
+        go("today");
+        hideTaskProgress();
+        toast("Pickup saved on this device · Sync required when service returns.");
+        return;
+      }
+      const pinToken = await requestPin("canCreateQuote","Enter your employee PIN to finalize this pickup.");
+      showTaskProgress("Finalizing pickup…",`Compressing and uploading ${items.length} photo${items.length===1?"":"s"}, the checklist, and customer signature.`);
+      await api.finalizePickupInspection(job.id, inspection, pinToken);
+      touchPinSession();
+      applyPickupCompletion(job, inspection);
+      closeJob();
+      openJob(job.id);
+      hideTaskProgress();
+      toast("Pickup inspection finalized.");
+      persistOptimisticJobs();
+    } catch (error) {
+      console.error(error);
+      if (isNetworkFailure(error)) {
+        try {
+          await queuePickupForSync(job, inspection);
+          closeJob();
+          go("today");
+          hideTaskProgress();
+          toast("Connection was lost · Pickup safely saved on this device for later sync.");
+          return;
+        } catch (storageError) {
+          console.error(storageError);
+          error = storageError;
+        }
+      }
+      hideTaskProgress();
+      errorBox.textContent = error.message || "The pickup inspection could not be finalized.";
+      button.disabled = false;
+      button.textContent = "✓  Finalize Pickup";
+    }
+  };
+}
+
+function openPickupPhotoRebind(control, item) {
+  const input = control.querySelector("[data-pickup-photo]");
+  if (!input) return;
+  input.addEventListener("change", async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    item.inspectionPhotoDataUrl = await fileToDataUrl(file);
+    item.inspectionPhotoName = file.name || "pickup-photo.jpg";
+    control.classList.add("has-photo");
+    const img = control.querySelector("img");
+    if (img) img.src = item.inspectionPhotoDataUrl;
+  });
+}
+
+function applyPickupCompletion(job, inspection) {
+  const items = inspection.items || [];
+  job.pickupInspectionStatus = "Complete";
+  job.pickupSummary = {
+    pickupType: inspection.pickupType,
+    overallCondition: inspection.overallCondition,
+    issueCount: items.reduce((count,item)=>count+Object.values(item.responses||{}).filter(response=>response.result==="Issue").length,0),
+    photoCount: items.length,
+    completedBy: effectiveUser()?.displayName || "Employee"
+  };
+}
+
+async function queuePickupForSync(job, inspection) {
+  await saveQueuedPickup({
+    id: `pickup-${job.id}`,
+    jobId: job.id,
+    jobNumber: job.number || job.id,
+    customer: job.customer || "Customer",
+    inspection,
+    createdAt: new Date().toISOString(),
+    attempts: 0,
+    lastError: ""
+  });
+  job.pickupInspectionStatus = "Pending Sync";
+  await refreshPendingPickupCount();
+  persistOptimisticJobs();
+}
+
+async function syncPendingPickups() {
+  if (state.syncingPickups) return;
+  if (!navigator.onLine) return toast("No internet connection yet. The pickup remains safely saved on this device.");
+  const records = await getQueuedPickups();
+  if (!records.length) { await refreshPendingPickupCount({render:true}); return toast("There are no pickups waiting to sync."); }
+  state.syncingPickups = true;
+  go(location.hash.slice(1) || "today");
+  try {
+    const pinToken = await requestPin("canCreateQuote",`Enter your employee PIN to sync ${records.length} saved pickup${records.length===1?"":"s"}.`);
+    for (let index=0; index<records.length; index++) {
+      const record = records[index];
+      showTaskProgress(`Syncing pickup ${index+1} of ${records.length}`,`${record.customer} · Uploading saved photos, signature, and checklist.`);
+      try {
+        await api.finalizePickupInspection(record.jobId, record.inspection, pinToken);
+        const job = state.jobs.find(item=>String(item.id)===String(record.jobId));
+        if (job) applyPickupCompletion(job, record.inspection);
+        await deleteQueuedPickup(record.id);
+      } catch (error) {
+        if (/already been finalized/i.test(error.message || "")) {
+          await deleteQueuedPickup(record.id);
+          continue;
+        }
+        record.attempts = Number(record.attempts || 0) + 1;
+        record.lastError = error.message || "Sync failed";
+        await saveQueuedPickup(record);
+        throw error;
+      }
+    }
+    touchPinSession();
+    persistOptimisticJobs();
+    toast("Saved pickup work is now synced with the CMS.");
+    refreshLiveDataInBackground();
+  } catch (error) {
+    console.error(error);
+    toast(isNetworkFailure(error)?"Connection was lost. The pickup remains safely saved on this device.":(error.message || "The saved pickup could not be synced."));
+  } finally {
+    hideTaskProgress();
+    state.syncingPickups = false;
+    await refreshPendingPickupCount({render:true});
+  }
+}
+
+function pickupSummaryMarkup(job) {
+  if (!pickupInspectionComplete(job)) return "";
+  const summary = job.pickupSummary || {};
+  return `<section class="detail-card pickup-summary-card">
+    <div class="job-summary-top"><h3>Pickup Summary</h3><span class="badge completed">Complete</span></div>
+    <div class="detail-line"><span>Pickup for</span><strong>${esc(summary.pickupType || job.pickupType || "—")}</strong></div>
+    <div class="detail-line"><span>Overall condition</span><strong>${esc(summary.overallCondition || "—")}</strong></div>
+    <div class="detail-line"><span>Issues found</span><strong>${Number(summary.issueCount || 0)}</strong></div>
+    <div class="detail-line"><span>Photos</span><strong>${Number(summary.photoCount || 0)} Attached</strong></div>
+    <div class="detail-line"><span>Customer signature</span><strong>${summary.signatureUrl ? "Received ✓" : "—"}</strong></div>
+    ${summary.signatureUrl ? `<button type="button" class="pickup-signature-preview" data-view-signature="${esc(job.id)}"><img src="${esc(summary.signatureUrl)}" alt="Customer signature"><span><b>View customer signature</b><small>${esc(summary.customerName || job.customer || "Customer")}</small></span><i>›</i></button>` : ""}
+    <div class="detail-line"><span>Completed by</span><strong>${esc(employeeDisplayName(summary.completedBy) || "—")}</strong></div>
+    ${summary.notes ? `<p class="pickup-summary-notes">${esc(summary.notes)}</p>` : ""}
+  </section>`;
+}
+
+function pickupInspectionFor(job, equipmentId) {
+  return (job.pickupSummary?.items || []).find(item => String(item.jobEquipmentId) === String(equipmentId));
+}
+
+function pickupResponseMarkup(responses = {}) {
+  const sections = [
+    ["Appearance", PICKUP_APPEARANCE_QUESTIONS, "appearance"],
+    ["Function", PICKUP_FUNCTION_QUESTIONS, "function"]
+  ];
+  return sections.map(([title, questions, prefix]) => `<div class="pickup-record-section"><h4>${title}</h4>${questions.map(([key,label]) => {
+    const value = responses[`${prefix}-${key}`];
+    const answer = typeof value === "object" ? (value.result || value.value) : value;
+    const note = typeof value === "object" ? value.note : "";
+    return `<div class="pickup-record-row"><span>${esc(label)}</span><b class="pickup-answer ${String(answer || "").toLowerCase().replace(/[^a-z]/g, "")}">${esc(answer || "Not recorded")}</b>${note ? `<small>${esc(note)}</small>` : ""}</div>`;
+  }).join("")}</div>`).join("");
+}
+
+function pickupInspectionMarkup(job, item) {
+  const record = pickupInspectionFor(job, item.id);
+  if (!record) return "";
+  return `<div class="pickup-record" data-pickup-record="${esc(item.id)}" hidden>
+    ${record.photoUrl ? `<a class="pickup-record-photo" href="${esc(record.photoUrl)}" target="_blank" rel="noopener"><img src="${esc(record.photoUrl)}" alt="Pickup photo of ${esc(equipmentTypeName(item))}"><span>Tap photo to view full size</span></a>` : ""}
+    ${pickupResponseMarkup(record.responses)}
+    <div class="pickup-record-section"><h4>Pickup notes</h4>
+      <div class="pickup-record-row"><span>Disassembled</span><b>${record.disassembled ? "Yes" : "No"}</b></div>
+      ${record.disassemblyNotes ? `<p>${esc(record.disassemblyNotes)}</p>` : ""}
+      ${record.notes ? `<p>${esc(record.notes)}</p>` : ""}
+      ${record.issueSummary ? `<p class="pickup-record-issues"><b>Issues:</b> ${esc(record.issueSummary)}</p>` : ""}
+    </div>
+  </div>`;
+}
+
+function equipmentDetailMarkup(job, item) {
+  const inspection = pickupInspectionFor(job, item.id);
+  const content = `${equipmentImage(item, inspection?.photoUrl || "")}
+    <div class="equipment-copy"><strong>${esc([item.brand,item.model].filter(Boolean).join(" ") || `${String(item.condition || "").toLowerCase() === "new" ? "New" : "Used"} ${equipmentTypeName(item)}`)}</strong><small>${esc(equipmentTypeName(item))}</small>${inspection ? `<em>View Pickup Checklist</em>` : ""}</div>
+    <div class="equipment-build-action">${equipmentBuildControl(job, item)}</div>${inspection ? `<i class="pickup-record-chevron">⌄</i>` : ""}`;
+  return inspection
+    ? `<div class="equipment-card-wrap"><button type="button" class="equipment-card pickup-equipment-card" data-toggle-pickup-record="${esc(item.id)}" aria-expanded="false">${content}</button>${pickupInspectionMarkup(job, item)}</div>`
+    : `<div class="equipment-card">${content}</div>`;
+}
+
+function workflowActions(job) {
+  const today = isTodayJob(job) && job.status === "Scheduled";
+  if (job.status === "Tentative") {
+    if (!jobDetailsComplete(job)) {
+      return `<button class="button primary-action" data-complete-details="${esc(job.id)}">Complete Job Details</button>
+        ${workflowNotice("Equipment details needed", "Add the required equipment information now, or return later. A manager can approve the appointment after these details are complete.")}
+        <button class="button neutral" data-reschedule-job="${esc(job.id)}">Edit / Reschedule</button>
+        <button class="button red" data-status-action="Cancelled" data-job-id="${esc(job.id)}">Cancel Job</button>`;
+    }
+    const conflicts = scheduledConflictsFor(job);
+    const confirm = (isManager() || state.currentUser?.sharedAccount)
+      ? conflicts.length
+        ? `<div class="schedule-conflict-panel"><strong>⚠ Appointment Time Is Taken</strong><span>Review the approved appointment before deciding whether these jobs can travel together.</span>${conflicts.map(conflictJobLink).join("")}<small>Reschedule this appointment, or deliberately approve it as a piggyback delivery.</small></div>
+          <button class="button primary-action" data-reschedule-job="${esc(job.id)}">Reschedule Appointment</button>
+          <button class="button neutral piggyback-action" data-piggyback-job="${esc(job.id)}">Approve as Piggyback Overlap</button>`
+        : `<button class="button primary-action" data-status-action="Scheduled" data-job-id="${esc(job.id)}">✓ Confirm Appointment</button>`
+      : permissionNotice("This appointment is awaiting manager confirmation before it is added to the finalized schedule.");
+    return `${confirm}
+      ${conflicts.length?"":`<button class="button neutral" data-reschedule-job="${esc(job.id)}">Edit / Reschedule</button>`}
+      <button class="button red" data-status-action="Cancelled" data-job-id="${esc(job.id)}">Cancel Job</button>`;
+  }
+  if (job.status === "Scheduled" && today) {
+    const pickupAction = job.hasPickup
+      ? (pickupInspectionComplete(job)
+          ? `<span class="pickup-ready-note">Pickup inspection complete ✓</span>`
+          : `<button class="button pickup-inspection-action" data-pickup-inspection="${esc(job.id)}">Begin Pickup Inspection</button>`)
+      : "";
+    const completeAction = job.hasPickup && !pickupInspectionComplete(job)
+      ? `<button class="button green primary-action" disabled title="Finalize the pickup inspection first">✓ Complete Job</button>`
+      : `<button class="button green primary-action" data-status-action="Completed" data-job-id="${esc(job.id)}">✓ Complete Job</button>`;
+    return `
+      <a class="button call-action" href="tel:${esc(job.phone)}">Call Customer</a>
+      <a class="button neutral map-action" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(job.address || "")}" target="_blank" rel="noopener">View on Map</a>
+      ${pickupAction}
+      ${completeAction}`;
+  }
+  if (job.status === "Scheduled") {
+    const pickupAction = job.hasPickup && !pickupInspectionComplete(job)
+      ? `<button class="button pickup-inspection-action" data-pickup-inspection="${esc(job.id)}">Begin Pickup Inspection</button>`
+      : "";
+    if (!isManager() && !state.currentUser?.sharedAccount) return `${pickupAction}${permissionNotice("This appointment is finalized. A manager must reschedule or cancel it.")}`;
+    return `
+      ${pickupAction}
+      <button class="button neutral" data-reschedule-job="${esc(job.id)}">Edit / Reschedule</button>
+      <button class="button red" data-status-action="Cancelled" data-job-id="${esc(job.id)}">Cancel Job</button>`;
+  }
+  if (job.status === "Quote") return `<button class="button primary-action" data-status-action="Tentative" data-job-id="${esc(job.id)}">Schedule Appointment</button>`;
+  return "";
+}
+
+function equipmentBuildControl(job, item) {
+  if (!item.buildRequired) return `<span class="badge completed">No Build Needed</span>`;
+  if (item.buildComplete) {
+    const completedAt = item.buildCompletedAt ? new Date(item.buildCompletedAt) : null;
+    const completedWhen = completedAt && !Number.isNaN(completedAt.getTime())
+      ? new Intl.DateTimeFormat("en-US",{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}).format(completedAt)
+      : "";
+    const completedBy = employeeDisplayName(item.buildCompletedBy);
+    return `<div class="build-complete-record"><span class="badge completed">Build Complete ✓</span>${completedBy?`<small>Marked built by <b>${esc(completedBy)}</b>${completedWhen?` · ${esc(completedWhen)}`:""}</small>`:""}</div>`;
+  }
+  if (job.status !== "Scheduled") return `<span class="build-warning">Needs Build</span>`;
+  return `<button class="button build-complete-button" data-build-complete="${esc(item.id)}" data-job-id="${esc(job.id)}">Mark Build Complete</button>`;
+}
+
+function deliveryModifiersMarkup(job) {
+  const hasDelivery = (job.equipment || []).some(item => item.deliveryRequired !== false);
+  if (!hasDelivery) return "";
+  const modifiers = Array.isArray(job.access) ? job.access : [];
+  return `<section class="detail-card delivery-modifiers-card">
+    <div class="delivery-modifiers-heading"><div><small>ACCESS CONDITIONS</small><h3>Delivery Modifiers</h3></div><i>${gpIcon("stairs")}</i></div>
+    ${modifiers.length
+      ? `<div class="delivery-modifier-list">${modifiers.map(modifier => `<div class="delivery-modifier-row"><i>${gpIcon(iconNameFor(modifier,"access"))}</i><span><b>${esc(modifier.name || modifier.accessConditionId || "Access condition")}</b>${Number(modifier.quantity || 1)>1?`<small>Quantity: ${Number(modifier.quantity)}</small>`:""}</span><strong>✓</strong></div>`).join("")}</div>`
+      : `<div class="delivery-modifiers-empty"><b>No delivery modifiers recorded</b><span>Confirm access with the customer before departure. Add any undisclosed stairs or access conditions before completing the job.</span></div>`}
+  </section>`;
+}
+
+async function openJob(jobId) {
+  const existing = state.jobs.find(j => j.id === jobId);
+  if (existing?.hasPickup && pickupInspectionComplete(existing) && !existing.pickupDetailsLoaded) {
+    showTaskProgress("Loading pickup details…","Retrieving this job’s photos, checklist, and signature.");
+    try {
+      const detailed = await api.getJob(jobId);
+      detailed.pickupDetailsLoaded = true;
+      const index = state.jobs.findIndex(job => String(job.id) === String(jobId));
+      if (index >= 0) state.jobs[index] = { ...state.jobs[index], ...detailed };
+    } catch (error) {
+      console.error(error);
+      toast(error.message || "Pickup details could not be loaded.");
+    } finally { hideTaskProgress(); }
+  }
+  const job = state.jobs.find(j => j.id === jobId);
+  if (!job) return;
+  drawerContent.innerHTML = `
+    ${renderLifecycle(job.status)}
+    ${job.status==="Tentative"&&scheduledConflictsFor(job).length?`<div class="job-conflict-banner"><strong>⚠ Schedule Conflict</strong><span>This requested time now overlaps an approved appointment.</span></div>`:""}
+    ${renderJobSummaryCard(job)}
+
+    ${deliveryModifiersMarkup(job)}
+
+    <section class="detail-card">
+      <h3>Equipment (${job.equipment?.length || 0})</h3>
+      ${(job.equipment || []).map(item => equipmentDetailMarkup(job, item)).join("")}
+    </section>
+
+    ${pickupSummaryMarkup(job)}
+
+    <section class="detail-card">
+      <div class="detail-line"><span>Crew</span><strong>${esc(job.crewSize || "—")} Person Crew</strong></div>
+      <div class="detail-line"><span>Estimated duration</span><strong>${esc(job.duration || "—")}</strong></div>
+      <div class="detail-line"><span>Total price</span><strong class="detail-total">$${Number(job.total || 0).toFixed(2)}</strong></div>
+    </section>
+
+    <div class="drawer-actions">
+      ${workflowActions(job)}
+    </div>
+  `;
+  drawer.classList.add("open");
+  drawerBackdrop.classList.add("open");
+  drawer.setAttribute("aria-hidden","false");
+  bindDynamic();
+}
+
+async function changeJobStatus(jobId, newStatus, {piggyback=false} = {}) {
+  const job = state.jobs.find(item => item.id === jobId);
+  if (!job) return;
+  const managerOnly = newStatus === "Scheduled" || (job.status === "Scheduled" && ["Tentative", "Cancelled"].includes(newStatus));
+
+  const messages = {
+    Scheduled: `Confirm ${job.customer}'s appointment and add it to the Weekly Planner?`,
+    Completed: `Mark ${job.customer}'s job complete?`,
+    Cancelled: `Cancel ${job.customer}'s job? It will remain in job history.` ,
+    Tentative: `Move this quote to Tentative?`
+  };
+  if (piggyback) {
+    const conflicts=scheduledConflictsFor(job);
+    if(!conflicts.length)return toast("The schedule conflict no longer exists. Review the appointment again.");
+    if(!window.confirm(`Approve this as a PIGGYBACK overlap with ${conflicts.map(item=>`Job #${item.number||item.id}`).join(", ")}?\n\nBoth jobs will remain independently priced. The overlap will be recorded for the delivery crew.`))return;
+  } else if (!window.confirm(messages[newStatus] || `Change status to ${newStatus}?`)) return;
+  let overrideSchedule=false;
+  let scheduleOverrideType="";
+  if(newStatus==="Scheduled"){
+    const start=job.dateTime?new Date(job.dateTime):null;
+    const policy=start&&!Number.isNaN(start.getTime())?schedulePolicyFor(start):{normal:true};
+    const interval=jobInterval(job);
+    const dateKey=start&&!Number.isNaN(start.getTime())?dateKeyLocal(start):"";
+    const conflict=interval&&jobsOnDate(dateKey).some(other=>{
+      if(String(other.id)===String(job.id))return false;
+      const otherInterval=jobInterval(other);
+      return otherInterval&&interval.start<otherInterval.end&&interval.end>otherInterval.start;
+    });
+    if(piggyback){
+      overrideSchedule=true;
+      scheduleOverrideType="Piggyback";
+    }else if(!policy.normal||conflict){
+      const reasons=[!policy.normal?policy.detail:"",conflict?"This overlaps another approved job.":""].filter(Boolean).join("\n");
+      if(conflict){toast("This time is already taken. Reschedule it or use Approve as Piggyback Overlap.");return;}
+      if(!window.confirm(`${reasons}\n\nApprove this manager override and mark the appointment as Scheduled?`))return;
+      overrideSchedule=true;
+      scheduleOverrideType="Manager Discretion";
+    }
+  }
+  const buttons = drawerContent.querySelectorAll("[data-status-action]");
+  buttons.forEach(button => button.disabled = true);
+  try {
+    const pinToken = await requestPin("canCreateQuote", "Enter your employee PIN to record this action.");
+    const approvalToken = managerOnly
+      ? await requestManagerApproval("A manager PIN is required to finalize or change the schedule. The active employee will remain signed in.")
+      : "";
+    showTaskProgress(
+      newStatus === "Completed" ? "Completing delivery…" : newStatus === "Scheduled" ? "Confirming appointment…" : "Updating job…",
+      "Saving the confirmed change to the GamePlan CMS."
+    );
+    await api.updateJobStatus(jobId, newStatus, piggyback?"Approved as manager-authorized piggyback overlap":"Updated from Job Details", pinToken, approvalToken, overrideSchedule, scheduleOverrideType);
+    touchPinSession();
+    state.dataRevision += 1;
+    job.status = newStatus;
+    if (piggyback) {
+      job.piggyback = true;
+      scheduledConflictsFor(job).forEach(partner => { partner.piggyback = true; });
+    }
+    closeJob();
+    go(newStatus === "Scheduled" ? "schedule" : "jobs");
+    hideTaskProgress();
+    toast(newStatus === "Scheduled" ? "Appointment confirmed and added to the Weekly Planner." : `Job marked ${newStatus}.`);
+    persistOptimisticJobs();
+  } catch (error) {
+    console.error(error);
+    hideTaskProgress();
+    toast(error.message || "The job status could not be updated.");
+    buttons.forEach(button => button.disabled = false);
+    if(newStatus==="Scheduled"&&/overlap|conflict|time is already taken/i.test(error.message||"")){
+      await loadLiveData();
+      openJob(jobId);
+    }
+  }
+}
+
+async function markBuildComplete(jobId, jobEquipmentId) {
+  const job = state.jobs.find(item => item.id === jobId);
+  if (!job) return;
+  if (!window.confirm("Mark this equipment build complete?")) return;
+  const button = drawerContent.querySelector(`[data-build-complete="${CSS.escape(jobEquipmentId)}"]`);
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Saving…";
+  }
+  try {
+    const pinToken = await requestPin("canCreateQuote", "Enter your employee PIN to certify this equipment build.");
+    showTaskProgress("Saving build completion…","Updating the delivery crew’s build status.");
+    const result = await api.updateEquipmentBuildStatus(jobId, jobEquipmentId, true, pinToken);
+    touchPinSession();
+    const equipment = (job.equipment || []).find(item => String(item.id) === String(jobEquipmentId));
+    if (equipment) {
+      equipment.buildComplete = true;
+      equipment.buildCompletedBy = result.buildCompletedBy || state.currentUser?.displayName || "";
+      equipment.buildCompletedAt = result.buildCompletedAt || new Date().toISOString();
+    }
+    job.buildComplete = (job.equipment || []).filter(item=>item.buildRequired).every(item=>item.buildComplete);
+    openJob(jobId);
+    hideTaskProgress();
+    toast("Equipment build marked complete.");
+    persistOptimisticJobs();
+  } catch (error) {
+    console.error(error);
+    hideTaskProgress();
+    toast(error.message || "The build status could not be updated.");
+    if (button) {
+      button.disabled = false;
+      button.textContent = "Mark Build Complete";
+    }
+  }
+}
+
+function closeJob() {
+  drawer.classList.remove("open","complete-details-open","pickup-inspection-open");
+  drawerBackdrop.classList.remove("open");
+  drawer.setAttribute("aria-hidden","true");
+}
+
+
+function staffRoleName(roleId) {
+  return state.staffManagement.roles.find(role => role.id === roleId)?.name || roleId || "Unassigned";
+}
+
+function sharedLoginName(loginAccountId) {
+  const account = state.staffManagement.loginAccounts.find(item => item.id === loginAccountId);
+  return account?.email || loginAccountId || "Shared account";
+}
+
+async function loadStaffManagement(force = false) {
+  if (!can("canEditCMS")) throw new Error("Administrator access is required.");
+  if (state.staffManagement.loading) return;
+  if (state.staffManagement.loaded && !force) return;
+  state.staffManagement.loading = true;
+  go("employees");
+  try {
+    const pinToken = await requestPin("canEditCMS", "Enter an administrator PIN to manage employees.");
+    const data = await api.getStaffManagement(pinToken);
+    state.staffManagement = {
+      loaded: true,
+      loading: false,
+      profiles: Array.isArray(data.profiles) ? data.profiles : [],
+      roles: Array.isArray(data.roles) ? data.roles : [],
+      loginAccounts: Array.isArray(data.loginAccounts) ? data.loginAccounts : []
+    };
+    touchPinSession();
+  } catch (error) {
+    state.staffManagement.loading = false;
+    if (error.message !== "Verification cancelled.") toast(error.message || "Employees could not be loaded.");
+  }
+  go("employees");
+}
+
+function employeeEditorHtml(profile = null) {
+  const isNew = !profile;
+  const shared = profile ? Boolean(profile.sharedAccount) : true;
+  const active = profile ? Boolean(profile.active) : true;
+  const pinEnabled = profile ? Boolean(profile.pinEnabled) : shared;
+  const sharedAccounts = state.staffManagement.loginAccounts.filter(account => account.sharedAccount && account.active);
+  const selectedAccount = profile?.loginAccountId || sharedAccounts[0]?.id || "";
+  return `<div class="employee-modal-backdrop" id="employeeModalBackdrop">
+    <section class="employee-modal" role="dialog" aria-modal="true" aria-labelledby="employeeModalTitle">
+      <button class="pin-close" data-close-employee aria-label="Close">×</button>
+      <h2 id="employeeModalTitle">${isNew ? "Add Employee" : "Edit Employee"}</h2>
+      <p>${isNew ? "Create a secure GamePlan staff profile." : `Update ${esc(profile.displayName)}'s access, role, or PIN.`}</p>
+      <form id="employeeForm">
+        <input type="hidden" name="staffProfileId" value="${esc(profile?.id || "")}">
+        <label class="field"><span>Display name</span><input name="displayName" required maxlength="80" value="${esc(profile?.displayName || "")}" autocomplete="off"></label>
+        <label class="field"><span>Role</span><select name="roleId" required>${state.staffManagement.roles.map(role => `<option value="${esc(role.id)}" ${role.id === profile?.roleId ? "selected" : ""}>${esc(role.name)}</option>`).join("")}</select></label>
+        <fieldset class="employee-login-choice"><legend>Google login</legend>
+          <label><input type="radio" name="loginMode" value="shared" ${shared ? "checked" : ""}> Shared store account</label>
+          <label><input type="radio" name="loginMode" value="personal" ${!shared ? "checked" : ""}> Personal Google account</label>
+        </fieldset>
+        <label class="field employee-shared-field"><span>Shared account</span><select name="loginAccountId">${sharedAccounts.map(account => `<option value="${esc(account.id)}" ${account.id === selectedAccount ? "selected" : ""}>${esc(account.email)}</option>`).join("")}</select></label>
+        <label class="field employee-personal-field"><span>Google email</span><input name="googleEmail" type="email" value="${esc(shared ? "" : (profile?.googleEmail || ""))}" placeholder="name@playitagainsoquel.com" autocomplete="email"></label>
+        <div class="employee-pin-fields">
+          <label class="check-row"><input type="checkbox" name="pinEnabled" ${pinEnabled ? "checked" : ""}> Enable this employee's GamePlan PIN</label>
+          <div class="form-grid">
+            <label class="field"><span>${profile?.pinConfigured ? "New PIN (leave blank to keep current)" : "PIN"}</span><input name="pin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="new-password" placeholder="4–8 digits"></label>
+            <label class="field"><span>Confirm PIN</span><input name="confirmPin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="new-password" placeholder="Repeat PIN"></label>
+          </div>
+          <small class="form-help">For shared-account employees, this PIN identifies the employee. For Managers and Admins with personal Google logins, it can also approve restricted actions on the shared store device. PINs are salted and hashed on the server.</small>
+        </div>
+        <label class="check-row"><input type="checkbox" name="active" ${active ? "checked" : ""}> Active</label>
+        <div class="employee-form-error" id="employeeFormError"></div>
+        <div class="employee-modal-actions"><button type="button" class="button neutral" data-close-employee>Cancel</button><button type="submit" class="button primary-action">${isNew ? "Add Employee" : "Save Changes"}</button></div>
+      </form>
+    </section>
+  </div>`;
+}
+
+function openEmployeeEditor(profileId = "") {
+  const profile = state.staffManagement.profiles.find(item => item.id === profileId) || null;
+  document.body.insertAdjacentHTML("beforeend", employeeEditorHtml(profile));
+  const backdrop = document.querySelector("#employeeModalBackdrop");
+  const form = document.querySelector("#employeeForm");
+  const close = () => backdrop?.remove();
+  backdrop.querySelectorAll("[data-close-employee]").forEach(button => button.onclick = close);
+  backdrop.onclick = event => { if (event.target === backdrop) close(); };
+  const syncMode = () => {
+    const shared = form.elements.loginMode.value === "shared";
+    form.querySelector(".employee-shared-field").hidden = !shared;
+    form.querySelector(".employee-personal-field").hidden = shared;
+    form.querySelector(".employee-pin-fields").hidden = false;
+  };
+  form.querySelectorAll('[name="loginMode"]').forEach(input => input.onchange = syncMode);
+  syncMode();
+  form.onsubmit = async event => {
+    event.preventDefault();
+    const errorBox = form.querySelector("#employeeFormError");
+    const submit = form.querySelector('[type="submit"]');
+    const data = Object.fromEntries(new FormData(form).entries());
+    data.active = form.elements.active.checked;
+    data.pinEnabled = form.elements.pinEnabled.checked;
+    const shared = data.loginMode === "shared";
+    if (!data.displayName.trim()) return errorBox.textContent = "Enter the employee's display name.";
+    if (!data.roleId) return errorBox.textContent = "Choose a role.";
+    if (shared && !data.loginAccountId) return errorBox.textContent = "Choose the shared Google account.";
+    if (!shared && !data.googleEmail.trim()) return errorBox.textContent = "Enter the personal Google email.";
+    if (data.pin || data.confirmPin) {
+      if (!/^\d{4,8}$/.test(data.pin)) return errorBox.textContent = "PINs must contain 4–8 digits.";
+      if (data.pin !== data.confirmPin) return errorBox.textContent = "The PIN entries do not match.";
+    }
+    submit.disabled = true;
+    submit.textContent = "Saving…";
+    errorBox.textContent = "";
+    try {
+      const pinToken = await requestPin("canEditCMS", "Administrator verification is required to save employee changes.");
+      await api.saveStaffProfile(data, pinToken);
+      touchPinSession();
+      close();
+      await loadStaffManagement(true);
+      toast(`${data.displayName.trim()} was saved.`);
+    } catch (error) {
+      errorBox.textContent = error.message || "The employee could not be saved.";
+      submit.disabled = false;
+      submit.textContent = profile ? "Save Changes" : "Add Employee";
+    }
+  };
+}
+
+function renderEmployees() {
+  if (!can("canEditCMS")) return `<div class="app-state app-state--error"><div class="app-state__icon">!</div><h2>Administrator access required</h2><p>Your GamePlan role does not allow employee management.</p><button class="button neutral" data-route="more">Back to More</button></div>`;
+  if (state.staffManagement.loading) return `<div class="app-state"><div class="loading-spinner"></div><h2>Loading employees…</h2></div>`;
+  if (!state.staffManagement.loaded) return `<div class="app-state"><div class="employee-admin-icon">♙</div><h2>Employee Management</h2><p>Manage employee and manager roles, shared-account PINs, personal Google logins, and active status.</p><button class="button" data-load-staff>Open Employee Management</button></div>`;
+  const profiles = [...state.staffManagement.profiles].sort((a,b) => Number(b.active)-Number(a.active) || a.displayName.localeCompare(b.displayName));
+  return `<section class="card employees-card"><div class="head employees-head"><div><h2>Employees</h2><span class="agenda-subtitle">${profiles.filter(item=>item.active).length} active · ${profiles.length} total</span></div><button class="button" data-add-employee>＋ Add Employee</button></div><div class="body employee-list">${profiles.map(profile => `<article class="employee-row ${profile.active ? "" : "inactive"}">
+    <div class="employee-avatar">${esc(profile.displayName.charAt(0).toUpperCase())}</div>
+    <div class="employee-copy"><b>${esc(profile.displayName)}</b><span>${esc(staffRoleName(profile.roleId))} · ${profile.sharedAccount ? `Shared login: ${esc(sharedLoginName(profile.loginAccountId))}` : esc(profile.googleEmail)}</span><small>${profile.pinConfigured ? (profile.sharedAccount ? "Employee PIN configured" : "Approval PIN configured") : (profile.sharedAccount ? "PIN not configured" : "Personal Google sign-in · no approval PIN")}</small></div>
+    <div class="employee-status"><span class="badge ${profile.active ? "completed" : "attention"}">${profile.active ? "Active" : "Inactive"}</span><button class="button neutral" data-edit-employee="${esc(profile.id)}">Edit</button></div>
+  </article>`).join("") || `<div class="empty-agenda"><b>No employees yet</b><span>Add the first staff profile to begin.</span></div>`}</div></section>`;
+}
+
+function jobHistoryEquipmentLabels(job) {
+  return (job.equipment || []).map(item => {
+    const type = equipmentTypeName(item);
+    const product = state.products.find(value => String(value.id) === String(item.productId));
+    const brand = item.brand || product?.brand || "";
+    const model = item.model || product?.model || "";
+    return [brand, model].filter(Boolean).join(" ") || type;
+  }).filter(Boolean);
+}
+
+function jobHistorySearchText(job) {
+  const visible = [job.customer, job.phone, ...jobHistoryEquipmentLabels(job)].filter(Boolean).join(" ").toLowerCase();
+  return `${visible} ${visible.replace(/[^a-z0-9]+/g,"")}`;
+}
+
+function jobMatchesHistorySearch(job, query = jobHistorySearch) {
+  const terms = String(query || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length) return true;
+  const searchable = jobHistorySearchText(job);
+  return terms.every(term => searchable.includes(term) || searchable.includes(term.replace(/[^a-z0-9]+/g,"")));
+}
+
+function jobMatchesHistoryFilter(job, filter = jobHistoryFilter) {
+  if (filter === "all") return true;
+  if (filter === "pickups") return Boolean(job.hasPickup || (job.equipment || []).some(item => item.pickupRequired));
+  return String(job.status || "").toLowerCase() === filter;
+}
+
+function jobHistoryCard(job, applySearch = true) {
+  const equipment = jobHistoryEquipmentLabels(job);
+  const equipmentLabel = equipment.length > 2 ? `${equipment.slice(0,2).join(", ")} +${equipment.length-2} more` : equipment.join(", ") || "Equipment not listed";
+  const pickup = Boolean(job.hasPickup || (job.equipment || []).some(item => item.pickupRequired));
+  return `<article class="job-history-card ${!applySearch||jobMatchesHistorySearch(job)?"":"hidden"}" data-open-job="${esc(job.id)}" ${applySearch?`data-history-job="${esc(job.id)}"`:""}>
+    <div class="job-history-copy"><h3>${esc(job.customer || "Unknown customer")}</h3><p>${esc(equipmentLabel)} · ${esc(job.type || "Job")}</p><small>${esc(job.date || "Unscheduled")}${job.time&&job.time!=="—"?` · ${esc(job.time)}`:""}</small><div class="job-history-badges"><span class="badge ${badgeClass(job.status)}">${esc(job.status)}</span>${pickup?`<span class="badge pickup-history-badge">Pickup</span>`:""}</div></div>
+    <span class="job-history-chevron">›</span>
+  </article>`;
+}
+
+function customerJobs(customerId) {
+  return state.jobs.filter(job => String(job.customerId) === String(customerId)).sort((a,b) => {
+    const ad=parseJobDate(a),bd=parseJobDate(b);
+    if(ad&&bd)return bd-ad||timeSortValue(b)-timeSortValue(a);
+    if(ad)return -1;
+    if(bd)return 1;
+    return String(a.customer||"").localeCompare(String(b.customer||""));
+  });
+}
+
+function customerLastName(customer) {
+  const explicit=String(customer.lastName||"").trim();
+  if(explicit)return explicit;
+  const parts=String(customer.name||"").trim().split(/\s+/);
+  return parts.length>1?parts[parts.length-1]:parts[0]||"";
+}
+
+function sortedRosterCustomers() {
+  return [...state.customers].sort((a,b) => customerLastName(a).localeCompare(customerLastName(b),undefined,{sensitivity:"base"}) ||
+    String(a.firstName||a.name||"").localeCompare(String(b.firstName||b.name||""),undefined,{sensitivity:"base"}));
+}
+
+function customerMatchesRosterSearch(customer,query=rosterSearch) {
+  const term=String(query||"").trim().toLowerCase();
+  if(!term)return true;
+  const visible=[customer.name,customer.firstName,customer.lastName,customer.phone].filter(Boolean).join(" ").toLowerCase();
+  const compactVisible=visible.replace(/[^a-z0-9]+/g,"");
+  const compactTerm=term.replace(/[^a-z0-9]+/g,"");
+  return visible.includes(term)||Boolean(compactTerm&&compactVisible.includes(compactTerm));
+}
+
+function renderRoster() {
+  const customers=sortedRosterCustomers();
+  const visible=customers.filter(customerMatchesRosterSearch);
+  return `<section class="customer-roster-screen">
+    <div class="customer-roster-toolbar">
+      <label class="job-history-search customer-roster-search"><span aria-hidden="true">⌕</span><input type="search" data-roster-search placeholder="Search customer or phone" value="${esc(rosterSearch)}" autocomplete="off"></label>
+      <div class="customer-roster-meta"><span data-roster-count>${visible.length} ${visible.length===1?"customer":"customers"}</span><span>Last name A–Z</span></div>
+    </div>
+    <div class="customer-roster-list">${customers.map(customer=>{
+      const jobs=customerJobs(customer.id);
+      const hidden=customerMatchesRosterSearch(customer)?"":"hidden";
+      return `<button class="customer-roster-row ${hidden}" type="button" data-roster-customer="${esc(customer.id)}"><span class="customer-roster-avatar">${esc((customer.firstName||customer.name||"?").charAt(0).toUpperCase())}</span><span class="customer-roster-copy"><b>${esc(customer.name||"Unnamed customer")}</b><small>${esc(customer.phone||"No phone number")}${customer.email?` · ${esc(customer.email)}`:""}</small></span><span class="customer-job-count">${jobs.length} ${jobs.length===1?"job":"jobs"}</span><span class="customer-roster-chevron">›</span></button>`;
+    }).join("")}</div>
+    <div class="customer-roster-empty ${visible.length?"hidden":""}" data-roster-empty><b>No customers found</b><span>Try searching another name or phone number.</span></div>
+  </section>`;
+}
+
+function openCustomerRosterProfile(customerId) {
+  const customer=state.customers.find(item=>String(item.id)===String(customerId));
+  if(!customer)return toast("Customer could not be found.");
+  document.querySelector("#customerRosterProfile")?.remove();
+  const jobs=customerJobs(customer.id);
+  const addresses=uniqueCustomerAddresses(customer);
+  const profile=document.createElement("section");
+  profile.id="customerRosterProfile";
+  profile.className="customer-roster-profile";
+  profile.innerHTML=`<div class="customer-roster-profile-card" role="dialog" aria-modal="true" aria-labelledby="customerRosterProfileTitle">
+    <header><div><small>CUSTOMER</small><h2 id="customerRosterProfileTitle">${esc(customer.name||"Customer")}</h2></div><button type="button" data-close-roster-profile aria-label="Close">×</button></header>
+    <section class="customer-profile-contact"><a href="tel:${esc(customer.phone||"")}">${esc(customer.phone||"No phone number")}</a>${customer.email?`<a href="mailto:${esc(customer.email)}">${esc(customer.email)}</a>`:""}</section>
+    <section class="customer-profile-addresses"><h3>Saved Addresses</h3>${addresses.length?addresses.map(address=>`<div><b>${esc(address.label||"Service Address")}${address.default?` <span>Default</span>`:""}</b><small>${esc(address.address)}</small></div>`).join(""):`<p>No active saved addresses.</p>`}</section>
+    <section class="customer-profile-jobs"><div><h3>Job History</h3><span>${jobs.length} ${jobs.length===1?"job":"jobs"}</span></div>${jobs.length?`<div class="customer-profile-job-list">${jobs.map(job=>jobHistoryCard(job,false)).join("")}</div>`:`<div class="customer-profile-no-jobs"><b>No job history</b><span>This customer does not have any saved jobs.</span></div>`}</section>
+    <footer><button class="button neutral" type="button" data-close-roster-profile>Close</button><button class="button" type="button" data-edit-roster-customer="${esc(customer.id)}">Edit Customer</button></footer>
+  </div>`;
+  document.body.appendChild(profile);
+  profile.querySelectorAll("[data-close-roster-profile]").forEach(button=>button.onclick=()=>profile.remove());
+  profile.addEventListener("click",event=>{if(event.target===profile)profile.remove();});
+  profile.querySelector("[data-edit-roster-customer]")?.addEventListener("click",()=>{
+    profile.remove();
+    openCustomerEditor(customer.id,{returnToRoster:true});
+  });
+  profile.querySelectorAll("[data-open-job]").forEach(card=>card.onclick=()=>{
+    profile.remove();
+    openJob(card.dataset.openJob);
+  });
+}
+
+const views = {
+  today: {
+    title:"Today's GamePlan", sub:todayDate,
+    html:()=>{if(!isManager())return renderEmployeeHome();const attention=state.jobs.filter(jobNeedsOfficeAttention);const todayJobs=jobsForDate(new Date());return `<div class="home-dashboard">
+      ${syncPanel()}
+      ${homeStatusButtons()}
+      <section class="card needs-attention-card ${managerHomePanels.attentionOpen?"expanded":"collapsed"}">
+        <button class="needs-attention-toggle" type="button" data-toggle-manager-attention aria-expanded="${managerHomePanels.attentionOpen}"><span><h2>Needs Attention</h2><em class="attention-count">${attention.length}</em></span><i>${managerHomePanels.attentionOpen?"⌃":"⌄"}</i></button>
+        ${managerHomePanels.attentionOpen?`<div class="body attention-list">${attention.length?attention.map(needsAttentionCard).join(""):`<div class="empty-agenda compact"><b>Nothing needs attention</b><span>No future tentative jobs are missing details or have a schedule conflict.</span></div>`}</div>`:""}
+      </section>
+      <section class="card manager-today-schedule"><div class="head"><div><h2>Today's Schedule</h2><span class="agenda-subtitle">${todayJobs.length} scheduled ${todayJobs.length===1?"job":"jobs"}</span></div><button class="text-button" data-route="schedule">View Schedule ›</button></div><div class="body agenda-list">${todayJobs.length?todayJobs.map(job=>agendaJobCard(job,"managerHome")).join(""):`<div class="empty-agenda compact"><b>No scheduled jobs today</b><span>Confirmed work scheduled for today will appear here.</span></div>`}</div></section>
+      <button class="manager-new-job" data-demo-action="New Job"><span>＋</span> New Job</button>
+    </div>`;}
+  },
+
+  schedule: {
+    title:"Schedule", sub:"Weekly operations planner",
+    html:()=>renderSchedule()
+  },
+
+  jobs: {
+    title:"Job History", sub:"Find previous and active jobs",
+    html:()=>{
+      if(!state.datasets.historyLoaded)return datasetLoadingView("job history");
+      const weekStart = jobsViewWeekStart ? new Date(`${jobsViewWeekStart}T12:00:00`) : null;
+      const weekKeys = weekStart ? new Set(Array.from({length:7}, (_,i)=>toDateKey(addDays(weekStart,i)))) : null;
+      let filteredJobs = state.jobs;
+      let heading = "Job History";
+      let subtitle = "Find previous and active jobs";
+      let focusedView = false;
+
+      if (jobsViewFilter === "scheduled-week") {
+        filteredJobs = state.jobs.filter(job => ["Scheduled","Completed"].includes(job.status) && weekKeys?.has(toDateKey(parseJobDate(job))));
+        heading = "Scheduled Jobs";
+        subtitle = `Jobs scheduled for ${weekLabel(weekStart)}`;
+        focusedView = true;
+      } else if (jobsViewFilter === "tentative-week") {
+        filteredJobs = state.jobs.filter(job => job.status === "Tentative" && weekKeys?.has(toDateKey(parseJobDate(job))));
+        heading = "Awaiting Confirmation";
+        subtitle = `Tentative jobs for ${weekLabel(weekStart)}`;
+        focusedView = true;
+      } else if (jobsViewFilter === "builds-week") {
+        filteredJobs = state.jobs.filter(job => isScheduledBuildAlert(job) && weekKeys?.has(toDateKey(parseJobDate(job))));
+        heading = "Needs Build";
+        subtitle = `Unfinished scheduled builds for ${weekLabel(weekStart)}`;
+        focusedView = true;
+      } else if (jobsViewFilter === "unscheduled") {
+        filteredJobs = state.jobs.filter(job => !parseJobDate(job) && job.status !== "Cancelled");
+        heading = "Unscheduled Jobs";
+        subtitle = "Jobs that still need an appointment date";
+        focusedView = true;
+      } else if (jobsViewFilter === "builds") {
+        filteredJobs = state.jobs.filter(isScheduledBuildAlert);
+        heading = "Build Alerts";
+        subtitle = "Scheduled jobs with unfinished equipment builds";
+        focusedView = true;
+      } else if (jobsViewFilter === "builds-48") {
+        filteredJobs = upcomingBuildAlerts();
+        heading = "Build Alerts";
+        subtitle = "Unfinished builds for scheduled jobs within the next 48 hours";
+        focusedView = true;
+      } else if (jobsViewFilter === "today") {
+        filteredJobs = state.jobs.filter(isTodayJob);
+        heading = "Deliveries Today";
+        subtitle = "Confirmed operational jobs scheduled for today";
+        focusedView = true;
+      } else if (jobsViewFilter === "tentative") {
+        filteredJobs = state.jobs.filter(job => job.status === "Tentative");
+        heading = "Tentative";
+        subtitle = "Appointments awaiting manager approval";
+        focusedView = true;
+      } else if (jobsViewFilter === "attention") {
+        filteredJobs = state.jobs.filter(jobNeedsOfficeAttention);
+        heading = "Needs Attention";
+        subtitle = "Jobs awaiting details or manager approval";
+        focusedView = true;
+      } else {
+        filteredJobs = state.jobs.filter(job => jobMatchesHistoryFilter(job));
+      }
+
+      filteredJobs = [...filteredJobs].sort((a,b) => {
+        const ad=parseJobDate(a), bd=parseJobDate(b);
+        if (ad && bd) return bd-ad || timeSortValue(b)-timeSortValue(a);
+        if (ad) return -1;
+        if (bd) return 1;
+        return String(a.customer||"").localeCompare(String(b.customer||""));
+      });
+
+      const visibleJobs = filteredJobs.filter(job => jobMatchesHistorySearch(job));
+      const emptyTitle = jobsViewFilter.includes("builds") ? "No build alerts" : jobsViewFilter === "tentative-week" ? "No jobs awaiting confirmation" : jobsViewFilter === "scheduled-week" ? "No scheduled jobs" : jobsViewFilter === "unscheduled" ? "No unscheduled jobs" : "No matching jobs";
+      const emptyText = jobsViewFilter.includes("builds") ? "All scheduled equipment builds are complete." : "There are no jobs in this view.";
+      const filters = [["all","All"],["tentative","Tentative"],["scheduled","Scheduled"],["completed","Completed"],["cancelled","Cancelled"],["pickups","Pickups"]];
+      return `<section class="job-history-screen">
+        <div class="job-history-toolbar">
+          <label class="job-history-search"><span aria-hidden="true">⌕</span><input type="search" data-history-search placeholder="Search customer, phone, or equipment" value="${esc(jobHistorySearch)}" autocomplete="off" autocapitalize="none"></label>
+          ${focusedView?`<button class="button neutral history-show-all" data-clear-job-filter>Show All History</button>`:`<div class="job-history-filters" aria-label="Filter job history">${filters.map(([value,label])=>`<button type="button" class="job-history-filter ${jobHistoryFilter===value?"active":""}" data-history-filter="${value}" aria-pressed="${jobHistoryFilter===value}">${label}</button>`).join("")}</div>`}
+          <div class="job-history-meta"><span data-history-count>${visibleJobs.length} ${visibleJobs.length===1?"job":"jobs"}</span><span>Newest first</span></div>
+        </div>
+        ${focusedView?`<div class="job-history-focus"><h2>${heading}</h2><p>${subtitle}</p></div>`:""}
+        <div class="job-history-results" data-history-results>${filteredJobs.map(jobHistoryCard).join("")}</div>
+        <div class="job-history-empty ${visibleJobs.length?"hidden":""}" data-history-empty><b>${emptyTitle}</b><span>${emptyText}</span></div>
+      </section>`;
+    }
+  },
+
+  roster: {
+    title:"Customer Roster", sub:"Customers, saved addresses, and job history",
+    html:()=>state.datasets.directoryLoaded?renderRoster():datasetLoadingView("customer roster")
+  },
+
+  more: {
+    title:"More", sub:"Administration and app information",
+    html:()=>`<div class="grid two"><section class="card"><div class="head"><h2>Administration</h2></div><div class="body list">${can("canEditCMS") ? `<button class="row" data-route="employees"><div><b>Employee Management</b><span>Add staff, assign roles, manage PINs, and deactivate access</span></div><b>›</b></button>` : ""}<button class="row" data-demo-action="Settings"><div><b>Settings</b><span>Pricing, timing, availability, and app rules</span></div><b>⚙</b></button><button class="row" data-demo-action="Huddle Together"><div><b>Huddle Together</b><span>Group scheduled jobs into one operational route</span></div><b>↝</b></button></div></section><section class="card"><div class="head"><h2>System</h2></div><div class="body"><div class="row"><div><b>Data source</b><span>${state.live ? "Live GamePlan CMS" : state.cached ? "Cached live data" : "Not connected"}</span></div><span class="badge ${state.live ? "completed" : "tentative"}">${state.live ? "Live" : state.cached ? "Cached" : "Offline"}</span></div></div></section></div>`
+  },
+
+  employees: {
+    title:"Employee Management", sub:"Roles, PINs, login accounts, and access",
+    html:()=>renderEmployees()
+  }
+};
+
+function bindDynamic() {
+  document.querySelectorAll("[data-toggle-pickup-record]").forEach(el => el.onclick = () => {
+    const record = drawerContent.querySelector(`[data-pickup-record="${CSS.escape(el.dataset.togglePickupRecord)}"]`);
+    if (!record) return;
+    const opening = record.hidden;
+    record.hidden = !opening;
+    el.setAttribute("aria-expanded", String(opening));
+  });
+  document.querySelectorAll("[data-view-signature]").forEach(el => el.onclick = () => {
+    const job = state.jobs.find(item => String(item.id) === String(el.dataset.viewSignature));
+    const url = job?.pickupSummary?.signatureUrl;
+    if (url) window.open(url, "_blank", "noopener");
+  });
+  document.querySelectorAll("[data-complete-details]").forEach(el => el.onclick = () => openCompleteDetails(el.dataset.completeDetails));
+  view.querySelector("[data-hard-refresh-cms]")?.addEventListener("click",hardRefreshCms);
+  view.querySelector("[data-sync-pickup-queue]")?.addEventListener("click",syncPendingPickups);
+  view.querySelectorAll("[data-review-job]").forEach(el => el.onclick = () => openJob(el.dataset.reviewJob));
+  view.querySelector("[data-toggle-manager-attention]")?.addEventListener("click",()=>{
+    managerHomePanels.attentionOpen=!managerHomePanels.attentionOpen;
+    go("today");
+  });
+  view.querySelectorAll("[data-home-status]").forEach(el => el.onclick = () => {
+    const status=el.dataset.homeStatus;
+    if(status==="Needs Attention"){
+      const matches=state.jobs.filter(jobNeedsOfficeAttention);
+      if(matches.length===1){
+        return jobDetailsComplete(matches[0]) ? openJob(matches[0].id) : openCompleteDetails(matches[0].id);
+      }
+      jobsViewFilter="attention";
+    } else if(status==="Needs Build"){
+      jobsViewFilter="builds-48";
+    } else if(status==="Deliveries Today"){
+      jobsViewFilter="today";
+    } else {
+      jobsViewFilter=status.toLowerCase();
+    }
+    go("jobs");
+  });
+  view.querySelectorAll("[data-home-select-day]").forEach(el=>el.onclick=()=>{
+    employeeHomeState.selectedDay=el.dataset.homeSelectDay;
+    expandedAgenda.employeeHome="";
+    go("today");
+  });
+  view.querySelectorAll("[data-home-week-nav]").forEach(el=>el.onclick=()=>{
+    employeeHomeState.weekStart=addDays(employeeHomeState.weekStart,Number(el.dataset.homeWeekNav)*7);
+    employeeHomeState.selectedDay=toDateKey(employeeHomeState.weekStart);
+    expandedAgenda.employeeHome="";
+    go("today");
+  });
+  view.querySelector("[data-home-this-week]")?.addEventListener("click",()=>{
+    employeeHomeState.weekStart=startOfWeek(new Date());
+    employeeHomeState.selectedDay=toDateKey(new Date());
+    expandedAgenda.employeeHome="";
+    go("today");
+  });
+  view.querySelector("[data-home-build-alert]")?.addEventListener("click",()=>{
+    const alerts=upcomingBuildAlerts();
+    if(alerts.length===1)return openJob(alerts[0].id);
+    jobsViewFilter="builds-48";
+    go("jobs");
+  });
+  document.querySelectorAll("[data-open-job]").forEach(el => {
+    el.onclick = (event) => {
+      event.stopPropagation();
+      const job = state.jobs.find(item => item.id === el.dataset.openJob);
+      if (jobsViewFilter === "attention" && job && !jobDetailsComplete(job)) {
+        openCompleteDetails(job.id);
+        return;
+      }
+      openJob(el.dataset.openJob);
+    };
+  });
+  view.querySelectorAll("[data-agenda-toggle]").forEach(card => {
+    card.onclick = event => {
+      if (event.target.closest("[data-open-job]")) return;
+      const context = card.dataset.agendaContext;
+      const jobId = card.dataset.agendaToggle;
+      if (!Object.prototype.hasOwnProperty.call(expandedAgenda, context)) return;
+      expandedAgenda[context] = expandedAgenda[context] === jobId ? "" : jobId;
+      go(location.hash.slice(1) || "today");
+    };
+  });
+  document.querySelectorAll("[data-reschedule-job]").forEach(el => {
+    el.onclick = () => openReschedule(el.dataset.rescheduleJob);
+  });
+  document.querySelectorAll("[data-demo-action]").forEach(el => {
+    el.onclick = () => {
+      if (["New Job","New Tentative"].includes(el.dataset.demoAction)) openWizard("job");
+      else toast(`${el.dataset.demoAction} becomes active in a later version.`);
+    };
+  });
+  document.querySelectorAll("[data-pickup-inspection]").forEach(el => {
+    el.onclick = () => openPickupInspection(el.dataset.pickupInspection);
+  });
+  document.querySelectorAll("[data-status-action]").forEach(el => {
+    el.onclick = () => changeJobStatus(el.dataset.jobId, el.dataset.statusAction);
+  });
+  document.querySelectorAll("[data-piggyback-job]").forEach(el => {
+    el.onclick = () => changeJobStatus(el.dataset.piggybackJob, "Scheduled", {piggyback:true});
+  });
+  document.querySelectorAll("[data-build-complete]").forEach(el => {
+    el.onclick = () => markBuildComplete(el.dataset.jobId, el.dataset.buildComplete);
+  });
+  document.querySelectorAll("[data-job-filter]").forEach(el => {
+    el.onclick = () => {
+      jobsViewFilter = el.dataset.jobFilter;
+      go("jobs");
+    };
+  });
+  document.querySelectorAll("[data-clear-job-filter]").forEach(el => {
+    el.onclick = () => {
+      jobsViewFilter = "all";
+      jobsViewWeekStart = "";
+      jobHistoryFilter = "all";
+      go("jobs");
+    };
+  });
+  document.querySelectorAll("[data-history-filter]").forEach(el => {
+    el.onclick = () => {
+      jobsViewFilter = "all";
+      jobsViewWeekStart = "";
+      jobHistoryFilter = el.dataset.historyFilter || "all";
+      go("jobs");
+    };
+  });
+  const historySearch = document.querySelector("[data-history-search]");
+  if (historySearch) {
+    historySearch.oninput = () => {
+      jobHistorySearch = historySearch.value;
+      let count = 0;
+      document.querySelectorAll("[data-history-job]").forEach(card => {
+        const job = state.jobs.find(item => String(item.id) === String(card.dataset.historyJob));
+        const visible = Boolean(job && jobMatchesHistorySearch(job));
+        card.classList.toggle("hidden", !visible);
+        if (visible) count += 1;
+      });
+      const countLabel = document.querySelector("[data-history-count]");
+      if (countLabel) countLabel.textContent = `${count} ${count===1?"job":"jobs"}`;
+      document.querySelector("[data-history-empty]")?.classList.toggle("hidden", count > 0);
+    };
+  }
+  const customerSearch=document.querySelector("[data-roster-search]");
+  if(customerSearch){
+    customerSearch.oninput=()=>{
+      rosterSearch=customerSearch.value;
+      let count=0;
+      document.querySelectorAll("[data-roster-customer]").forEach(row=>{
+        const customer=state.customers.find(item=>String(item.id)===String(row.dataset.rosterCustomer));
+        const visible=Boolean(customer&&customerMatchesRosterSearch(customer));
+        row.classList.toggle("hidden",!visible);
+        if(visible)count+=1;
+      });
+      const countLabel=document.querySelector("[data-roster-count]");
+      if(countLabel)countLabel.textContent=`${count} ${count===1?"customer":"customers"}`;
+      document.querySelector("[data-roster-empty]")?.classList.toggle("hidden",count>0);
+    };
+  }
+  document.querySelectorAll("[data-roster-customer]").forEach(row=>{
+    row.onclick=()=>openCustomerRosterProfile(row.dataset.rosterCustomer);
+  });
+  view.querySelectorAll("[data-summary-filter]").forEach(el => {
+    el.onclick = () => {
+      const filter = el.dataset.summaryFilter;
+      const weekStartKey = toDateKey(scheduleState.weekStart);
+      if (filter === "tentative") {
+        const days = Array.from({length:7}, (_,i)=>addDays(scheduleState.weekStart,i));
+        const weekKeys = new Set(days.map(toDateKey));
+        const matches = state.jobs.filter(job => job.status === "Tentative" && weekKeys.has(toDateKey(parseJobDate(job))));
+        if (matches.length === 1) {
+          openJob(matches[0].id);
+          return;
+        }
+        jobsViewFilter = "tentative-week";
+      } else if (filter === "scheduled") {
+        jobsViewFilter = "scheduled-week";
+      } else if (filter === "builds") {
+        jobsViewFilter = "builds-week";
+      } else {
+        jobsViewFilter = "unscheduled";
+      }
+      jobsViewWeekStart = weekStartKey;
+      go("jobs");
+    };
+  });
+
+  view.querySelectorAll("[data-route]").forEach(el => {
+    el.onclick = () => go(el.dataset.route);
+  });
+  view.querySelectorAll("[data-week-nav]").forEach(el => {
+    el.onclick = () => {
+      scheduleState.weekStart = addDays(scheduleState.weekStart, Number(el.dataset.weekNav) * 7);
+      scheduleState.selectedDay = toDateKey(scheduleState.weekStart);
+      expandedAgenda.schedule = "";
+      go("schedule");
+    };
+  });
+  view.querySelectorAll("[data-select-day]").forEach(el => {
+    el.onclick = () => {
+      scheduleState.selectedDay = el.dataset.selectDay;
+      expandedAgenda.schedule = "";
+      go("schedule");
+    };
+  });
+  view.querySelectorAll("[data-week-today]").forEach(el => {
+    el.onclick = () => {
+      scheduleState.weekStart = startOfWeek(new Date());
+      scheduleState.selectedDay = toDateKey(new Date());
+      expandedAgenda.schedule = "";
+      go("schedule");
+    };
+  });
+  view.querySelector("[data-load-staff]")?.addEventListener("click", () => loadStaffManagement());
+  view.querySelector("[data-add-employee]")?.addEventListener("click", () => openEmployeeEditor());
+  view.querySelectorAll("[data-edit-employee]").forEach(el => el.onclick = () => openEmployeeEditor(el.dataset.editEmployee));
+}
+
+function loadingView() {
+  if (state.loadError && !state.ready) {
+    return `<div class="app-state app-state--error"><div class="app-state__icon">!</div><h2>GamePlan could not load</h2><p>${esc(state.loadError)}</p><button class="button" data-retry-load>Retry</button></div>`;
+  }
+  return `<div class="app-state"><div class="loading-spinner" aria-hidden="true"></div><h2>Loading GamePlan…</h2><p>Fetching the latest jobs, customers, and schedule.</p></div>`;
+}
+
+function updateDataStatus() {
+  if (state.refreshing) {
+    dataStatus.textContent = state.ready ? "Refreshing…" : "Loading…";
+    dataStatus.className = "demo loading";
+  } else if (state.live) {
+    dataStatus.textContent = state.loadDurationMs ? `Live CMS · ${(state.loadDurationMs / 1000).toFixed(1)}s` : "Live CMS";
+    dataStatus.className = "demo live";
+  } else if (state.cached) {
+    const stamp = state.lastUpdated ? new Date(state.lastUpdated).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"}) : "earlier";
+    dataStatus.textContent = `Cached · ${stamp}`;
+    dataStatus.className = "demo cached";
+  } else {
+    dataStatus.textContent = "Offline";
+    dataStatus.className = "demo error";
+  }
+}
+
+function applyBootstrapData(data, {cached = false, timestamp = new Date().toISOString()} = {}) {
+  state.jobs = Array.isArray(data.jobs) ? data.jobs : [];
+  if (Array.isArray(data.customers) && data.customers.length) state.customers = data.customers;
+  state.equipmentTypes = Array.isArray(data.equipmentTypes) ? data.equipmentTypes : [];
+  state.jobTypes = Array.isArray(data.jobTypes) ? data.jobTypes : [];
+  state.accessConditions = Array.isArray(data.accessConditions) ? data.accessConditions : [];
+  state.products = Array.isArray(data.products) ? data.products : [];
+  state.brands = Array.isArray(data.brands) ? data.brands : [];
+  state.fulfillmentConditions = Array.isArray(data.fulfillmentConditions) ? data.fulfillmentConditions : [];
+  state.availabilityRules = Array.isArray(data.availabilityRules) ? data.availabilityRules : [];
+  state.blackoutDates = Array.isArray(data.blackoutDates) ? data.blackoutDates : [];
+  state.pricingSettings = data.pricingSettings || {};
+  state.currentUser = cached
+    ? (state.currentUser || { displayName: "", email: "", roleName: "Employee", permissions: {} })
+    : (data.currentUser || { displayName: "", email: "", roleName: "Employee", permissions: {} });
+  state.staffChoices = cached ? (state.staffChoices || []) : (data.staffChoices || []);
+  state.ready = true;
+  dismissStartupSplash();
+  state.cached = cached;
+  state.live = !cached;
+  state.lastUpdated = timestamp;
+  state.loadError = "";
+}
+
+async function ensureDataset(kind) {
+  const loadedKey = `${kind}Loaded`;
+  const loadingKey = `${kind}Loading`;
+  if (state.datasets[loadedKey] || state.datasets[loadingKey]) return;
+  state.datasets[loadingKey] = true;
+  go(location.hash.slice(1) || "today");
+  try {
+    const data = kind === "directory" ? await api.getDirectory() : await api.getHistory();
+    if (Array.isArray(data.customers) && data.customers.length) state.customers = data.customers;
+    if (Array.isArray(data.jobs)) {
+      const merged = new Map(state.jobs.map(job => [String(job.id), job]));
+      data.jobs.forEach(job => merged.set(String(job.id), { ...(merged.get(String(job.id)) || {}), ...job }));
+      state.jobs = [...merged.values()];
+    }
+    state.datasets[loadedKey] = true;
+  } catch (error) {
+    console.error(error);
+    toast(error.message || `${kind === "directory" ? "Customer roster" : "Job history"} could not be loaded.`);
+  } finally {
+    state.datasets[loadingKey] = false;
+    go(location.hash.slice(1) || "today");
+  }
+}
+
+function datasetLoadingView(label) {
+  return `<section class="card on-demand-loading"><div class="body"><span class="spinner"></span><h2>Loading ${esc(label)}…</h2><p>GamePlan is retrieving this information only when it is needed.</p></div></section>`;
+}
+
+function loadCachedBootstrap() {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (!raw) return false;
+    const cached = JSON.parse(raw);
+    if (!cached?.data || !cached?.timestamp) return false;
+    if (Date.now() - new Date(cached.timestamp).getTime() > CACHE_MAX_AGE_MS) return false;
+    applyBootstrapData(cached.data, {cached:true, timestamp:cached.timestamp});
+    return true;
+  } catch (error) {
+    console.warn("GamePlan cache could not be read.", error);
+    return false;
+  }
+}
+
+function go(route) {
+  renderCurrentUser();
+  const selected = views[route] ? route : "today";
+  const v = views[selected];
+  title.textContent = v.title;
+  sub.textContent = state.ready ? v.sub : "Preparing your live workspace";
+  view.innerHTML = state.ready ? v.html() : loadingView();
+  document.querySelectorAll("[data-route]").forEach(b => b.classList.toggle("active", b.dataset.route === selected));
+  bindDynamic();
+  document.querySelector("[data-retry-load]")?.addEventListener("click", () => loadLiveData({forceLoading:true}));
+  history.replaceState({}, "", `#${selected}`);
+  if(selected === "jobs" && !state.datasets.historyLoaded && !state.datasets.historyLoading) ensureDataset("history");
+  if(selected === "roster" && !state.datasets.directoryLoaded && !state.datasets.directoryLoading) ensureDataset("directory");
+}
+
+async function loadLiveData({forceLoading = false, forceCms = false} = {}) {
+  if(state.refreshing){
+    state.refreshQueued=true;
+    state.forceRefreshQueued=state.forceRefreshQueued||forceCms;
+    return false;
+  }
+  if (!state.authenticated) {
+    showAuthGate("Sign in with an approved Google account.");
+    return;
+  }
+  if (!api.isConfigured) {
+    state.loadError = "The live CMS URL is not configured.";
+    state.refreshing = false;
+    updateDataStatus();
+    go(location.hash.slice(1) || "today");
+    dismissStartupSplash();
+    return;
+  }
+  const started = performance.now();
+  const routeAtStart=location.hash.slice(1)||"today";
+  const revisionAtStart=state.dataRevision;
+  state.refreshing = true;
+  state.loadError = "";
+  updateDataStatus();
+  if (forceLoading && !state.cached) state.ready = false;
+  if(!state.ready||forceLoading)go(routeAtStart);
+  try {
+    const data = await api.getBootstrap(forceCms);
+    if(revisionAtStart!==state.dataRevision){
+      state.refreshQueued=true;
+      state.forceRefreshQueued=true;
+      console.info("[GamePlan] Ignored a stale CMS response after a newer job update.");
+      return false;
+    }
+    const timestamp = new Date().toISOString();
+    applyBootstrapData(data, {cached:false, timestamp});
+    state.loadDurationMs = Math.round(performance.now() - started);
+    localStorage.setItem(CACHE_KEY, JSON.stringify({timestamp, data}));
+    localStorage.setItem("gameplan-last-bootstrap-ms", String(state.loadDurationMs));
+    console.info(`[GamePlan] Bootstrap ${state.loadDurationMs} ms`);
+    return true;
+  } catch (error) {
+    console.error(error);
+    state.loadError = error.message || "The live CMS did not respond.";
+    if (/sign-in|Google account|authorized|token/i.test(state.loadError)) {
+      sessionStorage.removeItem(GOOGLE_TOKEN_KEY);
+      showAuthGate(state.loadError, true);
+    }
+    if (!state.ready) state.live = false;
+    if (state.cached) toast("Could not refresh. Showing the last successful live data.");
+    return false;
+  } finally {
+    const refreshAgain=state.refreshQueued;
+    const forceAgain=state.forceRefreshQueued;
+    state.refreshQueued=false;
+    state.forceRefreshQueued=false;
+    state.refreshing = false;
+    updateDataStatus();
+    if((location.hash.slice(1)||"today")===routeAtStart)go(routeAtStart);
+    if (!state.ready) dismissStartupSplash();
+    if(refreshAgain)setTimeout(()=>loadLiveData({forceCms:forceAgain}),0);
+  }
+}
+
+async function hardRefreshCms(){
+  if(state.refreshing)return toast("A CMS sync is already running.");
+  showTaskProgress("Syncing CMS","Reading the latest jobs, customers, builds, and schedule directly from GamePlan.");
+  const success=await loadLiveData({forceCms:true});
+  hideTaskProgress();
+  if(success){
+    const stamp=new Date(state.lastUpdated).toLocaleTimeString([],{hour:"numeric",minute:"2-digit"});
+    toast(`CMS sync complete · ${stamp}`);
+  }else{
+    toast("CMS sync could not finish. GamePlan kept the last successful data.");
+  }
+}
+
+document.addEventListener("click", event => {
+  const routeButton = event.target.closest("[data-route]");
+  if (routeButton && !routeButton.closest("#view")) {
+    if (routeButton.dataset.route === "jobs") {
+      jobsViewFilter = "all";
+      jobsViewWeekStart = "";
+    }
+    go(routeButton.dataset.route);
+  }
+});
+
+
+const wizard = document.querySelector("#jobWizard");
+const wizardBackdrop = document.querySelector("#wizardBackdrop");
+const wizardForm = document.querySelector("#jobWizardForm");
+const wizardStepLabel = document.querySelector("#wizardStepLabel");
+const wizardProgress = document.querySelector("#wizardProgress");
+const wizardBack = document.querySelector("#wizardBack");
+const wizardNext = document.querySelector("#wizardNext");
+const wizardTitle = document.querySelector("#wizardTitle");
+const DRAFT_KEY = "gameplan-job-draft-v3-alpha2";
+const UX_STEPS = ["Job Type", "Customer", "Equipment", "Details", "Appointment", "Summary"];
+const blankItem = () => ({
+  condition: "",
+  equipmentTypeId: "",
+  quantity: 1,
+  brandId: "",
+  brand: "",
+  productId: "",
+  model: "",
+  fulfillmentConditionId: "NIB",
+  notes: "",
+  movement: "delivery"
+});
+const blankDraft = () => ({
+  mode: "job",
+  step: 0,
+  customerMode: "new",
+  customerId: "",
+  customerSearch: "",
+  firstName: "",
+  lastName: "",
+  phone: "",
+  email: "",
+  addressId: "",
+  address: "",
+  destinationPlaceId: "",
+  route: null,
+  routeLoading: false,
+  routeError: "",
+  jobTypeId: "",
+  pickupType: "",
+  equipment: [],
+  access: [],
+  destinationId: "",
+  flights: "",
+  scheduledDate: "",
+  scheduledTime: "",
+  internalNotes: "",
+  dismissedCustomerIds: [],
+  moreAccessOpen: false,
+  appointmentWeekStart: "",
+  appointmentView: "dates",
+  editingFromSummary: false,
+  editStep: null,
+  pendingCondition: "",
+  rescheduleJobId: "",
+  rescheduleReturnJobId: "",
+  reschedulePiggyback: false
+});
+let draft = blankDraft();
+function esc(v){return String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#039;"}[c]));}
+function selectedCustomer(){return state.customers.find(c=>c.id===draft.customerId);}
+function selectedType(item){return state.equipmentTypes.find(t=>t.id===item.equipmentTypeId)||{};}
+function optionList(items,current,label="name"){return items.map(x=>`<option value="${esc(x.id)}" ${x.id===current?"selected":""}>${esc(x[label])}</option>`).join("");}
+function normalizePhone(value){
+  const digits=String(value||"").replace(/\D/g,"").slice(0,10);
+  if(digits.length<4)return digits;
+  if(digits.length<7)return `(${digits.slice(0,3)}) ${digits.slice(3)}`;
+  return `(${digits.slice(0,3)}) ${digits.slice(3,6)}-${digits.slice(6)}`;
+}
+function iconNameFor(item, kind="equipment"){
+  const explicit=String(item?.iconName||"").trim().toLowerCase();
+  if(explicit)return explicit;
+  const text=`${item?.id||""} ${item?.name||""}`.toLowerCase();
+  const map=kind==="access"?[
+    ["garage","garage"],["stair","stairs"],["upstairs","upstairs"],["single","single-level"],
+    ["main floor","single-level"],["mobile","mobile-home"],["narrow","narrow"],["hall","hallway"],
+    ["driveway","walkway"],["assembly","assembly"],["gate","gate"]
+  ]:[
+    ["tread","treadmill"],["recumbent","recumbent-bike"],["upright","upright-bike"],["bike","upright-bike"],
+    ["ellipt","elliptical"],["row","rower"],["home gym","home-gym"],["weight bench","bench"],
+    ["weight set","weights"],["squat","squat-rack"],["basket","basketball"],["table tennis","table-tennis"]
+  ];
+  return map.find(([needle])=>text.includes(needle))?.[1]||"equipment";
+}
+function gpIcon(name){
+  const rasterIcons=new Set([
+    "treadmill","upright-bike","recumbent-bike","elliptical","rower","home-gym",
+    "bench","weights","squat-rack","basketball","table-tennis","mobile-home"
+  ]);
+  if(rasterIcons.has(name)){
+    return `<img class="gp-icon gp-icon-raster" src="./assets/icons/${name}.png?v=4.2.0-fix06c" alt="" aria-hidden="true">`;
+  }
+  const paths={
+    "treadmill":`<g transform="scale(.5)"><path d="M5 39h37M9 34h29l3-5H17L11 9M11 9h8M36 29l-6-17h8l5 17M29 12V5h7l3 7"/><path d="M15 34l-2 5M36 34l2 5"/></g>`,
+    "upright-bike":`<g transform="scale(.5)"><path d="M4 39h40M8 34h27l-4-18H17l-5 18M18 16l-1-7h-6M28 16l4-8h6M30 8h10M20 21h8M23 21l-4 8M23 21l7 8"/><circle cx="24" cy="27" r="4"/><path d="M24 27l5 3M23 27l-4-2M6 34h6M35 34h7"/></g>`,
+    "recumbent-bike":`<g transform="scale(.5)"><path d="M4 40h40M8 35h31M14 24h13l8 11H14zM14 24l-5-12H5M9 18h11M27 24l7-8h8M34 16h9M9 35h6M39 35h5"/><circle cx="33" cy="30" r="7"/><circle cx="33" cy="30" r="2"/><path d="M27 30h-7M20 30l-4-3"/></g>`,
+    "elliptical":`<g transform="scale(.5)"><path d="M5 40h38M12 40l7-22 8 22M19 18l-6-11M27 18l8-14M11 9h6M34 4h5M15 34c8-8 15-8 23 0M28 34c-8-8-15-8-21 0"/><circle cx="23" cy="26" r="7"/></g>`,
+    "rower":`<g transform="scale(.5)"><path d="M4 40h41M7 36l31-6M10 36l-3 4M34 31l5 9M14 30h10l-2-5h-7zM22 25l8-10M30 15l6 7M29 16l-7-6M22 10l-3 3"/><circle cx="39" cy="28" r="7"/><circle cx="39" cy="28" r="2"/></g>`,
+    "home-gym":`<g transform="scale(.5)"><path d="M6 42V7h36v35M9 7V3h30v4M14 12v30M34 12v30M14 16h20M18 22h12M19 27h10M20 32h8M14 38h20"/><path d="M9 10h5M34 10h5M17 16l-3 7M31 16l3 7"/></g>`,
+    "bench":`<g transform="scale(.5)"><path d="M6 31h36M10 31l-3 11M38 31l3 11M14 25h21l-3-8H18zM18 17l-2-8M32 17l4-8"/><path d="M5 8h7M3 5v6M14 5v6M36 8h7M34 5v6M45 5v6M12 8h24"/></g>`,
+    "weights":`<g transform="scale(.5)"><path d="M5 31h38M10 31L7 42M38 31l3 11M14 25h20l-3-8H18zM18 17l-2-8M31 17l4-8M5 8h38M3 5v6M8 4v8M40 4v8M45 5v6"/></g>`,
+    "squat-rack":`<g transform="scale(.5)"><path d="M7 43V5M41 43V5M7 10h34M11 43h-8M37 43h8M12 17h24M14 17v7M34 17v7M9 27h30"/><path d="M2 25v5M5 23v9M43 23v9M46 25v5M5 27h38"/></g>`,
+    "basketball":`<g transform="scale(.5)"><path d="M8 5h32v21H8zM24 26v16M15 42h18M12 26l4 5h16l4-5M16 31c1 10 15 10 16 0M18 31l2 7M30 31l-2 7M20 38h8"/></g>`,
+    "table-tennis":`<g transform="scale(.5)"><path d="M11 8c7-7 18-4 22 3s1 15-6 20-15 5-20-2S4 15 11 8zM27 30l14 13M31 36l5-5"/><circle cx="38" cy="9" r="3"/></g>`,
+    "garage":`<path d="M4 20V9l8-5 8 5v11M7 20v-8h10v8M7 15h10"/>`,
+    "single-level":`<path d="M3 11l9-7 9 7M5 10v10h14V10M9 20v-6h6v6"/>`,
+    "mobile-home":`<g transform="scale(.5)"><path d="M4 14h40v24H4zM2 14l4-8h36l4 8M2 14h44M8 38h34M11 38a5 5 0 1 0 10 0M24 38a5 5 0 1 0 10 0M42 38v3h4M31 14v24M34 19h6v13h-6zM35 26h1M8 19h9v8H8zM11 19v8M21 20h6v6h-6z"/></g>`,
+    "stairs":`<path d="M4 19h4v-4h4v-4h4V7h4"/>`,
+    "upstairs":`<g transform="scale(.5)"><path d="M4 39h9v-8h9v-8h9v-8h9M24 42V7M17 14l7-7 7 7"/></g>`,
+    "assembly":`<path d="M14 6a4 4 0 0 0-5 5l-5 5 4 4 5-5a4 4 0 0 0 5-5l-3 3-3-3z"/>`,
+    "narrow":`<path d="M8 4v16M16 4v16M11 12h2M10 10l-2 2 2 2M14 10l2 2-2 2"/>`,
+    "hallway":`<path d="M5 4h14v16H5zM9 4v16M15 4v16"/>`,
+    "walkway":`<path d="M5 20c2-8 5-8 7-16M13 20c1-6 3-8 6-12"/>`,
+    "gate":`<path d="M5 20V6M19 20V6M5 9h14M8 9v11M12 9v11M16 9v11"/>`,
+    "delivery-truck":`<path d="M3 7h11v10H3zM14 10h4l3 3v4h-7z"/><circle cx="7" cy="18" r="2"/><circle cx="18" cy="18" r="2"/>`,
+    "pickup-box":`<path d="M5 8h14v11H5zM5 8l3-4h8l3 4M9 12h6"/><path d="M12 16V10M9.5 12.5 12 10l2.5 2.5"/>`,
+    "delivery-swap":`<path d="M3 7h10v9H3zM13 10h4l3 3v3h-7z"/><circle cx="6" cy="18" r="2"/><circle cx="17" cy="18" r="2"/><path d="M6 4h11M14 2l3 2-3 2"/>`,
+    "calendar":`<rect x="4" y="5" width="16" height="15" rx="2"/><path d="M8 3v4M16 3v4M4 10h16M8 14h3M8 17h6"/>`,
+    "attention":`<path d="M12 3 2.8 20h18.4L12 3zM12 9v5M12 17h.01"/>`,
+    "equipment":`<path d="M5 8h14v11H5zM8 8V5h8v3M9 13h6"/>`
+  };
+  const detailed=new Set(["upstairs"]);
+  return `<svg class="gp-icon ${detailed.has(name)?"gp-icon-detailed":""}" viewBox="0 0 24 24" aria-hidden="true">${paths[name]||paths.equipment}</svg>`;
+}
+function startOfLocalDay(date){const d=new Date(date);d.setHours(0,0,0,0);return d;}
+function addLocalDays(date,n){const d=new Date(date);d.setDate(d.getDate()+n);return d;}
+function dateKeyLocal(date){const d=new Date(date);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;}
+function dateLabel(date){return new Intl.DateTimeFormat("en-US",{weekday:"short",month:"short",day:"numeric"}).format(date);}
+function jobsOnDate(key){
+  return state.jobs.filter(job=>{
+    if (draft.mode === "reschedule" && job.id === draft.rescheduleJobId) return false;
+    const jobKey=String(job.scheduledDate||job.dateISO||job.appointmentDate||job.dateTime||job.date||"").slice(0,10);
+    const status=String(job.status||"").toLowerCase();
+    // A tentative quote is only a request. It must not consume the one-crew
+    // schedule until a manager approves it as Scheduled.
+    return jobKey===key && /scheduled/.test(status) && !/cancel|complete/.test(status);
+  });
+}
+function normalizedWeekday(value){
+  return String(value||"").trim().slice(0,3).toLowerCase();
+}
+function availabilityRuleFor(date){
+  const weekday=normalizedWeekday(new Intl.DateTimeFormat("en-US",{weekday:"long"}).format(date));
+  return state.availabilityRules.find(rule=>normalizedWeekday(rule.day||rule.dayOfWeek||rule.weekday)===weekday)||null;
+}
+function blackoutFor(dateKey){
+  return state.blackoutDates.find(item=>{
+    const start=String(item.startDate||item.date||"").slice(0,10);
+    const end=String(item.endDate||item.startDate||item.date||"").slice(0,10);
+    return start&&dateKey>=start&&dateKey<=end;
+  })||null;
+}
+function schedulePolicyFor(date){
+  const key=dateKeyLocal(date);
+  const blackout=blackoutFor(key);
+  if(blackout)return {normal:false,overrideAllowed:blackout.overrideAllowed!==false,label:"Manager Discretion",detail:blackout.reason||"Blackout date"};
+  const rule=availabilityRuleFor(date);
+  if(rule)return {
+    normal:rule.available!==false,
+    overrideAllowed:rule.overrideAllowed===true,
+    label:rule.available!==false?"Open":"Manager Discretion",
+    detail:rule.available!==false?"Normal delivery day":"Manager override required"
+  };
+  const weekend=date.getDay()===0||date.getDay()===6;
+  return {normal:!weekend,overrideAllowed:weekend,label:weekend?"Manager Discretion":"Open",detail:weekend?"Manager override required":"Normal delivery day"};
+}
+function minutesFromTime(value){
+  const raw=String(value||"").trim();
+  const match=raw.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
+  if(!match)return null;
+  let hour=Number(match[1]);const minute=Number(match[2]);const suffix=(match[3]||"").toUpperCase();
+  if(suffix==="PM"&&hour!==12)hour+=12;if(suffix==="AM"&&hour===12)hour=0;
+  return hour*60+minute;
+}
+function appointmentWeekStart(){
+  if(draft.appointmentWeekStart){const d=new Date(`${draft.appointmentWeekStart}T12:00:00`);if(!Number.isNaN(d.getTime()))return d;}
+  const today=startOfLocalDay(new Date());const day=today.getDay();const monday=addLocalDays(today,-((day+6)%7));
+  draft.appointmentWeekStart=dateKeyLocal(monday);return monday;
+}
+function appointmentWeekLabel(start){
+  const end=addLocalDays(start,6);const sameMonth=start.getMonth()===end.getMonth();
+  const first=new Intl.DateTimeFormat("en-US",{month:"short",day:"numeric"}).format(start);
+  const last=new Intl.DateTimeFormat("en-US",sameMonth?{day:"numeric"}:{month:"short",day:"numeric"}).format(end);
+  return `${first}–${last}`;
+}
+function estimatedDraftMinutes(){
+  // Match the backend contract: round-trip travel + equipment service time
+  // + every selected CMS AccessCondition minute. Store assembly happens
+  // before the delivery appointment and is not added to the crew route.
+  const minutes=quoteBreakdown().laborMinutes;
+  return Math.max(30,Math.ceil(minutes/15)*15);
+}
+function formatEstimatedDuration(minutes=estimatedDraftMinutes()){
+  const hours=Math.floor(minutes/60);const remainder=minutes%60;
+  if(!hours)return `${minutes} minutes`;
+  if(!remainder)return `${hours} ${hours===1?"hour":"hours"}`;
+  return `${hours} ${hours===1?"hour":"hours"} ${remainder} minutes`;
+}
+function jobInterval(job){
+  const start=minutesFromTime(job.scheduledTime||job.time||"");if(start===null)return null;
+  const duration=Math.max(30,Math.round(parseDurationHours(job)*60));
+  return {start,end:start+duration};
+}
+function scheduledConflictsFor(job){
+  if(!job)return [];
+  const date=parseJobDate(job);
+  const interval=jobInterval(job);
+  if(!date||!interval)return [];
+  const key=dateKeyLocal(date);
+  return state.jobs.filter(other=>{
+    if(String(other.id)===String(job.id)||String(other.status).toLowerCase()!=="scheduled")return false;
+    const otherDate=parseJobDate(other);
+    const otherInterval=jobInterval(other);
+    return otherDate&&dateKeyLocal(otherDate)===key&&otherInterval&&interval.start<otherInterval.end&&interval.end>otherInterval.start;
+  });
+}
+function slotConflicts(dateKey,startMinutes,durationMinutes){
+  const end=startMinutes+durationMinutes;
+  return jobsOnDate(dateKey).some(job=>{const interval=jobInterval(job);return interval&&startMinutes<interval.end&&end>interval.start;});
+}
+function slotConflictJobs(dateKey,startMinutes,durationMinutes){
+  const end=startMinutes+durationMinutes;
+  return jobsOnDate(dateKey).filter(job=>{const interval=jobInterval(job);return interval&&startMinutes<interval.end&&end>interval.start;});
+}
+function dayAvailability(date){
+  const today=startOfLocalDay(new Date());
+  if(date<today)return {tone:"past",label:"Past",detail:"Not selectable",disabled:true};
+  const policy=schedulePolicyFor(date);
+  if(!policy.normal)return {
+    tone:policy.overrideAllowed?"approval":"closed",
+    label:policy.label,
+    detail:policy.detail,
+    disabled:!policy.overrideAllowed
+  };
+  const slots=availableSlotsForDate(dateKeyLocal(date));const open=slots.filter(slot=>!slot.disabled&&!slot.piggyback).length;
+  if(open===0)return {tone:"full",label:"Full",detail:"No availability",disabled:true};
+  if(open<=2)return {tone:"nearly",label:"Nearly Full",detail:`${open} open ${open===1?"slot":"slots"}`};
+  if(open<=5)return {tone:"limited",label:"Limited",detail:`${open} open slots`};
+  return {tone:"open",label:"Open",detail:`${open} open slots`};
+}
+function availableSlotsForDate(dateKey){
+  const rescheduleJob=draft.mode==="reschedule"?state.jobs.find(job=>String(job.id)===String(draft.rescheduleJobId)):null;
+  const duration=rescheduleJob?Math.max(30,Math.round(parseDurationHours(rescheduleJob)*60)):estimatedDraftMinutes();
+  const date=new Date(`${dateKey}T12:00:00`);
+  const policy=schedulePolicyFor(date);
+  const rule=availabilityRuleFor(date);
+  const opening=minutesFromTime(rule?.startTime)||600;
+  const closing=minutesFromTime(rule?.endTime)||840;
+  const increment=Math.max(15,Number(rule?.slotIntervalMinutes)||30);
+  const values=[];
+  for(let minute=opening;minute<=closing;minute+=increment)values.push(`${String(Math.floor(minute/60)).padStart(2,"0")}:${String(minute%60).padStart(2,"0")}`);
+  return values.map(value=>{
+    const mins=minutesFromTime(value);
+    const conflicts=slotConflictJobs(dateKey,mins,duration);
+    const managerPiggyback=draft.mode==="reschedule"&&conflicts.length>0&&can("canOverrideConflict");
+    const disabled=conflicts.length>0&&!managerPiggyback;
+    const tone=managerPiggyback?"piggyback":disabled?"unavailable":!policy.normal?"approval":mins<720?"preferred":mins<780?"limited":mins<840?"approval":"rare";
+    const [h,m]=value.split(":").map(Number);
+    const label=new Intl.DateTimeFormat("en-US",{hour:"numeric",minute:"2-digit"}).format(new Date(2026,0,1,h,m));
+    return {value,label,tone,disabled,managerOverride:!policy.normal,piggyback:managerPiggyback,conflicts};
+  });
+}
+function timeSlotsForSelectedDate(){return draft.scheduledDate?availableSlotsForDate(draft.scheduledDate):[];}
+function quoteBreakdown(){
+  const settings=state.pricingSettings||{};const crew=crewSize();
+  const roundTripMiles=Number(draft.route?.roundTripDistanceMiles||0);
+  const travelMinutes=Number(draft.route?.roundTripTravelMinutes||0);
+  let serviceMinutes=0,assemblyCharge=0,disposalCharge=0,usedItemCharge=0;
+  const pickupType=normalizedPickupType(draft.pickupType);
+  const disposal=pickupType==="Disposal";
+  let hasPickupItem=false;
+  draft.equipment.forEach(item=>{
+    const type=selectedType(item);const qty=Math.max(1,Number(item.quantity||1));
+    if(itemMovement(item)==="pickup"){
+      hasPickupItem=true;
+      serviceMinutes+=qty*Number(type.pickupMinutes||0);
+      if(disposal)disposalCharge+=qty*Number(type.defaultDisposalCharge??50);
+    }else{
+      serviceMinutes+=qty*Number(type.deliveryMinutes||0);
+      if(item.condition==="New")assemblyCharge+=qty*Number(type.defaultAssemblyCharge??50);
+      else usedItemCharge+=qty*Number(settings.usedItemDeliveryCharge||0);
+    }
+  });
+  const selectedAccess=draft.access.map(id=>state.accessConditions.find(a=>String(a.id)===String(id))).filter(Boolean);
+  const accessMinutes=selectedAccess.reduce((n,a)=>n+Number(a.defaultMinutes||0),0);
+  const accessFlatCharge=selectedAccess.reduce((n,a)=>n+Number(a.flatCharge||0),0);
+  const laborMinutes=travelMinutes+serviceMinutes+accessMinutes;
+  const laborCharge=laborMinutes/60*crew*Number(settings.laborRatePerEmployeeHour||0);
+  const mileageCharge=roundTripMiles*Number(settings.vehicleRatePerMile||0);
+  const baseTripCharge=Number(settings.baseTripCharge||0);
+  const tradeInPickupDiscount=pickupType==="Trade-In"&&hasPickupItem
+    ? Math.max(0,Number(settings.tradeInPickupDiscount||0))
+    : 0;
+  const subtotal=Math.max(0,baseTripCharge+mileageCharge+laborCharge+usedItemCharge+assemblyCharge+disposalCharge+accessFlatCharge-tradeInPickupDiscount);
+  const minimum=Math.max(0,Number(settings.minimumServiceCharge||0)-subtotal);
+  const increment=Math.max(1,Number(settings.priceRoundingIncrement||5));
+  return {crew,roundTripMiles,travelMinutes,serviceMinutes,accessMinutes,laborMinutes,baseTripCharge,mileageCharge,laborCharge,usedItemCharge,assemblyCharge,disposalCharge,accessFlatCharge,tradeInPickupDiscount,subtotal,minimum,roundedTotal:Math.round((subtotal+minimum)/increment)*increment};
+}
+function quoteEstimate(){return quoteBreakdown().roundedTotal;}
+function crewSize(){return Math.max(1,...draft.equipment.map(item=>{
+  const type=selectedType(item);const product=state.products.find(value=>value.id===item.productId);
+  return Number(product?.defaultCrewSize||type.defaultCrewSize||type.minimumCrewSize||2);
+}));}
+async function openWizard(){
+  if(!state.datasets.directoryLoaded){
+    showTaskProgress("Loading customer directory…","Preparing customer search for the new appointment.");
+    await ensureDataset("directory");
+    hideTaskProgress();
+    if(!state.datasets.directoryLoaded)return;
+  }
+  // A tap on New Job always begins a new workflow. Draft data is preserved only
+  // while moving between screens in the currently open wizard.
+  localStorage.removeItem(DRAFT_KEY);
+  draft=blankDraft();
+  draft.mode="job";
+  draft.step=0;
+  wizardTitle.textContent="New Job";
+  renderWizard();wizard.classList.add("open");wizardBackdrop.classList.add("open");wizard.setAttribute("aria-hidden","false");
+}
+function openReschedule(jobId){
+  const job=state.jobs.find(item=>item.id===jobId);
+  if(!job)return toast("Job could not be found.");
+  localStorage.removeItem(DRAFT_KEY);
+  draft=blankDraft();
+  draft.mode="reschedule";
+  draft.rescheduleJobId=job.id;
+  draft.rescheduleReturnJobId=job.id;
+  draft.step=4;
+  const dt=job.dateTime?new Date(job.dateTime):null;
+  if(dt&&!Number.isNaN(dt.getTime())){
+    draft.scheduledDate=dateKeyLocal(dt);
+    draft.scheduledTime=`${String(dt.getHours()).padStart(2,"0")}:${String(dt.getMinutes()).padStart(2,"0")}`;
+    draft.appointmentWeekStart=draft.scheduledDate;
+  }
+  draft.appointmentView="dates";
+  wizardTitle.textContent="Reschedule Job";
+  closeJob();
+  renderWizard();
+  wizard.classList.add("open");
+  wizardBackdrop.classList.add("open");
+  wizard.setAttribute("aria-hidden","false");
+}
+function closeWizard(){document.querySelector("#pickupPurposePrompt")?.remove();wizard.classList.remove("open");wizardBackdrop.classList.remove("open");wizard.setAttribute("aria-hidden","true");}
+function waitForReward(ms){
+  return new Promise(resolve=>window.setTimeout(resolve,ms));
+}
+async function showQuoteReserved(result, savedJob){
+  const existing=document.querySelector("#quoteReservedReward");
+  existing?.remove();
+  const reward=document.createElement("section");
+  reward.id="quoteReservedReward";
+  reward.className="quote-reserved-reward";
+  reward.tabIndex=0;
+  const appointment=savedJob?.dateTime?new Date(savedJob.dateTime):null;
+  const appointmentLabel=appointment&&!Number.isNaN(appointment.getTime())
+    ?new Intl.DateTimeFormat("en-US",{weekday:"short",month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}).format(appointment)
+    :"Tentative appointment saved";
+  reward.innerHTML=`<div class="quote-reward-card" role="status" aria-live="polite">
+    <div class="quote-reward-check"><svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="27"></circle><path d="m19 33 9 9 18-21"></path></svg></div>
+    <h2>Quote Reserved!</h2>
+    <p>${esc(appointmentLabel)}</p>
+    <strong>Quote #${esc(result.jobNumber||savedJob?.number||result.jobId||"Saved")}</strong>
+    <small>Tap anywhere to continue</small>
+  </div>`;
+  document.body.appendChild(reward);
+  requestAnimationFrame(()=>reward.classList.add("show"));
+  await Promise.race([
+    waitForReward(window.matchMedia("(prefers-reduced-motion: reduce)").matches?400:1800),
+    new Promise(resolve=>reward.addEventListener("click",resolve,{once:true}))
+  ]);
+  reward.classList.remove("show");
+  await waitForReward(180);
+  reward.remove();
+}
+function showEquipmentDetailsChoice(job){
+  const existing=document.querySelector("#equipmentDetailsChoice");
+  existing?.remove();
+  const choice=document.createElement("section");
+  choice.id="equipmentDetailsChoice";
+  choice.className="equipment-details-choice show";
+  choice.innerHTML=`<div class="equipment-choice-card" role="dialog" aria-modal="true" aria-labelledby="equipmentChoiceTitle">
+    <div class="equipment-choice-icon">${gpIcon("assembly")}</div>
+    <small>QUOTE RESERVED</small>
+    <h2 id="equipmentChoiceTitle">Add Equipment Details</h2>
+    <p>Add make, model, notes, and photos now, or safely finish later from Needs Attention.</p>
+    <button type="button" class="button equipment-now">Add Details Now</button>
+    <button type="button" class="button neutral equipment-later">Skip for Later</button>
+  </div>`;
+  document.body.appendChild(choice);
+  choice.querySelector(".equipment-now").onclick=()=>{choice.remove();openCompleteDetails(job.id);};
+  choice.querySelector(".equipment-later").onclick=()=>{choice.remove();go("today");toast("Equipment details are saved in Needs Attention for later.");};
+}
+function saveDraft(show=true){sync();localStorage.setItem(DRAFT_KEY,JSON.stringify(draft));if(show)toast("Saved to finish later on this device.");}
+function stepHeading(title,subtitle){return `<div class="ux-step"><div class="ux-step__heading"><h2>${title}</h2><p>${subtitle}</p></div>`;}
+function resolveJobType(kind){
+  const types=state.jobTypes||[];
+  const normalized=types.map(item=>({...item,search:`${item.id||""} ${item.name||""}`.toLowerCase()}));
+  if(kind==="delivery-pickup") return normalized.find(item=>/delivery/.test(item.search)&&/pickup|pick up/.test(item.search));
+  if(kind==="pickup") return normalized.find(item=>/pickup|pick up/.test(item.search)&&!/delivery/.test(item.search));
+  return normalized.find(item=>/delivery/.test(item.search)&&!/pickup|pick up/.test(item.search));
+}
+function jobTypeCard(kind,label,description,icon){
+  const type=resolveJobType(kind);
+  return `<button type="button" class="job-type-card" data-job-type-choice="${kind}" ${type?"":"disabled"}><i>${gpIcon(icon)}</i><span><b>${label}</b><small>${type?description:"This job type is not active in the CMS."}</small></span><em>›</em></button>`;
+}
+function jobTypeStep(){
+  return `${stepHeading("What type of job is this?","Choose one to continue.")}
+    <div class="job-type-card-list" role="radiogroup" aria-label="Job type">
+      ${jobTypeCard("delivery","Delivery","Deliver equipment to the customer.","delivery-truck")}
+      ${jobTypeCard("pickup","Pickup","Pick up equipment from the customer.","pickup-box")}
+      ${jobTypeCard("delivery-pickup","Delivery & Pickup","Deliver equipment and bring another item back.","delivery-swap")}
+    </div>
+    <p class="ux-helper job-type-helper">One tap moves directly to Customer Information.</p>
+  </div>`;
+}
+function openPickupPurposePrompt(kind,type){
+  document.querySelector("#pickupPurposePrompt")?.remove();
+  const prompt=document.createElement("section");
+  prompt.id="pickupPurposePrompt";
+  prompt.className="ux-sheet-backdrop open pickup-purpose-prompt";
+  prompt.innerHTML=`<section class="ux-sheet" role="dialog" aria-modal="true" aria-labelledby="pickupPurposeTitle">
+    <div class="ux-sheet-handle"></div>
+    <small>PICKUP PURPOSE</small>
+    <h3 id="pickupPurposeTitle">Is this pickup for Trade-In or Disposal?</h3>
+    <p class="ux-helper">This choice determines the pickup charge and follows the job through final inspection.</p>
+    <div class="pickup-purpose-actions">
+      <button type="button" class="pickup-purpose-choice trade-in" data-pickup-purpose="Trade-In"><i>${gpIcon("pickup-box")}</i><span><b>Trade-In</b><small>No disposal pickup charge</small></span><em>›</em></button>
+      <button type="button" class="pickup-purpose-choice disposal" data-pickup-purpose="Disposal"><i>${gpIcon("equipment")}</i><span><b>Disposal</b><small>CMS disposal charge per item</small></span><em>›</em></button>
+    </div>
+    <button type="button" class="button neutral" data-cancel-pickup-purpose>Back</button>
+  </section>`;
+  wizard.appendChild(prompt);
+  prompt.querySelector("[data-cancel-pickup-purpose]").onclick=()=>{prompt.remove();draft.jobTypeId="";draft.pickupType="";};
+  prompt.querySelectorAll("[data-pickup-purpose]").forEach(button=>button.onclick=()=>{
+    draft.jobTypeId=type.id;
+    draft.pickupType=button.dataset.pickupPurpose;
+    draft.step=1;
+    prompt.remove();
+    saveDraft(false);
+    renderWizard();
+    toast(`${draft.pickupType} pickup selected.`);
+  });
+}
+function customerText(value){
+  return String(value||"").trim().toLowerCase().replace(/[^a-z0-9]+/g," ").replace(/\s+/g," ").trim();
+}
+function customerPhoneDigits(value){return String(value||"").replace(/\D/g,"");}
+function customerAddresses(customer){return Array.isArray(customer?.addresses)?customer.addresses:[];}
+function customerAddressKey(value){
+  return customerText(value).replace(/\b(united states|usa)\b/g,"")
+    .replace(/\b(street)\b/g,"st").replace(/\b(avenue)\b/g,"ave").replace(/\b(road)\b/g,"rd")
+    .replace(/\b(drive)\b/g,"dr").replace(/\b(boulevard)\b/g,"blvd").replace(/\s+/g," ").trim();
+}
+function uniqueCustomerAddresses(customer){
+  const unique=new Map();
+  customerAddresses(customer).forEach(address=>{
+    const key=String(address?.placeId||"").trim()||customerAddressKey(address?.address||address?.formattedAddress);
+    if(!key)return;
+    const existing=unique.get(key);
+    if(!existing||address?.default)unique.set(key,address);
+  });
+  return [...unique.values()];
+}
+function customerAutofillValues(customer){
+  const fullName=String(customer?.name||customer?.customerName||"").trim();
+  const nameParts=fullName.split(/\s+/).filter(Boolean);
+  const firstName=String(customer?.firstName||customer?.givenName||nameParts.shift()||"").trim();
+  const lastName=String(customer?.lastName||customer?.familyName||nameParts.join(" ")||"").trim();
+  const phone=String(customer?.phone||customer?.phoneNumber||customer?.mobile||"").trim();
+  const addresses=uniqueCustomerAddresses(customer);
+  const preferred=addresses.find(item=>item?.default===true||String(item?.default).toLowerCase()==="true")||addresses[0]||{};
+  const address=String(preferred?.address||preferred?.formattedAddress||customer?.address||customer?.deliveryAddress||"").trim();
+  return {firstName,lastName,phone:normalizePhone(phone),address};
+}
+function rankCustomerMatches(){
+  const first=customerText(draft.firstName);
+  const last=customerText(draft.lastName);
+  const phone=customerPhoneDigits(draft.phone);
+  const address=customerText(draft.address);
+  const dismissed=new Set((Array.isArray(draft.dismissedCustomerIds)?draft.dismissedCustomerIds:[]).map(String));
+  const hasName=first.length>=2&&last.length>=2;
+  const hasFullPhone=phone.length===10;
+  const hasFullAddress=address.length>=10&&address.split(" ").length>=3;
+  if(!hasName&&!hasFullPhone&&!hasFullAddress)return [];
+
+  return state.customers.map(customer=>{
+    if(dismissed.has(String(customer.id)))return null;
+    const values=customerAutofillValues(customer);
+    const cFirst=customerText(values.firstName);
+    const cLast=customerText(values.lastName);
+    const cPhone=customerPhoneDigits(values.phone);
+    const addresses=[...uniqueCustomerAddresses(customer).map(a=>customerText(a.address||a.formattedAddress)),customerText(values.address)].filter(Boolean);
+
+    const exactFirst=hasName&&cFirst===first;
+    const exactLast=hasName&&cLast===last;
+    const closeFirst=hasName&&first.length>=3&&cFirst.length>=3&&(cFirst.startsWith(first)||first.startsWith(cFirst));
+    const closeLast=hasName&&last.length>=3&&cLast.length>=3&&(cLast===last||cLast.endsWith(` ${last}`)||last.endsWith(` ${cLast}`));
+    const strongName=hasName&&((exactFirst&&exactLast)||((exactFirst||closeFirst)&&(exactLast||closeLast)));
+    const exactPhone=hasFullPhone&&cPhone.length===10&&cPhone===phone;
+    const exactAddress=hasFullAddress&&addresses.some(a=>a===address);
+
+    // Once a full phone or a complete name has been entered, conflicting data
+    // should disqualify a weak address-only result.
+    const phoneConflict=hasFullPhone&&cPhone.length===10&&!exactPhone;
+    const nameConflict=hasName&&!strongName;
+
+    let score=0;const reasons=[];
+    if(exactPhone){score+=140;reasons.push("Exact phone match");}
+    if(strongName){score+=90;reasons.push(exactFirst&&exactLast?"Exact name match":"Strong name match");}
+    if(exactAddress){score+=70;reasons.push("Exact address match");}
+
+    const qualifies=exactPhone||strongName||(exactAddress&&!phoneConflict&&!nameConflict)||(strongName&&exactAddress);
+    if(!qualifies)return null;
+    if(phoneConflict&&!strongName)return null;
+    if(nameConflict&&!exactPhone)return null;
+
+    return {customer,score,reasons:[...new Set(reasons)]};
+  }).filter(Boolean)
+    .sort((a,b)=>b.score-a.score||String(a.customer.name||"").localeCompare(String(b.customer.name||"")))
+    .slice(0,5);
+}
+function customerCandidateMarkup(match, secondary=false){
+  const {customer,reasons,score}=match;
+  const values=customerAutofillValues(customer);
+  const confidence=score>=130?"Strong match":"Possible match";
+  return `<article class="ux-match__candidate${secondary?" ux-match__candidate--secondary":""}"><div><span class="ux-match__confidence">${confidence} · ${esc(reasons[0]||"Customer details match")}</span><b>${esc(customer.name||`${values.firstName} ${values.lastName}`.trim())}</b><small>${esc(values.phone||"")}${values.address?`<br>${esc(values.address)}`:""}</small></div><div class="ux-match__actions"><button type="button" class="ux-match__use" data-select-customer="${esc(customer.id)}">Use Customer</button><button type="button" class="ux-match__edit" data-edit-customer="${esc(customer.id)}">Edit</button><button type="button" class="ux-match__dismiss" data-dismiss-customer="${esc(customer.id)}">Not This One</button></div></article>`;
+}
+function customerMatchMarkup(){
+  if(draft.customerId){
+    const customer=selectedCustomer();
+    if(customer)return `<section class="ux-match ux-match--confirmed"><div class="ux-match__title"><span><b>Existing customer selected</b><small>${esc(customer.name)}</small></span><strong>✓</strong></div><div class="ux-match__confirmed-actions"><button type="button" class="ux-match__edit" data-edit-customer="${esc(customer.id)}">Edit customer</button><button type="button" class="ux-match__change" data-clear-customer>Change customer</button></div></section>`;
+  }
+  const matches=rankCustomerMatches();
+  if(!matches.length)return "";
+  const [primary,...others]=matches;
+  return `<section class="ux-match ux-match--attention" role="status" aria-live="polite"><div class="ux-match__title"><span><b>Possible customer match</b><small>Review before creating a duplicate record.</small></span><strong>!</strong></div><div class="ux-match__list">${customerCandidateMarkup(primary)}${others.length?`<details class="ux-match__others"><summary>${others.length} other possible match${others.length===1?"":"es"}</summary><div class="ux-match__other-list">${others.map(match=>customerCandidateMarkup(match,true)).join("")}</div></details>`:""}</div></section>`;
+}
+function customerStep(){
+  const phone=normalizePhone(draft.phone);
+  return `${stepHeading("Customer Information","Who is this job for?")}
+    <div id="customerMatchMount">${customerMatchMarkup()}</div>
+    <div class="ux-form-stack">
+      <label class="ux-field"><span>Customer Name</span><div class="ux-name-grid"><input name="firstName" autocomplete="given-name" placeholder="First name" value="${esc(draft.firstName)}"><input name="lastName" autocomplete="family-name" placeholder="Last name" value="${esc(draft.lastName)}"></div></label>
+      <label class="ux-field"><span>Phone Number</span><input name="phone" inputmode="tel" autocomplete="tel" placeholder="(831) 555-1234" value="${esc(phone)}"></label>
+      <label class="ux-field"><span>Delivery Address</span><div class="gameplan-address-control" data-address-autocomplete><input name="address" autocomplete="off" autocapitalize="words" enterkeyhint="search" placeholder="Start typing an address" value="${esc(draft.address)}"><div class="gameplan-address-suggestions" data-address-suggestions hidden></div></div><small>${draft.routeLoading?"Calculating round-trip distance and time…":draft.route?`${Number(draft.route.roundTripDistanceMiles||0).toFixed(1)} round-trip miles · ${draft.route.roundTripTravelMinutes} travel minutes`:draft.routeError?esc(draft.routeError):"Select a Google address to calculate travel."}</small></label>
+    </div>
+  </div>`;
+}
+function bindCustomerMatchActions(){
+  wizardForm.querySelectorAll("[data-edit-customer]").forEach(el=>el.onclick=()=>openCustomerEditor(el.dataset.editCustomer));
+  wizardForm.querySelectorAll("[data-select-customer]").forEach(el=>el.onclick=()=>{
+    const c=state.customers.find(x=>String(x.id)===String(el.dataset.selectCustomer));if(!c)return;
+    // Capture any current form edits first, then replace them with the chosen customer.
+    // Do not call saveDraft() here because saveDraft() syncs the old form values
+    // back into draft before the screen is re-rendered.
+    sync();
+    const values=customerAutofillValues(c);
+    draft.customerId=c.id;
+    draft.firstName=values.firstName;
+    draft.lastName=values.lastName;
+    draft.phone=values.phone;
+    draft.address=values.address||draft.address;
+    const preferredAddress=uniqueCustomerAddresses(c).find(address=>address.default)||uniqueCustomerAddresses(c)[0];
+    draft.addressId=preferredAddress?.id||"";
+    draft.destinationPlaceId=preferredAddress?.placeId||"";
+    draft.route=null;
+    draft.dismissedCustomerIds=[];
+    localStorage.setItem(DRAFT_KEY,JSON.stringify(draft));
+    renderWizard();
+    if(draft.address)calculateDraftRoute();
+  });
+  wizardForm.querySelectorAll("[data-dismiss-customer]").forEach(el=>el.onclick=()=>{
+    const id=el.dataset.dismissCustomer;
+    draft.dismissedCustomerIds=[...new Set([...(draft.dismissedCustomerIds||[]),id])];
+    updateCustomerMatchMount();
+  });
+  wizardForm.querySelector("[data-clear-customer]")?.addEventListener("click",()=>{
+    draft.customerId="";draft.addressId="";draft.dismissedCustomerIds=[];updateCustomerMatchMount();
+  });
+}
+
+async function bindCustomerEditorAddressAutocomplete(editor){
+  const mount=editor.querySelector("[data-customer-editor-address]");
+  const input=mount?.querySelector('input[name="newAddress"]');
+  const suggestionsMount=mount?.querySelector("[data-address-suggestions]");
+  if(!mount||!input||!suggestionsMount)return()=>({address:input?.value.trim()||"",placeId:""});
+  let selectedPlaceId="",predictions=[],debounceTimer=0,requestNumber=0;
+  const hide=()=>{suggestionsMount.hidden=true;suggestionsMount.replaceChildren();};
+  const predictionText=value=>typeof value==="string"?value:(value?.toString?.()!=="[object Object]"?value?.toString?.():String(value?.text||""));
+  try{
+    await loadPlacesLibrary();
+    if(!document.body.contains(editor))return()=>({address:input.value.trim(),placeId:selectedPlaceId});
+    const {AutocompleteSessionToken,AutocompleteSuggestion}=await google.maps.importLibrary("places");
+    let sessionToken=new AutocompleteSessionToken();
+    input.addEventListener("input",()=>{
+      selectedPlaceId="";
+      clearTimeout(debounceTimer);
+      const query=input.value.trim(),thisRequest=++requestNumber;
+      if(query.length<3){predictions=[];hide();return;}
+      suggestionsMount.innerHTML='<div class="gameplan-address-loading">Finding addresses…</div>';suggestionsMount.hidden=false;
+      debounceTimer=setTimeout(async()=>{
+        try{
+          const response=await AutocompleteSuggestion.fetchAutocompleteSuggestions({input:query,includedRegionCodes:["us"],sessionToken});
+          if(thisRequest!==requestNumber||input.value.trim()!==query)return;
+          predictions=(response.suggestions||[]).map(item=>item.placePrediction).filter(Boolean);
+          suggestionsMount.innerHTML=predictions.length?predictions.map((prediction,index)=>{
+            const main=predictionText(prediction.structuredFormat?.mainText),secondary=predictionText(prediction.structuredFormat?.secondaryText),full=predictionText(prediction.text);
+            return `<button type="button" class="gameplan-address-suggestion" data-customer-address-suggestion="${index}"><b>${esc(main||full)}</b>${secondary?`<small>${esc(secondary)}</small>`:""}</button>`;
+          }).join(""):'<div class="gameplan-address-empty">No matching addresses found.</div>';
+          suggestionsMount.hidden=false;
+        }catch(error){if(thisRequest===requestNumber){predictions=[];suggestionsMount.innerHTML='<div class="gameplan-address-empty">Google addresses are temporarily unavailable.</div>';}}
+      },250);
+    });
+    suggestionsMount.addEventListener("pointerdown",event=>event.preventDefault());
+    suggestionsMount.addEventListener("click",async event=>{
+      const button=event.target.closest("[data-customer-address-suggestion]");
+      const prediction=button?predictions[Number(button.dataset.customerAddressSuggestion)]:null;
+      if(!prediction)return;
+      input.disabled=true;suggestionsMount.innerHTML='<div class="gameplan-address-loading">Selecting address…</div>';
+      try{
+        const place=prediction.toPlace();
+        await place.fetchFields({fields:["id","formattedAddress"]});
+        if(!place.formattedAddress)throw new Error("Google did not return a complete address.");
+        input.value=place.formattedAddress;selectedPlaceId=place.id||"";sessionToken=new AutocompleteSessionToken();hide();
+      }catch(error){selectedPlaceId="";suggestionsMount.innerHTML=`<div class="gameplan-address-empty">${esc(error.message||"Address selection failed.")}</div>`;}
+      finally{input.disabled=false;input.focus();}
+    });
+    input.addEventListener("blur",()=>setTimeout(hide,180));
+  }catch(error){
+    input.autocomplete="street-address";
+    mount.parentElement?.querySelector("[data-editor-address-help]")?.replaceChildren(document.createTextNode("Google suggestions are unavailable; enter the complete address."));
+  }
+  return()=>({address:input.value.trim(),placeId:selectedPlaceId});
+}
+
+function openCustomerEditor(customerId,{returnToRoster=false}={}){
+  const customer=state.customers.find(item=>String(item.id)===String(customerId));
+  if(!customer)return toast("Customer could not be found.");
+  document.querySelector("#customerEditor")?.remove();
+  const addresses=uniqueCustomerAddresses(customer);
+  const editor=document.createElement("section");
+  editor.id="customerEditor";
+  editor.className="customer-editor";
+  editor.innerHTML=`<form class="customer-editor-card" aria-labelledby="customerEditorTitle">
+    <header><div><small>EXISTING CUSTOMER</small><h2 id="customerEditorTitle">Edit Customer</h2></div><button type="button" data-close-customer-editor aria-label="Close">×</button></header>
+    <div class="customer-editor-grid"><label><span>First Name</span><input name="firstName" value="${esc(customer.firstName||"")}"></label><label><span>Last Name</span><input name="lastName" value="${esc(customer.lastName||"")}"></label></div>
+    <label><span>Phone Number</span><input name="phone" inputmode="tel" value="${esc(normalizePhone(customer.phone||""))}"></label>
+    <label><span>Email <small>(Optional)</small></span><input name="email" type="email" value="${esc(customer.email||"")}"></label>
+    <fieldset><legend>Saved Addresses</legend>${addresses.map((address,index)=>`<div class="customer-address-row" data-customer-address-row="${esc(address.id)}"><label><input type="radio" name="defaultAddressId" value="${esc(address.id)}" ${address.default||(!addresses.some(item=>item.default)&&index===0)?"checked":""}><span><b>${esc(address.label||"Service Address")}</b><small>${esc(address.address)}</small></span></label>${(isManager()||state.currentUser?.sharedAccount)&&addresses.length>1?`<button type="button" data-deactivate-customer-address="${esc(address.id)}">Deactivate</button>`:""}</div>`).join("")}</fieldset>
+    <label><span>Add Another Address <small>(Optional)</small></span><div class="gameplan-address-control" data-customer-editor-address><input name="newAddress" autocomplete="off" placeholder="Start typing an address" value=""><div class="gameplan-address-suggestions" data-address-suggestions hidden></div></div></label>
+    <p class="customer-editor-help" data-editor-address-help">Select a Google address so travel time and pricing can be calculated. Previous addresses remain available.</p>
+    <div class="customer-editor-error" data-customer-editor-error></div>
+    <footer><button type="button" class="button neutral" data-close-customer-editor>Cancel</button><button type="submit" class="button customer-save">Save Customer</button></footer>
+  </form>`;
+  document.body.appendChild(editor);
+  const form=editor.querySelector("form");
+  let readNewAddress=()=>({address:String(form.elements.newAddress?.value||"").trim(),placeId:""});
+  bindCustomerEditorAddressAutocomplete(editor).then(reader=>{readNewAddress=reader;});
+  let deactivateAddressId="";
+  editor.querySelectorAll("[data-close-customer-editor]").forEach(button=>button.onclick=()=>editor.remove());
+  editor.addEventListener("click",event=>{if(event.target===editor)editor.remove();});
+  editor.querySelectorAll("[data-deactivate-customer-address]").forEach(button=>button.onclick=()=>{
+    const id=button.dataset.deactivateCustomerAddress;
+    if(!window.confirm("Deactivate this saved address? A manager PIN will be required when saving."))return;
+    deactivateAddressId=id;
+    editor.querySelector(`[data-customer-address-row="${CSS.escape(id)}"]`)?.classList.add("pending-deactivation");
+    button.disabled=true;button.textContent="Will deactivate";
+  });
+  form.querySelector('[name="phone"]').addEventListener("input",event=>event.target.value=normalizePhone(event.target.value));
+  form.onsubmit=async event=>{
+    event.preventDefault();
+    const errorBox=form.querySelector("[data-customer-editor-error]");
+    const saveButton=form.querySelector(".customer-save");
+    const data=new FormData(form);
+    const selectedNewAddress=readNewAddress();
+    const payload={
+      customerId:customer.id,firstName:String(data.get("firstName")||"").trim(),lastName:String(data.get("lastName")||"").trim(),
+      phone:normalizePhone(data.get("phone")),email:String(data.get("email")||"").trim(),
+      defaultAddressId:String(data.get("defaultAddressId")||""),newAddress:selectedNewAddress.address,
+      newAddressPlaceId:selectedNewAddress.placeId,
+      deactivateAddressId
+    };
+    if(!payload.firstName)return void(errorBox.textContent="First name is required.");
+    if(customerPhoneDigits(payload.phone).length!==10)return void(errorBox.textContent="Enter a valid 10-digit phone number.");
+    if(payload.newAddress&&!payload.newAddressPlaceId)return void(errorBox.textContent="Select the new address from the Google suggestions.");
+    saveButton.disabled=true;saveButton.textContent="Saving…";errorBox.textContent="";
+    try{
+      const pinToken=await requestPin("canCreateQuote","Enter your employee PIN to update this customer.");
+      const approvalToken=deactivateAddressId?await requestManagerApproval("A manager PIN is required to deactivate a saved address."):"";
+      const result=await api.saveCustomer(payload,pinToken,approvalToken);
+      touchPinSession();editor.remove();
+      customer.firstName=payload.firstName;customer.lastName=payload.lastName;customer.name=`${payload.firstName} ${payload.lastName}`.trim();
+      customer.phone=payload.phone;customer.email=payload.email;
+      if(payload.newAddress){
+        customer.addresses.forEach(address=>address.default=false);
+        const existing=customer.addresses.find(address=>(payload.newAddressPlaceId&&address.placeId===payload.newAddressPlaceId)||customerAddressKey(address.address)===customerAddressKey(payload.newAddress));
+        if(existing){existing.default=true;existing.placeId=existing.placeId||payload.newAddressPlaceId;}
+        else customer.addresses.push({id:result.defaultAddressId,address:payload.newAddress,placeId:payload.newAddressPlaceId,default:true,label:"Service Address"});
+      }else if(payload.defaultAddressId)customer.addresses.forEach(address=>address.default=String(address.id)===String(payload.defaultAddressId));
+      const updated=customer,values=customerAutofillValues(updated);
+      if(returnToRoster){
+        go("roster");
+        openCustomerRosterProfile(updated.id);
+      }else{
+        draft.customerId=updated.id;draft.firstName=values.firstName;draft.lastName=values.lastName;draft.phone=values.phone;
+        const preferred=uniqueCustomerAddresses(updated).find(address=>address.default)||uniqueCustomerAddresses(updated)[0];
+        if(payload.newAddress||payload.defaultAddressId){draft.address=values.address;draft.addressId=preferred?.id||"";draft.destinationPlaceId=preferred?.placeId||"";draft.route=null;}
+        localStorage.setItem(DRAFT_KEY,JSON.stringify(draft));
+        renderWizard();
+        if(draft.address&&!draft.route)calculateDraftRoute();
+      }
+      toast("Customer record updated.");
+      loadLiveData().catch(error=>console.error("Background customer refresh failed.",error));
+    }catch(error){console.error(error);errorBox.textContent=error.message||"Customer could not be updated.";saveButton.disabled=false;saveButton.textContent="Save Customer";}
+  };
+}
+function updateCustomerMatchMount(){
+  const mount=wizardForm.querySelector("#customerMatchMount");if(!mount)return;
+  mount.innerHTML=customerMatchMarkup();bindCustomerMatchActions();
+}
+let customerMatchTimer=0;
+function scheduleCustomerMatchUpdate(){
+  clearTimeout(customerMatchTimer);
+  customerMatchTimer=setTimeout(updateCustomerMatchMount,260);
+}
+let placesLibraryPromise;
+let routeCalculationRequest = 0;
+function loadPlacesLibrary(){
+  if(window.google?.maps?.importLibrary)return window.google.maps.importLibrary("places");
+  if(placesLibraryPromise)return placesLibraryPromise;
+  const key=String(window.GAMEPLAN_CONFIG?.placesApiKey||"").trim();
+  if(!key)return Promise.reject(new Error("Google Places key is not configured."));
+  placesLibraryPromise=new Promise((resolve,reject)=>{
+    const callback=`gamePlanPlacesReady_${Date.now()}`;
+    window[callback]=async()=>{delete window[callback];try{await google.maps.importLibrary("places");resolve();}catch(error){reject(error);}};
+    const script=document.createElement("script");
+    script.src=`https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(key)}&libraries=places&v=weekly&callback=${callback}`;
+    script.async=true;script.defer=true;
+    script.onerror=()=>reject(new Error("Google address autocomplete could not load."));
+    document.head.appendChild(script);
+  });
+  return placesLibraryPromise;
+}
+async function calculateDraftRoute(){
+  if(!draft.address)return;
+  const request=++routeCalculationRequest;
+  const address=draft.address;
+  const placeId=draft.destinationPlaceId;
+  draft.routeLoading=true;draft.routeError="";renderWizard();
+  try{
+    const route=await api.calculateRoute(address,placeId);
+    if(request!==routeCalculationRequest||address!==draft.address)return;
+    draft.route=route;
+  }
+  catch(error){
+    if(request!==routeCalculationRequest)return;
+    draft.route=null;draft.routeError=error.message||"Route calculation failed.";
+  }
+  finally{
+    if(request!==routeCalculationRequest)return;
+    draft.routeLoading=false;saveDraft(false);
+    if(wizard.classList.contains("open")){
+      if(draft.step===1)renderWizard();
+      else{
+        const status=wizardForm.querySelector("[data-route-background-status]");
+        if(status){
+          const next=routeBackgroundStatus();
+          if(next)status.outerHTML=next;
+          else status.remove();
+        }
+      }
+    }
+  }
+}
+async function bindAddressAutocomplete(){
+  const mount=wizardForm.querySelector("[data-address-autocomplete]");
+  if(!mount)return;
+  const input=mount.querySelector('input[name="address"]');
+  const suggestionsMount=mount.querySelector("[data-address-suggestions]");
+  if(!input||!suggestionsMount)return;
+  let debounceTimer=0;
+  let requestNumber=0;
+  let predictions=[];
+  const hideSuggestions=()=>{suggestionsMount.hidden=true;suggestionsMount.replaceChildren();};
+  const predictionText=value=>{
+    if(!value)return "";
+    if(typeof value==="string")return value;
+    if(typeof value.toString==="function"){
+      const text=value.toString();
+      if(text&&text!=="[object Object]")return text;
+    }
+    return String(value.text||"");
+  };
+  const renderSuggestions=()=>{
+    if(!predictions.length){
+      suggestionsMount.innerHTML='<div class="gameplan-address-empty">No matching addresses found.</div>';
+    }else{
+      suggestionsMount.innerHTML=predictions.map((prediction,index)=>{
+        const main=predictionText(prediction.structuredFormat?.mainText);
+        const secondary=predictionText(prediction.structuredFormat?.secondaryText);
+        const full=predictionText(prediction.text);
+        return `<button type="button" class="gameplan-address-suggestion" data-address-suggestion="${index}"><b>${esc(main||full)}</b>${secondary?`<small>${esc(secondary)}</small>`:""}</button>`;
+      }).join("");
+    }
+    suggestionsMount.hidden=false;
+  };
+  try{
+    await loadPlacesLibrary();
+    if(!document.body.contains(mount))return;
+    const {AutocompleteSessionToken,AutocompleteSuggestion}=await google.maps.importLibrary("places");
+    let sessionToken=new AutocompleteSessionToken();
+    input.addEventListener("input",()=>{
+      draft.address=input.value;
+      draft.addressId="";
+      draft.destinationPlaceId="";
+      draft.route=null;
+      draft.routeError="";
+      clearTimeout(debounceTimer);
+      const query=input.value.trim();
+      const thisRequest=++requestNumber;
+      if(query.length<3){predictions=[];hideSuggestions();return;}
+      suggestionsMount.innerHTML='<div class="gameplan-address-loading">Finding addresses…</div>';
+      suggestionsMount.hidden=false;
+      debounceTimer=setTimeout(async()=>{
+        try{
+          const response=await AutocompleteSuggestion.fetchAutocompleteSuggestions({
+            input:query,
+            includedRegionCodes:["us"],
+            sessionToken
+          });
+          if(thisRequest!==requestNumber||input.value.trim()!==query)return;
+          predictions=(response.suggestions||[]).map(item=>item.placePrediction).filter(Boolean);
+          renderSuggestions();
+        }catch(error){
+          if(thisRequest!==requestNumber)return;
+          predictions=[];
+          suggestionsMount.innerHTML='<div class="gameplan-address-empty">Google addresses are temporarily unavailable. You can still enter the full address.</div>';
+          suggestionsMount.hidden=false;
+        }
+      },250);
+    });
+    suggestionsMount.addEventListener("pointerdown",event=>event.preventDefault());
+    suggestionsMount.addEventListener("click",async event=>{
+      const button=event.target.closest("[data-address-suggestion]");
+      if(!button)return;
+      const prediction=predictions[Number(button.dataset.addressSuggestion)];
+      if(!prediction)return;
+      input.disabled=true;
+      suggestionsMount.innerHTML='<div class="gameplan-address-loading">Selecting address…</div>';
+      try{
+        const place=prediction.toPlace();
+        await place.fetchFields({fields:["id","formattedAddress"]});
+        if(!place.formattedAddress)throw new Error("Google did not return a complete address.");
+        draft.address=place.formattedAddress;
+        draft.addressId="";
+        draft.destinationPlaceId=place.id||"";
+        input.value=draft.address;
+        sessionToken=new AutocompleteSessionToken();
+        hideSuggestions();
+        input.disabled=false;
+        void calculateDraftRoute();
+      }catch(error){
+        input.disabled=false;
+        draft.routeError=error.message||"That address could not be selected.";
+        const help=mount.parentElement?.querySelector("small");
+        if(help)help.textContent=draft.routeError;
+        hideSuggestions();
+      }
+    });
+    input.addEventListener("blur",()=>setTimeout(hideSuggestions,180));
+    input.addEventListener("focus",()=>{if(predictions.length&&input.value.trim().length>=3)renderSuggestions();});
+  }catch(error){
+    draft.routeError=error.message||"Google address autocomplete is unavailable.";
+    input.autocomplete="street-address";
+    input.placeholder="Enter the full address";
+    input.addEventListener("input",()=>{draft.address=input.value;draft.destinationPlaceId="";draft.route=null;});
+    const help=mount.parentElement?.querySelector("small");if(help)help.textContent=draft.routeError;
+  }
+}
+function popularEquipment(){
+  const favorites=state.equipmentTypes.filter(x=>x.quickAccess===true||String(x.quickAccess).toLowerCase()==="true");
+  return (favorites.length?favorites:state.equipmentTypes.slice(0,4));
+}
+function selectedJobTypeRecord(){
+  return (state.jobTypes||[]).find(type=>String(type.id)===String(draft.jobTypeId))||{};
+}
+function selectedJobTypeSearch(){
+  const type=selectedJobTypeRecord();
+  return `${type.id||""} ${type.name||""}`.toLowerCase();
+}
+function isDeliveryPickupDraft(){
+  const search=selectedJobTypeSearch();
+  return /delivery/.test(search)&&/pickup|pick up/.test(search);
+}
+function isPickupOnlyDraft(){
+  const search=selectedJobTypeSearch();
+  return /pickup|pick up/.test(search)&&!/delivery/.test(search);
+}
+function itemMovement(item){
+  if(String(item?.movement||"").toLowerCase()==="pickup"||item?.pickupRequired===true)return "pickup";
+  return "delivery";
+}
+function equipmentCard(type,movement="delivery"){
+  return `<button type="button" class="ux-icon-card" data-add-equipment="${esc(type.id)}" data-equipment-movement="${movement}"><i>${gpIcon(iconNameFor(type))}</i><span>${esc(type.name)}</span><small>Tap to add</small></button>`;
+}
+function routeBackgroundStatus(){
+  if(draft.routeLoading)return `<div class="route-background-status working" data-route-background-status><i></i><span><b>Calculating travel in the background</b><small>You can continue adding job information.</small></span></div>`;
+  if(draft.routeError)return `<div class="route-background-status error" data-route-background-status><span><b>Travel calculation needs attention</b><small>${esc(draft.routeError)}</small></span></div>`;
+  return "";
+}
+function equipmentChooser(movement,popular,more){
+  return `<h3 class="ux-section-label">Popular Equipment</h3>
+    <div class="ux-card-grid">${popular.map(type=>equipmentCard(type,movement)).join("")}</div>
+    ${more.length?`<details class="ux-more"><summary>More Equipment <span>⌄</span></summary><div class="ux-card-grid">${more.map(type=>equipmentCard(type,movement)).join("")}</div></details>`:""}`;
+}
+function selectedEquipmentChip(item,index){
+  const type=selectedType(item);
+  if(itemMovement(item)==="pickup"){
+    return `<button type="button" class="ux-selected-item" data-edit-equipment="${index}"><i>${gpIcon(iconNameFor(type))}</i><span><b>${esc(type.name||"Equipment")}</b><small>Pickup item · Tap to remove</small></span><strong>✓</strong></button>`;
+  }
+  return `<button type="button" class="ux-selected-item" data-edit-equipment="${index}"><i>${gpIcon(iconNameFor(type))}</i><span><b>${esc(item.condition)} ${esc(type.name||"Equipment")}</b><small>Delivery item · Quantity ${Math.max(1,Number(item.quantity||1))} · Tap to edit</small></span><strong>✓</strong></button>`;
+}
+function equipmentStep(){
+  const pickupOnly=isPickupOnlyDraft();
+  const combined=isDeliveryPickupDraft();
+  const popular=popularEquipment();const popularIds=new Set(popular.map(x=>x.id));const more=state.equipmentTypes.filter(x=>!popularIds.has(x.id));
+  const deliveryItems=draft.equipment.map((item,index)=>({item,index})).filter(entry=>itemMovement(entry.item)==="delivery");
+  const pickupItems=draft.equipment.map((item,index)=>({item,index})).filter(entry=>itemMovement(entry.item)==="pickup");
+
+  if(combined){
+    return `${stepHeading("Delivery & Pickup Items","What are we delivering and picking up?")}
+      ${routeBackgroundStatus()}
+      <section class="ux-combined-equipment-section">
+        <h3 class="ux-section-label">Delivery Items</h3>
+        <p class="ux-helper">Tap an equipment type, then choose New or Used.</p>
+        ${equipmentChooser("delivery",popular,more)}
+        <section class="ux-selected-list"><h3>Delivery Items</h3>${deliveryItems.length?deliveryItems.map(entry=>selectedEquipmentChip(entry.item,entry.index)).join(""):`<div class="ux-empty-selection">No delivery items added yet</div>`}</section>
+      </section>
+      <section class="ux-combined-equipment-section">
+        <h3 class="ux-section-label">Pickup Items</h3>
+        <p class="ux-helper">Tap each equipment type being picked up. Used is assumed.</p>
+        ${equipmentChooser("pickup",popular,more)}
+        <section class="ux-selected-list"><h3>Pickup Items</h3>${pickupItems.length?pickupItems.map(entry=>selectedEquipmentChip(entry.item,entry.index)).join(""):`<div class="ux-empty-selection">No pickup items added yet</div>`}</section>
+      </section>
+      <div id="equipmentEditMount"></div>
+    </div>`;
+  }
+
+  return `${stepHeading(pickupOnly?"Pickup Items":"Equipment",pickupOnly?"What equipment are we picking up?":"What are we moving?")}
+    ${routeBackgroundStatus()}
+    ${pickupOnly?`<p class="ux-helper">Tap each equipment type to add it. Add as many pickup items as needed.</p>`:`<p class="ux-helper">Tap an equipment type, then choose New or Used.</p>`}
+    ${equipmentChooser(pickupOnly?"pickup":"delivery",popular,more)}
+    <section class="ux-selected-list"><h3>${pickupOnly?"Pickup Items":"Selected Equipment"}</h3>${draft.equipment.length?draft.equipment.map(selectedEquipmentChip).join(""):`<div class="ux-empty-selection">Nothing added yet</div>`}</section>
+    <div id="equipmentEditMount"></div>
+  </div>`;
+}
+function showEquipmentAddedFeedback(type, condition, movement){
+  const existing=document.querySelector("#equipmentAddedFeedback");
+  existing?.remove();
+  const feedback=document.createElement("div");
+  feedback.id="equipmentAddedFeedback";
+  feedback.className="equipment-added-feedback";
+  const label=movement==="pickup"?`Pickup ${type.name||"equipment"}`:`${condition} ${type.name||"equipment"}`;
+  feedback.innerHTML=`<i>✓</i><span><b>Equipment Added</b><small>${esc(label)}</small></span>`;
+  document.body.appendChild(feedback);
+  requestAnimationFrame(()=>feedback.classList.add("show"));
+  setTimeout(()=>{feedback.classList.remove("show");setTimeout(()=>feedback.remove(),180);},1050);
+}
+function addEquipmentItem(typeId,movement,condition){
+  const type=state.equipmentTypes.find(item=>String(item.id)===String(typeId))||{name:"Equipment"};
+  draft.equipment.push({
+    ...blankItem(),
+    condition:movement==="pickup"?"Used":condition,
+    movement,
+    deliveryRequired:movement==="delivery",
+    pickupRequired:movement==="pickup",
+    equipmentTypeId:typeId,
+    quantity:1
+  });
+  draft.pendingCondition="";
+  saveDraft(false);
+  renderWizard();
+  showEquipmentAddedFeedback(type,condition,movement);
+}
+function openEquipmentConditionPrompt(typeId,movement="delivery"){
+  const mount=wizardForm.querySelector("#equipmentEditMount");
+  const type=state.equipmentTypes.find(item=>String(item.id)===String(typeId));
+  if(!mount||!type)return;
+  mount.innerHTML=`<div class="ux-sheet-backdrop open equipment-condition-prompt" id="equipmentConditionPrompt"><section class="ux-sheet" role="dialog" aria-modal="true" aria-labelledby="equipmentConditionTitle">
+    <div class="ux-sheet-handle"></div>
+    <small>ADD EQUIPMENT</small>
+    <h3 id="equipmentConditionTitle">${gpIcon(iconNameFor(type))}${esc(type.name)}</h3>
+    <p class="ux-helper">Is this item new or used?</p>
+    <div class="equipment-condition-actions">
+      <button type="button" class="button condition-choice new" data-add-condition="New">New</button>
+      <button type="button" class="button condition-choice used" data-add-condition="Used">Used</button>
+    </div>
+    <button type="button" class="button neutral" data-cancel-equipment-add>Cancel</button>
+  </section></div>`;
+  const prompt=mount.querySelector("#equipmentConditionPrompt");
+  prompt.onclick=event=>{if(event.target===prompt)prompt.remove();};
+  mount.querySelector("[data-cancel-equipment-add]").onclick=()=>prompt.remove();
+  mount.querySelectorAll("[data-add-condition]").forEach(button=>button.onclick=()=>addEquipmentItem(typeId,movement,button.dataset.addCondition));
+}
+function equipmentEditSheet(index){
+  const item=draft.equipment[index];if(!item)return "";const type=selectedType(item);
+  if(itemMovement(item)==="pickup"){
+    return `<div class="ux-sheet-backdrop open" id="equipmentEditSheet"><section class="ux-sheet" role="dialog" aria-modal="true"><div class="ux-sheet-handle"></div><h3>${esc(type.name||"Pickup Item")}</h3><p class="ux-helper">Equipment details will be completed later on the Pickup Details Sheet.</p><button type="button" class="button danger" id="removeEditedEquipment">Remove Item</button><button type="button" class="button neutral" id="closeEquipmentEdit">Done</button></section></div>`;
+  }
+  return `<div class="ux-sheet-backdrop open" id="equipmentEditSheet"><section class="ux-sheet" role="dialog" aria-modal="true"><div class="ux-sheet-handle"></div><h3>Edit ${esc(type.name||"Equipment")}</h3><div class="ux-condition"><button type="button" class="ux-segment ${item.condition==="New"?"selected":""}" data-edit-condition="New">New</button><button type="button" class="ux-segment ${item.condition==="Used"?"selected":""}" data-edit-condition="Used">Used</button></div><label class="ux-field"><span>Quantity</span><div class="ux-quantity"><button type="button" data-qty-change="-1">−</button><b>${Math.max(1,Number(item.quantity||1))}</b><button type="button" data-qty-change="1">＋</button></div></label><button type="button" class="button danger" id="removeEditedEquipment">Remove Item</button><button type="button" class="button neutral" id="closeEquipmentEdit">Done</button></section></div>`;
+}
+function normalizedAccessText(value){return String(value||"").trim().toLowerCase().replace(/[^a-z0-9]+/g," " ).replace(/\s+/g," ").trim();}
+function accessConditionByRole(role){
+  const definitions={
+    garage:{ids:["ACC-GARAGE"],names:["garage"]},
+    main:{ids:["ACC-SINGLE","ACC-MAIN"],names:["single level","main level","main floor"]},
+    mobile:{ids:["ACC-MOBILE","ACC-MOBILEHOME"],names:["mobile home","manufactured home"]},
+    firstFlight:{ids:["ACC-STAIR1","ACC-FIRSTFLIGHT"],names:["first flight of stairs","first flight","one flight of stairs"]},
+    additionalFlight:{ids:["ACC-STAIRX","ACC-ADDFLIGHT"],names:["each additional flight","additional flight of stairs","additional flight"]}
+  };
+  const definition=definitions[role]||{ids:[],names:[]};
+  const byId=state.accessConditions.find(access=>definition.ids.includes(String(access.id||"").toUpperCase()));
+  if(byId)return byId;
+  return state.accessConditions.find(access=>definition.names.includes(normalizedAccessText(access.name)));
+}
+function destinationAccessConditions(key,flights=draft.flights){
+  if(key==="garage")return [accessConditionByRole("garage")].filter(Boolean);
+  if(key==="main")return [accessConditionByRole("main")].filter(Boolean);
+  if(key==="mobile")return [accessConditionByRole("mobile")].filter(Boolean);
+  if(key==="upstairs"){
+    const first=accessConditionByRole("firstFlight");
+    const additional=accessConditionByRole("additionalFlight");
+    const count=String(flights)==="3+"?3:Math.max(1,Number(flights)||1);
+    return [first,...Array.from({length:Math.max(0,count-1)},()=>additional)].filter(Boolean);
+  }
+  return [];
+}
+function primaryAccessIds(){
+  return new Set(["garage","main","mobile","firstFlight","additionalFlight"].map(role=>accessConditionByRole(role)?.id).filter(Boolean).map(String));
+}
+function rebuildDestinationAccess(){
+  const primary=primaryAccessIds();
+  const modifiers=draft.access.filter(id=>!primary.has(String(id)));
+  const destination=destinationAccessConditions(draft.destinationId,draft.flights).map(access=>access.id);
+  draft.access=[...destination,...modifiers];
+}
+function selectDestination(key){
+  draft.destinationId=key;
+  if(key!=="upstairs")draft.flights="";
+  rebuildDestinationAccess();
+}
+function destinationLabel(){
+  return ({garage:"Garage",main:"Main Level",mobile:"Mobile Home",upstairs:"Upstairs"})[draft.destinationId]||"Not selected";
+}
+function destinationCard(key,label,description,icon){
+  const selected=draft.destinationId===key;
+  const configured=key==="upstairs"?Boolean(accessConditionByRole("firstFlight")):destinationAccessConditions(key).length>0;
+  return `<button type="button" class="ux-icon-card destination-card ${selected?"selected":""} ${configured?"":"not-configured"}" data-destination="${key}" ${configured?"":"disabled"}><i>${gpIcon(icon)}</i><span>${label}</span><small>${configured?description:"Add this AccessCondition in the CMS"}</small>${selected?"<strong>✓</strong>":""}</button>`;
+}
+function deliveryDetailsStep(){
+  const price=quoteEstimate();
+  const optionalAccess=state.accessConditions.filter(access=>!primaryAccessIds().has(String(access.id)));
+  return `${stepHeading("Delivery Details","Where is the equipment going?")}
+    <div class="ux-price-card"><small>Estimated Delivery Price</small><strong>$${price}</strong><span>Updates automatically</span></div>
+    <h3 class="ux-section-label">Destination</h3>
+    <div class="ux-card-grid destination-grid">
+      ${destinationCard("garage","Garage","Equipment stays in the garage","garage")}
+      ${destinationCard("main","Main Level","Inside the home, no stairs","single-level")}
+      ${destinationCard("mobile","Mobile Home","Mobile or manufactured home","mobile-home")}
+      ${destinationCard("upstairs","Upstairs","One or more flights","upstairs")}
+    </div>
+    ${draft.destinationId==="upstairs"?`<section class="ux-progressive-panel"><h3>How many flights?</h3><div class="ux-flight-options">${["1","2","3+"].map(value=>`<button type="button" class="ux-flight ${draft.flights===value?"selected":""}" data-flights="${value}">${value} ${value==="1"?"Flight":"Flights"}</button>`).join("")}</div></section>`:""}
+    ${optionalAccess.length?`<section class="ux-progressive-panel access-modifier-panel"><h3>Additional Access Conditions</h3><p class="ux-helper">Select every condition that applies. CMS minutes and charges are added automatically.</p><div class="ux-access-modifiers">${optionalAccess.map(access=>`<button type="button" class="ux-access-modifier ${draft.access.some(id=>String(id)===String(access.id))?"selected":""}" data-access-modifier="${esc(access.id)}"><i>${gpIcon(iconNameFor(access,"access"))}</i><span><b>${esc(access.name)}</b><small>${Number(access.defaultMinutes||0)} min · $${Number(access.flatCharge||0).toFixed(2)}</small></span><strong>✓</strong></button>`).join("")}</div></section>`:""}
+    <details class="ux-more access-more other-condition" data-more-access ${draft.moreAccessOpen?"open":""}>
+      <summary><span><b>Other Special Condition</b><small>Add anything unusual the crew should know</small></span><em>⌄</em></summary>
+      <div class="ux-more-body">
+        <label class="ux-field special-condition-field"><span>Special condition <small>Optional</small></span><textarea name="internalNotes" rows="4" maxlength="500" placeholder="Example: locked gate, steep driveway, rear entrance, or call before arrival">${esc(draft.internalNotes)}</textarea></label>
+        <p class="ux-helper">This note helps the crew prepare. Use Additional Access Conditions above for pricing changes.</p>
+      </div>
+    </details>
+    <p class="ux-helper delivery-helper">GamePlan applies stair pricing and labor rules in the background.</p>
+  </div>`;
+}
+function appointmentStep(){
+  const weekStart=appointmentWeekStart();
+  const days=Array.from({length:7},(_,i)=>addLocalDays(weekStart,i));
+  const slots=draft.scheduledDate?timeSlotsForSelectedDate():[];
+  const showingTimes=draft.appointmentView==="times"&&draft.scheduledDate;
+  const selectedDate=draft.scheduledDate?new Date(`${draft.scheduledDate}T12:00:00`):null;
+  return `${stepHeading("Reserve Appointment","When would the customer like the appointment?")}
+    ${draft.mode==="reschedule"?`<div class="ux-price-card small"><small>Current job</small><strong>${esc(state.jobs.find(job=>job.id===draft.rescheduleJobId)?.customer||"Reschedule")}</strong><span>Select the corrected appointment date and time.</span></div>`:`<div class="ux-price-card small"><small>Estimated Delivery Price</small><strong>$${quoteEstimate()}</strong><span>Estimated time: ${formatEstimatedDuration()}</span></div>`}
+    ${showingTimes?`
+      <div class="ux-appointment-panel slide-in">
+        <button type="button" class="ux-back-to-dates" data-back-to-dates>← Choose Another Date</button>
+        <h3 class="ux-section-label">${esc(new Intl.DateTimeFormat("en-US",{weekday:"long",month:"long",day:"numeric"}).format(selectedDate))}</h3>
+        <div class="ux-time-list">${slots.map(slot=>`<button type="button" class="ux-time-slot ${slot.tone} ${draft.scheduledTime===slot.value?"selected":""}" data-time="${slot.value}" data-time-piggyback="${slot.piggyback?"true":"false"}" ${slot.disabled?"disabled":""}><b>${slot.label}</b><span>${slot.piggyback?`Piggyback with ${esc(slot.conflicts.map(job=>job.customer).join(", "))}`:slot.disabled?"Unavailable":slot.tone==="preferred"?(slot.value==="10:00"?"Best Choice":"Preferred"):slot.tone==="limited"?"Limited":slot.tone==="approval"?"Manager Approval":"Rare — Approval"}</span></button>`).join("")}</div>
+      </div>`:`
+      <div class="ux-appointment-panel slide-in">
+        <div class="ux-week-header"><button type="button" data-appointment-week="-1" aria-label="Previous week">←</button><div><h3 class="ux-section-label">Select a Date</h3><strong>${appointmentWeekLabel(weekStart)}</strong></div><button type="button" data-appointment-week="1" aria-label="Next week">→</button></div>
+        <div class="ux-date-list">${days.map(day=>{const key=dateKeyLocal(day),a=dayAvailability(day);return `<button type="button" class="ux-date-card ${a.tone} ${draft.scheduledDate===key?"selected":""}" data-date="${key}" ${a.disabled?"disabled":""}><span><b>${dateLabel(day)}</b><small>${a.detail}</small></span><strong><i></i>${a.label}</strong><em>›</em></button>`;}).join("")}</div>
+      </div>`}
+  </div>`;
+}
+function customerName(){const c=selectedCustomer();return c?.name||`${draft.firstName} ${draft.lastName}`.trim();}
+function summaryCard(key,title,body,icon){return `<button type="button" class="ux-summary-card" data-edit-step="${key}"><i>${gpIcon(icon)}</i><span><small>${title}</small><b>${body}</b></span><em>›</em></button>`;}
+function summaryStep(){
+  if(draft.mode==="reschedule"){
+    const job=state.jobs.find(item=>item.id===draft.rescheduleJobId);
+    const date=draft.scheduledDate?new Intl.DateTimeFormat("en-US",{weekday:"short",month:"short",day:"numeric"}).format(new Date(`${draft.scheduledDate}T12:00:00`)):"Not selected";
+    const time=timeSlotsForSelectedDate().find(x=>x.value===draft.scheduledTime)?.label||draft.scheduledTime||"Not selected";
+    return `${stepHeading("Review Reschedule",draft.reschedulePiggyback?"Confirm this manager-approved Piggyback overlap.":"Confirm the corrected appointment before returning to Manager Approval.")}
+      ${draft.reschedulePiggyback?`<div class="ux-status-banner piggyback-review"><i>↝</i><span><b>Piggyback Appointment</b><small>This time overlaps another Scheduled job. Both jobs will be marked for the delivery crew.</small></span></div>`:""}
+      ${job?renderJobSummaryCard({...job,date,time},{showItemCounts:true}):""}
+      <div class="ux-summary-list">${summaryCard(4,"New Appointment",`${esc(date)} at ${esc(time)}`,"equipment")}</div>
+    </div>`;
+  }
+  const deliveryItems=draft.equipment.filter(item=>itemMovement(item)==="delivery").map(i=>`${Math.max(1,Number(i.quantity||1))}× ${i.condition} ${selectedType(i).name||"Equipment"}`);
+  const pickupItems=draft.equipment.filter(item=>itemMovement(item)==="pickup").map(i=>`${Math.max(1,Number(i.quantity||1))}× ${selectedType(i).name||"Equipment"}`);
+  const items=[deliveryItems.length?`Delivery: ${deliveryItems.join(" · ")}`:"",pickupItems.length?`Pickup: ${pickupItems.join(" · ")}`:""].filter(Boolean).join("<br>");
+  const access=[destinationLabel(),draft.destinationId==="upstairs"&&draft.flights?`${draft.flights} flight${draft.flights==="1"?"":"s"}`:""].filter(Boolean).join(" · ");
+  const specialCondition=String(draft.internalNotes||"").trim();
+  const jobTypeName=selectedJobTypeRecord().name||"Job";
+  const pickupPurpose=normalizedPickupType(draft.pickupType);
+  const date=draft.scheduledDate?new Intl.DateTimeFormat("en-US",{weekday:"short",month:"short",day:"numeric"}).format(new Date(`${draft.scheduledDate}T12:00:00`)):"Not selected";
+  const time=timeSlotsForSelectedDate().find(x=>x.value===draft.scheduledTime)?.label||draft.scheduledTime||"Not selected";
+  return `${stepHeading("Job Summary","Does everything look correct?")}
+    <div class="ux-status-banner"><i>✓</i><span><b>Tentative Appointment Ready</b><small>Manager approval is required before Scheduled.</small></span></div>
+    <div class="ux-summary-list">
+      ${summaryCard(0,"Job Type",`${esc(jobTypeName)}${pickupPurpose?` · ${esc(pickupPurpose)}`:""}`,"delivery-swap")}
+      ${summaryCard(1,"Customer",`${esc(customerName())}<br><small>${esc(draft.phone)} · ${esc(draft.address)}</small>`,"single-level")}
+      ${summaryCard(2,"Equipment",esc(items),iconNameFor(selectedType(draft.equipment[0])))}
+      ${summaryCard(3,"Delivery Details",`${esc(access)}${specialCondition?`<br><small>${esc(specialCondition)}</small>`:""}`,"stairs")}
+      ${summaryCard(4,"Appointment",`${esc(date)} at ${esc(time)}`,"equipment")}
+      <div class="ux-summary-card optional informational"><i>${gpIcon("assembly")}</i><span><small>Equipment Details</small><b>After reserving, choose whether to add make, model, notes, and photos now or later.</b></span><em>✓</em></div>
+    </div>
+    <section class="ux-review-price" aria-label="Estimated delivery price">
+      <span>Estimated Delivery Price</span>
+      <strong>$${quoteEstimate()}</strong>
+      <small>Final charge may change if job details change.</small>
+    </section>
+  </div>`;
+}
+function sync(){
+  const fd=new FormData(wizardForm);
+  ["firstName","lastName","phone","email","address","jobTypeId","scheduledDate","scheduledTime","internalNotes"].forEach(k=>{if(fd.has(k))draft[k]=fd.get(k)});
+  draft.phone=normalizePhone(draft.phone);
+}
+function validate(){
+  sync();
+  if(draft.step===0&&!draft.jobTypeId)return "Choose a job type.";
+  if(draft.step===1&&/pickup/i.test(selectedJobTypeSearch())&&!normalizedPickupType(draft.pickupType))return "Choose whether the pickup is for Trade-In or Disposal.";
+  if(draft.step===1){if(!draft.firstName.trim())return "Enter the customer's first name.";if(draft.phone.replace(/\D/g,"").length!==10)return "Enter a valid 10-digit phone number.";if(!draft.address.trim())return "Enter the customer address.";if(!draft.route&&!draft.routeLoading)return "Select a Google address so travel can be calculated.";}
+  if(draft.step===2&&draft.equipment.length<1)return "Add at least one equipment item.";
+  if(draft.step===2&&isDeliveryPickupDraft()){
+    if(!draft.equipment.some(item=>itemMovement(item)==="delivery"))return "Add at least one delivery item.";
+    if(!draft.equipment.some(item=>itemMovement(item)==="pickup"))return "Add at least one pickup item.";
+  }
+  if(draft.step===3&&!draft.destinationId)return "Choose where the equipment is going.";
+  if(draft.step===3&&draft.destinationId==="upstairs"&&!draft.flights)return "Choose the number of flights.";
+  if(draft.step===3&&draft.routeLoading)return "Travel is still calculating. This should take only a moment.";
+  if(draft.step===3&&!draft.route)return draft.routeError||"Travel must be calculated before appointment times can be shown.";
+  if(draft.step===4&&(!draft.scheduledDate||!draft.scheduledTime))return "Choose an available date and time.";
+  return "";
+}
+function renderWizard(){
+  const steps=[jobTypeStep,customerStep,equipmentStep,deliveryDetailsStep,appointmentStep,summaryStep];
+  wizardStepLabel.textContent=draft.mode==="reschedule"?(draft.step===4?"Select Appointment":"Final Review"):`Step ${draft.step+1} of ${steps.length}`;
+  wizardProgress.innerHTML=UX_STEPS.map((label,i)=>`<i class="${i<=draft.step?"active":""}" title="${label}"></i>`).join("");
+  wizardProgress.style.gridTemplateColumns=`repeat(${steps.length},1fr)`;
+  wizardForm.innerHTML=steps[draft.step]();
+  wizardBack.style.visibility=draft.mode==="reschedule"?"visible":(draft.step?"visible":"hidden");
+  wizardNext.style.visibility=draft.step===0?"hidden":"visible";
+  wizardBack.textContent=draft.editingFromSummary?"Cancel Edit":"Back";
+  wizardNext.textContent=draft.mode==="reschedule"?(draft.step===4?"Review Change":"Save & Return"):draft.editingFromSummary?"Save Edit":draft.step===steps.length-1?"Save & Return":draft.step===4?"Reserve Appointment":"Continue";
+  wizardBack.disabled=false;
+  wizardNext.disabled=false;
+  wizardNext.classList.add("primary-action");
+  bindStep();
+}
+function bindStep(){
+  wizardForm.querySelectorAll("[data-job-type-choice]").forEach(el=>el.onclick=()=>{
+    const kind=el.dataset.jobTypeChoice;
+    const type=resolveJobType(kind);
+    if(!type)return toast("That job type is not active in the CMS.");
+    if(kind==="pickup"||kind==="delivery-pickup"){
+      draft.jobTypeId=type.id;
+      openPickupPurposePrompt(kind,type);
+      return;
+    }
+    draft.jobTypeId=type.id;draft.pickupType="";draft.step=1;saveDraft(false);renderWizard();
+  });
+  if(draft.step===1){
+    const fields=[...wizardForm.querySelectorAll('input[name="firstName"],input[name="lastName"],input[name="phone"],input[name="address"]')];
+    fields.forEach(input=>input.addEventListener("input",()=>{
+      if(input.name==="phone")input.value=normalizePhone(input.value);
+      draft[input.name]=input.value;
+      draft.customerId="";
+      draft.addressId="";
+      // Keep dismissed suggestions dismissed for the remainder of this draft.
+      scheduleCustomerMatchUpdate();
+    }));
+    bindCustomerMatchActions();
+    bindAddressAutocomplete();
+  }
+  wizardForm.querySelectorAll("[data-add-equipment]").forEach(el=>el.onclick=()=>{
+    const movement=el.dataset.equipmentMovement|| (isPickupOnlyDraft()?"pickup":"delivery");
+    if(movement==="pickup"){addEquipmentItem(el.dataset.addEquipment,movement,"Used");return;}
+    openEquipmentConditionPrompt(el.dataset.addEquipment,movement);
+  });
+  wizardForm.querySelectorAll("[data-edit-equipment]").forEach(el=>el.onclick=()=>openEquipmentEditor(Number(el.dataset.editEquipment)));
+  wizardForm.querySelectorAll("[data-destination]").forEach(el=>el.onclick=()=>{selectDestination(el.dataset.destination);renderWizard();});
+  wizardForm.querySelectorAll("[data-flights]").forEach(el=>el.onclick=()=>{draft.flights=el.dataset.flights;rebuildDestinationAccess();renderWizard();});
+  wizardForm.querySelectorAll("[data-access-modifier]").forEach(el=>el.onclick=()=>{const id=el.dataset.accessModifier;const selected=draft.access.some(value=>String(value)===String(id));draft.access=selected?draft.access.filter(value=>String(value)!==String(id)):[...draft.access,id];renderWizard();});
+  wizardForm.querySelector("[data-more-access]")?.addEventListener("toggle",event=>{draft.moreAccessOpen=event.currentTarget.open;});
+  wizardForm.querySelector('textarea[name="internalNotes"]')?.addEventListener("input",event=>{draft.internalNotes=event.currentTarget.value;});
+  wizardForm.querySelectorAll("[data-date]").forEach(el=>el.onclick=()=>{draft.scheduledDate=el.dataset.date;draft.scheduledTime="";draft.reschedulePiggyback=false;draft.appointmentView="times";renderWizard();});
+  wizardForm.querySelector("[data-back-to-dates]")?.addEventListener("click",()=>{draft.appointmentView="dates";renderWizard();});
+  wizardForm.querySelectorAll("[data-appointment-week]").forEach(el=>el.onclick=()=>{const current=appointmentWeekStart();const next=addLocalDays(current,Number(el.dataset.appointmentWeek)*7);draft.appointmentWeekStart=dateKeyLocal(next);draft.appointmentView="dates";renderWizard();});
+  wizardForm.querySelectorAll("[data-time]").forEach(el=>el.onclick=()=>{draft.scheduledTime=el.dataset.time;draft.reschedulePiggyback=el.dataset.timePiggyback==="true";renderWizard();});
+  wizardForm.querySelectorAll("[data-edit-step]").forEach(el=>el.onclick=()=>{
+    draft.editingFromSummary=true;
+    draft.editStep=Number(el.dataset.editStep);
+    draft.step=draft.editStep;
+    saveDraft(false);
+    renderWizard();
+  });
+}
+function openEquipmentEditor(index){
+  const mount=wizardForm.querySelector("#equipmentEditMount");if(!mount)return;mount.innerHTML=equipmentEditSheet(index);
+  const sheet=mount.querySelector("#equipmentEditSheet");
+  const close=()=>{sheet?.remove();renderWizard();};
+  mount.querySelector("#closeEquipmentEdit").onclick=close;
+  sheet.onclick=e=>{if(e.target===sheet)close();};
+  mount.querySelectorAll("[data-edit-condition]").forEach(el=>el.onclick=()=>{draft.equipment[index].condition=el.dataset.editCondition;openEquipmentEditor(index);});
+  mount.querySelectorAll("[data-qty-change]").forEach(el=>el.onclick=()=>{draft.equipment[index].quantity=Math.max(1,Number(draft.equipment[index].quantity||1)+Number(el.dataset.qtyChange));openEquipmentEditor(index);});
+  mount.querySelector("#removeEditedEquipment").onclick=()=>{draft.equipment.splice(index,1);close();};
+}
+wizardNext.onclick=async()=>{
+  const err=validate();if(err)return toast(err);
+
+  if(draft.mode==="reschedule"){
+    if(draft.step===4){draft.step=5;renderWizard();return;}
+    wizardNext.disabled=true;wizardBack.disabled=true;wizardNext.textContent="Saving…";
+    try{
+      const pinToken=await requestPin("canCreateQuote","Enter your employee PIN to save the corrected appointment.");
+      const rescheduleJob=state.jobs.find(job=>String(job.id)===String(draft.rescheduleJobId));
+      const confirmedAppointment=String(rescheduleJob?.status||"").toLowerCase()==="scheduled";
+      let approvalToken="";
+      if(draft.reschedulePiggyback){
+        const selectedSlot=timeSlotsForSelectedDate().find(slot=>slot.value===draft.scheduledTime);
+        const partners=selectedSlot?.conflicts||[];
+        if(!partners.length)throw new Error("The Piggyback conflict is no longer present. Reload and choose the appointment again.");
+        if(!window.confirm(`Move this appointment to ${selectedSlot.label} and link it as a PIGGYBACK with ${partners.map(job=>`Job #${job.number||job.id} — ${job.customer}`).join(", ")}?\n\nBoth jobs remain independently priced.`)){
+          wizardNext.disabled=false;wizardBack.disabled=false;renderWizard();return;
+        }
+        approvalToken=await requestManagerApproval("Manager approval is required to reschedule a confirmed job as a Piggyback overlap.");
+      }else if(confirmedAppointment){
+        approvalToken=await requestManagerApproval("Manager approval is required to change the time of a confirmed appointment.");
+      }
+      showTaskProgress("Saving appointment time…","Updating the schedule and checking the confirmed change.");
+      await api.updateJobSchedule(draft.rescheduleJobId,draft.scheduledDate,draft.scheduledTime,pinToken,approvalToken,draft.reschedulePiggyback);
+      touchPinSession();
+      const returnJobId=draft.rescheduleReturnJobId;
+      const wasPiggyback=draft.reschedulePiggyback;
+      if(rescheduleJob){
+        const localDate=new Date(`${draft.scheduledDate}T${draft.scheduledTime}:00`);
+        rescheduleJob.dateTime=localDate.toISOString();
+        rescheduleJob.date=new Intl.DateTimeFormat("en-US",{weekday:"short",month:"short",day:"numeric"}).format(localDate);
+        rescheduleJob.time=new Intl.DateTimeFormat("en-US",{hour:"numeric",minute:"2-digit"}).format(localDate);
+        if(wasPiggyback)rescheduleJob.piggyback=true;
+      }
+      localStorage.removeItem(DRAFT_KEY);draft=blankDraft();closeWizard();
+      openJob(returnJobId);
+      hideTaskProgress();
+      toast(wasPiggyback?"Appointment rescheduled and linked as a Piggyback.":"Appointment rescheduled. Review the job before manager approval.");
+      persistOptimisticJobs();
+    }catch(error){console.error(error);hideTaskProgress();toast(error.message||"The appointment could not be rescheduled.");wizardNext.disabled=false;wizardBack.disabled=false;renderWizard();}
+    return;
+  }
+
+  // Edits launched from Screen 6 are saved directly back to Screen 6.
+  if(draft.editingFromSummary){
+    sync();
+    draft.editingFromSummary=false;
+    draft.editStep=null;
+    draft.step=5;
+    saveDraft(false);
+    renderWizard();
+    toast("Edit saved.");
+    return;
+  }
+
+  const count=6;
+  if(draft.step<count-1){draft.step++;saveDraft(false);renderWizard();return;}
+
+  sync();
+  wizardNext.disabled=true;
+  wizardBack.disabled=true;
+  wizardNext.textContent="Saving…";
+  try{
+    const pinToken=await requestPin("canCreateQuote","Enter your employee PIN to save this tentative appointment and stamp your name into its history.");
+    const payload={
+      ...draft,
+      equipment:draft.equipment.map(item=>({
+        ...item,
+        movement:itemMovement(item),
+        deliveryRequired:itemMovement(item)==="delivery",
+        pickupRequired:itemMovement(item)==="pickup"
+      })),
+      status:"Tentative",
+      estimatedPrice:quoteEstimate(),
+      estimatedDurationMinutes:estimatedDraftMinutes(),
+      customerName:customerName()
+    };
+    delete payload.editingFromSummary;
+    delete payload.editStep;
+
+    const savedDraft=structuredClone(payload);
+    showTaskProgress("Saving tentative appointment…","Creating the customer, route, pricing, and job records.");
+    const result=await api.createJob(payload,pinToken);
+    if(!result)throw new Error("The CMS did not confirm that the job was saved.");
+
+    touchPinSession();
+    localStorage.removeItem(DRAFT_KEY);
+    draft=blankDraft();
+    closeWizard();
+
+    const jobLabel=result.jobNumber||result.jobId||result.id||"New job";
+    const savedJobId=result.jobId||result.id;
+    const optimisticJob=result.job||{
+      id:savedJobId,number:result.jobNumber||savedJobId,customerId:result.customerId,
+      customer:savedDraft.customerName,phone:savedDraft.phone,address:savedDraft.address,
+      dateTime:`${savedDraft.scheduledDate}T${savedDraft.scheduledTime}:00`,
+      date:new Intl.DateTimeFormat("en-US",{weekday:"short",month:"short",day:"numeric"}).format(new Date(`${savedDraft.scheduledDate}T12:00:00`)),
+      time:new Intl.DateTimeFormat("en-US",{hour:"numeric",minute:"2-digit"}).format(new Date(`${savedDraft.scheduledDate}T${savedDraft.scheduledTime}:00`)),
+      type:resolveJobType(savedDraft.jobTypeId)?.name||savedDraft.jobTypeId,status:"Tentative",
+      total:savedDraft.estimatedPrice,
+      crewSize:Math.max(1,...savedDraft.equipment.map(item=>Number(state.products.find(product=>product.id===item.productId)?.defaultCrewSize||state.equipmentTypes.find(type=>type.id===item.equipmentTypeId)?.defaultCrewSize||2))),
+      duration:formatEstimatedDuration(savedDraft.estimatedDurationMinutes),
+      detailsStatus:"Needed",hasPickup:/pickup/i.test(resolveJobType(savedDraft.jobTypeId)?.name||savedDraft.jobTypeId),pickupType:normalizedPickupType(savedDraft.pickupType),
+      equipment:savedDraft.equipment.map((item,index)=>({...item,id:result.jobEquipmentIds?.[index]||`pending-${index}`}))
+    };
+    state.jobs=[...state.jobs.filter(job=>String(job.id)!==String(savedJobId)),optimisticJob];
+    const savedJob=optimisticJob;
+    if(savedJob){
+      hideTaskProgress();
+      await showQuoteReserved(result,savedJob);
+      showEquipmentDetailsChoice(savedJob);
+      persistOptimisticJobs();
+    }else{
+      hideTaskProgress();
+      go("today");
+      toast(`✓ ${jobLabel} saved. Open it from Needs Attention to continue.`);
+    }
+  }catch(error){
+    console.error(error);
+    hideTaskProgress();
+    toast(error.message||"The tentative job could not be saved.");
+    wizardNext.disabled=false;
+    wizardBack.disabled=false;
+    renderWizard();
+  }
+};
+wizardBack.onclick=()=>{
+  sync();
+  if(draft.mode==="reschedule"){
+    if(draft.step===5){draft.step=4;renderWizard();return;}
+    const returnJobId=draft.rescheduleReturnJobId;
+    draft=blankDraft();closeWizard();openJob(returnJobId);return;
+  }
+  if(draft.editingFromSummary){
+    draft.editingFromSummary=false;
+    draft.editStep=null;
+    draft.step=5;
+    renderWizard();
+    return;
+  }
+  draft.step=Math.max(0,draft.step-1);
+  renderWizard();
+};
+document.querySelector("#closeWizard").onclick=closeWizard;
+
+wizardBackdrop.onclick=closeWizard;
+
+document.querySelector("#closeDrawer").onclick = closeJob;
+drawerBackdrop.onclick = closeJob;
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => navigator.serviceWorker.register("./service-worker.js").catch(console.error));
+}
+
+window.addEventListener("online", async () => {
+  await refreshPendingPickupCount({render:true});
+  if (state.pendingPickupCount) toast(`${state.pendingPickupCount} saved pickup${state.pendingPickupCount===1?" is":"s are"} ready to sync.`);
+});
+window.addEventListener("offline", () => toast("GamePlan is offline. Pickup work can still be saved on this device."));
+
+loadPinSession();
+refreshPendingPickupCount();
+updateDataStatus();
+go(location.hash.slice(1) || "today");
+if (googleSignOutButton) {
+  googleSignOutButton.addEventListener("click", event => {
+    event.stopPropagation();
+    signOutOfGamePlan();
+  });
+}
+initializeGoogleAuthentication();
