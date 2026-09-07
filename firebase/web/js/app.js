@@ -1,6 +1,6 @@
-import { GamePlanApi } from "./gameplan-api.js?v=fb10";
-import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb10";
-import { computeQuote } from "./pricing.mjs?v=fb10";
+import { GamePlanApi } from "./gameplan-api.js?v=fb11";
+import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb11";
+import { computeQuote } from "./pricing.mjs?v=fb11";
 
 const CACHE_KEY = "gameplan-live-bootstrap-v2";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -3919,21 +3919,26 @@ wizardNext.onclick=async()=>{
 
     const jobLabel=result.jobNumber||result.jobId||result.id||"New job";
     const savedJobId=result.jobId||result.id;
-    const optimisticJob=result.job||{
-      id:savedJobId,number:result.jobNumber||savedJobId,customerId:result.customerId,
-      customer:savedDraft.customerName,phone:savedDraft.phone,address:savedDraft.address,
-      dateTime:`${savedDraft.scheduledDate}T${savedDraft.scheduledTime}:00`,
-      date:new Intl.DateTimeFormat("en-US",{weekday:"short",month:"short",day:"numeric"}).format(new Date(`${savedDraft.scheduledDate}T12:00:00`)),
-      time:new Intl.DateTimeFormat("en-US",{hour:"numeric",minute:"2-digit"}).format(new Date(`${savedDraft.scheduledDate}T${savedDraft.scheduledTime}:00`)),
-      type:resolveJobType(savedDraft.jobTypeId)?.name||savedDraft.jobTypeId,status:"Tentative",
-      total:savedDraft.estimatedPrice,
-      crewSize:Math.max(1,...savedDraft.equipment.map(item=>Number(state.products.find(product=>product.id===item.productId)?.defaultCrewSize||state.equipmentTypes.find(type=>type.id===item.equipmentTypeId)?.defaultCrewSize||2))),
-      duration:formatEstimatedDuration(savedDraft.estimatedDurationMinutes),
-      detailsStatus:"Needed",hasPickup:/pickup/i.test(resolveJobType(savedDraft.jobTypeId)?.name||savedDraft.jobTypeId),pickupType:normalizedPickupType(savedDraft.pickupType),
-      equipment:savedDraft.equipment.map((item,index)=>({...item,id:result.jobEquipmentIds?.[index]||`pending-${index}`}))
-    };
-    state.jobs=[...state.jobs.filter(job=>String(job.id)!==String(savedJobId)),optimisticJob];
-    const savedJob=optimisticJob;
+    // Pull the real, server-adapted job (correct type/pickup classification,
+    // real equipment ids) rather than reconstruct it locally.
+    let savedJob;
+    try{
+      savedJob=await api.getJob(savedJobId);
+    }catch(_){
+      const jt=(state.jobTypes||[]).find(t=>String(t.id)===String(savedDraft.jobTypeId))||{};
+      const jtKind=String(jt.kind||"").toLowerCase();
+      savedJob={
+        id:savedJobId,number:result.jobNumber||savedJobId,customerId:result.customerId,
+        customer:savedDraft.customerName,phone:savedDraft.phone,address:savedDraft.address,
+        type:jt.name||savedDraft.jobTypeId,status:"Tentative",total:savedDraft.estimatedPrice,
+        duration:formatEstimatedDuration(savedDraft.estimatedDurationMinutes),
+        detailsStatus:"needed",
+        hasPickup:jtKind.includes("pickup")||/pick ?up/i.test(jt.name||"")||Boolean(savedDraft.pickupType),
+        pickupType:normalizedPickupType(savedDraft.pickupType),
+        equipment:savedDraft.equipment.map((item,index)=>({...item,id:result.jobEquipmentIds?.[index]||`pending-${index}`}))
+      };
+    }
+    state.jobs=[...state.jobs.filter(job=>String(job.id)!==String(savedJobId)),savedJob];
     if(savedJob){
       hideTaskProgress();
       await showQuoteReserved(result,savedJob);

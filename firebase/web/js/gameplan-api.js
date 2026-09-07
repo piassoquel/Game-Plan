@@ -7,7 +7,7 @@
 import {
   collection, query, where, getDocs, doc, getDoc,
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
-import { db, auth, functions, httpsCallable } from "./firebase-app.js?v=fb10";
+import { db, auth, functions, httpsCallable } from "./firebase-app.js?v=fb11";
 
 const call = (name) => httpsCallable(functions, name);
 
