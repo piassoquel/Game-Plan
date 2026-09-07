@@ -11,7 +11,7 @@
     }
   ],
   "hosting": {
-    "site": "gameplan",
+    "site": "gameplan-soquel",
     "public": "web",
     "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
     "rewrites": [{ "source": "**", "destination": "/index.html" }]
