@@ -7,7 +7,9 @@
 import {
   collection, query, where, getDocs, doc, getDoc,
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
-import { db, auth } from "./firebase-app.js";
+import { db, auth, functions, httpsCallable } from "./firebase-app.js";
+
+const call = (name) => httpsCallable(functions, name);
 
 const LA = "America/Los_Angeles";
 const fmtDate = new Intl.DateTimeFormat("en-US", { timeZone: LA, weekday: "short", month: "short", day: "numeric" });
@@ -184,9 +186,17 @@ export class GamePlanApi {
     return job;
   }
 
-  // --- write methods: Phase 3 -----------------------------------
-  async verifyPin() { throw notYet(); }
-  async createJob() { throw notYet(); }
+  // --- write methods -------------------------------------------
+  async verifyPin(pin, requiredPermission = "") {
+    const res = await call("verifyPin")({ pin, requiredPermission });
+    return res.data;
+  }
+
+  async createJob(jobData, pinToken = "") {
+    const res = await call("createJob")({ ...jobData, pinToken });
+    return res.data;
+  }
+
   async updateJobStatus() { throw notYet(); }
   async updateJobDetails() { throw notYet(); }
   async updateJobSchedule() { throw notYet(); }

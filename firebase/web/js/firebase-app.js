@@ -10,9 +10,15 @@ import {
 import {
   initializeFirestore, persistentLocalCache, persistentMultipleTabManager,
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
+import {
+  getFunctions, httpsCallable,
+} from "https://www.gstatic.com/firebasejs/10.13.0/firebase-functions.js";
 import { firebaseConfig, SIGN_IN_HINT_DOMAIN } from "../firebase-config.js";
 
 export const app = initializeApp(firebaseConfig);
+
+export const functions = getFunctions(app, "us-central1");
+export { httpsCallable };
 
 export const auth = getAuth(app);
 setPersistence(auth, browserLocalPersistence).catch(() => {});

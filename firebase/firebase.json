@@ -9,7 +9,7 @@
       "codebase": "gameplan",
       "ignore": ["node_modules", ".git", "*.log"],
       "predeploy": [
-        "node -e \"require('fs').copyFileSync('web/js/pricing.mjs','functions/pricing.mjs')\""
+        "cp \"$RESOURCE_DIR/../web/js/pricing.mjs\" \"$RESOURCE_DIR/pricing.mjs\""
       ]
     }
   ],
