@@ -8,6 +8,8 @@
 // hook so the wizard preview and server pricing stay identical.
 import { setGlobalOptions } from "firebase-functions/v2";
 import { onCall, HttpsError } from "firebase-functions/v2/https";
+import { onDocumentWritten } from "firebase-functions/v2/firestore";
+import { onSchedule } from "firebase-functions/v2/scheduler";
 import { defineSecret } from "firebase-functions/params";
 import { initializeApp } from "firebase-admin/app";
 import { Timestamp } from "firebase-admin/firestore";
@@ -21,6 +23,7 @@ import {
 import {
   combineLocalDateTime, laDateString, assertSchedulable, overlappingScheduledJobs,
 } from "./lib/schedule.mjs";
+import { syncJobFeed, pruneFeed } from "./lib/feed.mjs";
 import { uploadDataUrl } from "./lib/photos.mjs";
 import { computeQuote } from "./pricing.mjs";
 
@@ -798,3 +801,37 @@ export const updateJobSchedule = onCall(async (request) => {
     approvedBy: approver && approver !== actor ? actorLabel(approver) : "",
   };
 });
+
+// ============================================================ Daily Dashboard feed
+// Real-time: any job change re-syncs its stores/soquel/deliveries docs.
+export const onJobWriteSyncFeed = onDocumentWritten("gpJobs/{jobId}", async (event) => {
+  const jobId = event.params.jobId;
+  const after = event.data?.after;
+  const job = after && after.exists ? after.data() : null;
+  try {
+    await syncJobFeed(jobId, job);
+  } catch (err) {
+    console.error(`feed sync failed for ${jobId}`, err);
+  }
+});
+
+// Daily (05:00 America/Los_Angeles): roll pending builds / past-due jobs onto
+// today, surface builds entering the 48h window, and prune old feed docs.
+export const rollDailyFeed = onSchedule(
+  { schedule: "every day 05:00", timeZone: "America/Los_Angeles" },
+  async () => {
+    const todayKey = laDateString(new Date());
+    const jobs = await db().collection("gpJobs").where("archived", "==", false).get();
+    let synced = 0;
+    for (const doc of jobs.docs) {
+      try {
+        await syncJobFeed(doc.id, doc.data(), todayKey);
+        synced++;
+      } catch (err) {
+        console.error(`daily feed sync failed for ${doc.id}`, err);
+      }
+    }
+    const pruned = await pruneFeed(14);
+    console.log(`rollDailyFeed: synced ${synced} jobs, pruned ${pruned} stale feed docs`);
+  },
+);
