@@ -1,6 +1,6 @@
-import { GamePlanApi } from "./gameplan-api.js?v=fb11";
-import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb11";
-import { computeQuote } from "./pricing.mjs?v=fb11";
+import { GamePlanApi } from "./gameplan-api.js?v=fb12";
+import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb12";
+import { computeQuote } from "./pricing.mjs?v=fb12";
 
 const CACHE_KEY = "gameplan-live-bootstrap-v2";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -273,6 +273,7 @@ async function initializeGoogleAuthentication() {
       updateDataStatus();
       go("today");
       await loadLiveData({ forceLoading: !hasCachedBootstrap });
+      if (navigator.onLine) flushOfflineWrites();
     } catch (error) {
       console.error(error);
       await signOutOfGoogle().catch(() => {});
@@ -1719,7 +1720,7 @@ async function changeJobStatus(jobId, newStatus, {piggyback=false, overridePicku
       newStatus === "Completed" ? "Completing delivery…" : newStatus === "Scheduled" ? "Confirming appointment…" : "Updating job…",
       "Saving the confirmed change to the GamePlan CMS."
     );
-    await api.updateJobStatus(jobId, newStatus, piggyback?"Approved as manager-authorized piggyback overlap":"Updated from Job Details", pinToken, approvalToken, overrideSchedule, scheduleOverrideType, overridePickupInspection);
+    const outcome = await api.updateJobStatus(jobId, newStatus, piggyback?"Approved as manager-authorized piggyback overlap":"Updated from Job Details", pinToken, approvalToken, overrideSchedule, scheduleOverrideType, overridePickupInspection);
     touchPinSession();
     state.dataRevision += 1;
     job.status = newStatus;
@@ -1730,7 +1731,9 @@ async function changeJobStatus(jobId, newStatus, {piggyback=false, overridePicku
     closeJob();
     go(newStatus === "Scheduled" ? "schedule" : "jobs");
     hideTaskProgress();
-    toast(newStatus === "Scheduled" ? "Appointment confirmed and added to the Weekly Planner." : `Job marked ${newStatus}.`);
+    toast(outcome?.queued
+      ? `Saved on this device — "${newStatus}" will sync when you reconnect.`
+      : (newStatus === "Scheduled" ? "Appointment confirmed and added to the Weekly Planner." : `Job marked ${newStatus}.`));
     persistOptimisticJobs();
   } catch (error) {
     console.error(error);
@@ -3986,11 +3989,28 @@ if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => navigator.serviceWorker.register("./service-worker.js").catch(console.error));
 }
 
+async function flushOfflineWrites() {
+  let result;
+  try {
+    result = await api.flushOfflineQueue({
+      onError: (item, error) => toast(`A saved change was rejected on sync: ${error.message || error}`),
+    });
+  } catch (error) {
+    console.warn("Offline write queue flush failed.", error);
+    return;
+  }
+  if (result?.done) {
+    toast(`Synced ${result.done} offline change${result.done === 1 ? "" : "s"}.`);
+    if (state.authenticated) loadLiveData().catch(err => console.error("Post-sync refresh failed.", err));
+  }
+}
+
 window.addEventListener("online", async () => {
   await refreshPendingPickupCount({render:true});
   if (state.pendingPickupCount) toast(`${state.pendingPickupCount} saved pickup${state.pendingPickupCount===1?" is":"s are"} ready to sync.`);
+  flushOfflineWrites();
 });
-window.addEventListener("offline", () => toast("GamePlan is offline. Pickup work can still be saved on this device."));
+window.addEventListener("offline", () => toast("GamePlan is offline. Your work is saved on this device and will sync when you reconnect."));
 
 loadPinSession();
 refreshPendingPickupCount();

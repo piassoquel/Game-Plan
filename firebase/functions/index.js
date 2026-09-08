@@ -18,7 +18,9 @@ import {
   requireAuthorizedLogin,
   resolveActor, requirePermission, actorLabel,
 } from "./lib/common.mjs";
-import { combineLocalDateTime, laDateString, assertNoConflict } from "./lib/schedule.mjs";
+import {
+  combineLocalDateTime, laDateString, assertSchedulable, overlappingScheduledJobs,
+} from "./lib/schedule.mjs";
 import { uploadDataUrl } from "./lib/photos.mjs";
 import { computeQuote } from "./pricing.mjs";
 
@@ -284,7 +286,11 @@ export const createJob = onCall(async (request) => {
   let status = "unscheduled";
   if (str(data.scheduledDate) && str(data.scheduledTime)) {
     const when = combineLocalDateTime(data.scheduledDate, data.scheduledTime);
-    await assertNoConflict(when, priced.durationMinutes, null, Boolean(data.overrideSchedule));
+    const { overlaps, reasons } = await assertSchedulable(
+      when, priced.durationMinutes, null, Boolean(data.overrideSchedule));
+    if (overlaps.length || reasons.length) {
+      requirePermission(actor, "canOverrideConflict", "This user cannot override schedule restrictions.");
+    }
     scheduledAt = Timestamp.fromDate(when);
     status = "scheduled";
   }
@@ -437,8 +443,10 @@ export const updateJobStatus = onCall(async (request) => {
   let clashes = [];
   if (target === "scheduled") {
     if (!job.scheduledAt) throw new HttpsError("failed-precondition", "Give this job a date and time before scheduling it.");
-    clashes = await assertNoConflict(job.scheduledAt.toDate(), job.durationMinutes, jobId, Boolean(data.overrideSchedule));
-    if (clashes.length) requirePermission(approver, "canOverrideConflict", "This manager cannot override schedule conflicts.");
+    const { overlaps, reasons } = await assertSchedulable(
+      job.scheduledAt.toDate(), job.durationMinutes, jobId, Boolean(data.overrideSchedule));
+    clashes = [...overlaps, ...reasons];
+    if (clashes.length) requirePermission(approver, "canOverrideConflict", "This manager cannot override schedule restrictions.");
   }
 
   const updates = { status: target, updatedBy: actorLabel(actor), updatedAt: now };
@@ -690,4 +698,103 @@ export const finalizePickupInspection = onCall(async (request) => {
   await batch.commit();
 
   return { jobId, pickupInspectionId: inspectionId, pickupInspectionStatus: "complete", issueCount, photoCount };
+});
+
+// -------------------------------------------------------------- updateJobSchedule
+const PIGGYBACK_RE = /^\[PIGGYBACK/i;
+
+export const updateJobSchedule = onCall(async (request) => {
+  const d = db();
+  const data = request.data || {};
+  const now = Timestamp.now();
+  const jobId = str(data.jobId);
+  if (!jobId) throw new HttpsError("invalid-argument", "jobId is required.");
+  if (!str(data.scheduledDate) || !str(data.scheduledTime)) {
+    throw new HttpsError("invalid-argument", "Choose a date and a start time.");
+  }
+  const piggyback = Boolean(data.piggyback);
+  const when = combineLocalDateTime(data.scheduledDate, data.scheduledTime);
+
+  const actor = await resolveActor(request, { pinToken: data.pinToken });
+  requirePermission(actor, "canCreateQuote", "You do not have permission to reschedule jobs.");
+
+  const jobRef = d.doc(`gpJobs/${jobId}`);
+  const jobSnap = await jobRef.get();
+  if (!jobSnap.exists) throw new HttpsError("not-found", "Job not found.");
+  const job = jobSnap.data();
+
+  const overlapDocs = await overlappingScheduledJobs(when, job.durationMinutes, jobId);
+  if (overlapDocs.length && !piggyback) {
+    throw new HttpsError("failed-precondition",
+      `This time overlaps an approved job (${overlapDocs.map((x) => x.data().jobNumber || x.id).join(", ")}). A manager must select the Piggyback option.`);
+  }
+  if (piggyback && !overlapDocs.length) {
+    throw new HttpsError("failed-precondition", "The selected Piggyback overlap no longer exists. Reload the schedule and choose again.");
+  }
+
+  // Manager approval when moving a confirmed appointment or approving a piggyback.
+  let approver = null;
+  if (job.status === "scheduled" || piggyback) {
+    approver = actor.permissions?.canApproveSchedule
+      ? actor
+      : await resolveActor(request, { pinToken: data.approvalToken });
+    requirePermission(approver, "canApproveSchedule", "Manager approval is required to move this appointment.");
+    if (piggyback) {
+      requirePermission(approver, "canOverrideConflict", "This manager cannot approve Piggyback overlaps.");
+    }
+  }
+
+  const partnerNumbers = overlapDocs.map((x) => x.data().jobNumber || x.id);
+  const batch = d.batch();
+  const jobUpdates = {
+    scheduledAt: Timestamp.fromDate(when),
+    scheduledDate: laDateString(when),
+    updatedBy: actorLabel(actor), updatedAt: now,
+  };
+  if (approver && approver !== actor) { jobUpdates.approvedBy = actorLabel(approver); jobUpdates.approvedAt = now; }
+  if (piggyback) {
+    const marker = `[PIGGYBACK — MANAGER APPROVED WITH ${partnerNumbers.join(", ")}]`;
+    jobUpdates.isPiggyback = true;
+    jobUpdates.internalNotes = PIGGYBACK_RE.test(str(job.internalNotes))
+      ? job.internalNotes
+      : `${marker}${job.internalNotes ? `\n${job.internalNotes}` : ""}`;
+  }
+  batch.update(jobRef, jobUpdates);
+
+  if (piggyback) {
+    for (const partner of overlapDocs) {
+      const pd = partner.data();
+      const marker = `[PIGGYBACK — MANAGER APPROVED WITH ${job.jobNumber || jobId}]`;
+      batch.update(partner.ref, {
+        isPiggyback: true,
+        internalNotes: str(pd.internalNotes).includes(marker)
+          ? pd.internalNotes
+          : `${marker}${pd.internalNotes ? `\n${pd.internalNotes}` : ""}`,
+        updatedBy: actorLabel(actor), updatedAt: now,
+      });
+      batch.set(d.doc(`gpJobs/${partner.id}/history/${newId("HIS")}`), {
+        eventType: "Piggyback Linked",
+        description: `Manager-approved Piggyback with ${job.jobNumber || jobId} · Approved by ${actorLabel(approver)}`,
+        previousValue: "", newValue: job.jobNumber || jobId,
+        performedBy: actorLabel(actor), performedAt: now, source: "GamePlan App",
+      });
+    }
+  }
+
+  batch.set(d.doc(`gpJobs/${jobId}/history/${newId("HIS")}`), {
+    eventType: piggyback ? "Piggyback Rescheduled" : "Appointment Rescheduled",
+    description: (piggyback
+      ? `Appointment moved into a manager-approved Piggyback overlap with ${partnerNumbers.join(", ")}`
+      : "Appointment date and time updated") + (approver && approver !== actor ? ` · Approved by ${actorLabel(approver)}` : ""),
+    previousValue: job.scheduledAt ? job.scheduledAt.toDate().toISOString() : "",
+    newValue: when.toISOString(),
+    performedBy: actorLabel(actor), performedAt: now, source: "GamePlan App",
+  });
+
+  await batch.commit();
+  return {
+    jobId, scheduledAt: when.toISOString(), piggyback,
+    partnerJobIds: overlapDocs.map((x) => x.id),
+    approvedBy: approver && approver !== actor ? actorLabel(approver) : "",
+  };
 });

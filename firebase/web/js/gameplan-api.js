@@ -7,9 +7,28 @@
 import {
   collection, query, where, getDocs, doc, getDoc,
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
-import { db, auth, functions, httpsCallable } from "./firebase-app.js?v=fb11";
+import { db, auth, functions, httpsCallable } from "./firebase-app.js?v=fb12";
+import { enqueue, flush, count, looksOffline } from "./offline-queue.js?v=fb12";
 
 const call = (name) => httpsCallable(functions, name);
+
+// Writes that are safe to defer when offline (post-appointment field work).
+const OFFLINE_ELIGIBLE = new Set([
+  "updateJobStatus", "updateJobDetails", "updateEquipmentBuildStatus", "finalizePickupInspection",
+]);
+
+async function offlineWrite(name, payload) {
+  try {
+    const res = await call(name)(payload);
+    return res.data;
+  } catch (error) {
+    if (OFFLINE_ELIGIBLE.has(name) && looksOffline(error)) {
+      const entry = await enqueue(name, payload);
+      return { queued: true, offlineId: entry.id };
+    }
+    throw error;
+  }
+}
 
 const LA = "America/Los_Angeles";
 const fmtDate = new Intl.DateTimeFormat("en-US", { timeZone: LA, weekday: "short", month: "short", day: "numeric" });
@@ -200,24 +219,34 @@ export class GamePlanApi {
   }
 
   async updateJobStatus(jobId, newStatus, statusNote = "", pinToken = "", approvalToken = "", overrideSchedule = false, scheduleOverrideType = "", overridePickupInspection = false) {
-    const res = await call("updateJobStatus")({ jobId, newStatus, statusNote, pinToken, approvalToken, overrideSchedule, scheduleOverrideType, overridePickupInspection });
-    return res.data;
+    return offlineWrite("updateJobStatus", { jobId, newStatus, statusNote, pinToken, approvalToken, overrideSchedule, scheduleOverrideType, overridePickupInspection });
   }
 
   async updateJobDetails(jobId, equipment, pickupType = "", pickupNotes = "", pinToken = "") {
-    const res = await call("updateJobDetails")({ jobId, equipment, pickupType, pickupNotes, pinToken });
-    return res.data;
+    return offlineWrite("updateJobDetails", { jobId, equipment, pickupType, pickupNotes, pinToken });
   }
 
-  async updateJobSchedule() { throw notYet(); }
+  async pendingWriteCount() { return count(); }
+
+  async flushOfflineQueue({ onError } = {}) {
+    return flush({
+      updateJobStatus: (p) => call("updateJobStatus")(p),
+      updateJobDetails: (p) => call("updateJobDetails")(p),
+      updateEquipmentBuildStatus: (p) => call("updateEquipmentBuildStatus")(p),
+      finalizePickupInspection: (p) => call("finalizePickupInspection")(p),
+    }, { onError });
+  }
+
+  async updateJobSchedule(jobId, scheduledDate, scheduledTime, pinToken = "", approvalToken = "", piggyback = false) {
+    const res = await call("updateJobSchedule")({ jobId, scheduledDate, scheduledTime, pinToken, approvalToken, piggyback });
+    return res.data;
+  }
 
   async updateEquipmentBuildStatus(jobId, jobEquipmentId, buildComplete = true, pinToken = "", approvalToken = "") {
-    const res = await call("updateEquipmentBuildStatus")({ jobId, jobEquipmentId, buildComplete, pinToken, approvalToken });
-    return res.data;
+    return offlineWrite("updateEquipmentBuildStatus", { jobId, jobEquipmentId, buildComplete, pinToken, approvalToken });
   }
   async finalizePickupInspection(jobId, inspection, pinToken = "") {
-    const res = await call("finalizePickupInspection")({ jobId, inspection, pinToken });
-    return res.data;
+    return offlineWrite("finalizePickupInspection", { jobId, inspection, pinToken });
   }
   async getStaffManagement() { throw notYet(); }
   async saveStaffProfile() { throw notYet(); }

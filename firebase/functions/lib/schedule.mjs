@@ -1,5 +1,5 @@
 import { HttpsError } from "firebase-functions/v2/https";
-import { db, num } from "./common.mjs";
+import { db, num, str } from "./common.mjs";
 
 const LA_TZ = "America/Los_Angeles";
 
@@ -32,29 +32,88 @@ export function laDateString(date) {
   }).format(date);
 }
 
-/**
- * Single-crew scheduling guard. Rejects if [start, start+duration) overlaps
- * another scheduled job, unless `override` is set.
- * TODO(next): availability-rule window + blackout-date checks.
- */
-export async function assertNoConflict(startDate, durationMinutes, excludeJobId, override) {
+function laParts(date) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat("en-US", {
+    timeZone: LA_TZ, weekday: "long", hour: "2-digit", minute: "2-digit", hour12: false,
+  }).formatToParts(date).map((x) => [x.type, x.value]));
+  return { weekday: p.weekday, minutes: (+p.hour % 24) * 60 + +p.minute };
+}
+const hmToMinutes = (v) => {
+  const [h, m] = str(v).split(":").map(Number);
+  return Number.isFinite(h) && Number.isFinite(m) ? h * 60 + m : null;
+};
+
+const dur = (minutes) => Math.max(30, num(minutes)) * 60000;
+
+/** Scheduled jobs whose interval overlaps [start, start+duration). Returns docs. */
+export async function overlappingScheduledJobs(startDate, durationMinutes, excludeJobId) {
   const start = startDate.getTime();
-  const end = start + Math.max(30, num(durationMinutes)) * 60000;
+  const end = start + dur(durationMinutes);
   const snap = await db().collection("gpJobs").where("status", "==", "scheduled").get();
-  const clashes = [];
-  for (const doc of snap.docs) {
-    if (doc.id === excludeJobId) continue;
+  return snap.docs.filter((doc) => {
+    if (doc.id === excludeJobId) return false;
     const j = doc.data();
-    if (!j.scheduledAt) continue;
+    if (!j.scheduledAt) return false;
     const oStart = j.scheduledAt.toMillis();
-    const oEnd = oStart + Math.max(30, num(j.durationMinutes)) * 60000;
-    if (start < oEnd && end > oStart) clashes.push(j.jobNumber || doc.id);
+    return start < oStart + dur(j.durationMinutes) && end > oStart;
+  });
+}
+
+/**
+ * Availability-rule window + blackout-date check. Returns an array of
+ * human-readable reasons the slot is restricted (empty = clear).
+ */
+export async function schedulabilityReasons(startDate) {
+  const { weekday, minutes } = laParts(startDate);
+  const dateKey = laDateString(startDate);
+  const reasons = [];
+
+  const [rulesSnap, blackoutSnap] = await Promise.all([
+    db().collection("gpAvailabilityRules").get(),
+    db().collection("gpBlackoutDates").get(),
+  ]);
+
+  const rule = rulesSnap.docs.map((x) => x.data())
+    .find((r) => str(r.day).toLowerCase().startsWith(weekday.toLowerCase().slice(0, 3)));
+  if (rule) {
+    if (rule.active === false || rule.available === false) {
+      reasons.push(`${weekday} is outside normal delivery days`);
+    } else {
+      const open = hmToMinutes(rule.startTime);
+      const close = hmToMinutes(rule.endTime);
+      if (open != null && minutes < open) reasons.push("appointment is before normal hours");
+      if (close != null && minutes > close) reasons.push("appointment is after normal hours");
+    }
+  } else if (weekday === "Saturday" || weekday === "Sunday") {
+    reasons.push(`${weekday} requires manager discretion`);
   }
-  if (clashes.length && !override) {
-    throw new HttpsError(
-      "failed-precondition",
-      `This time overlaps an approved job (${clashes.join(", ")}). A manager must approve the overlap.`,
-    );
+
+  for (const b of blackoutSnap.docs.map((x) => x.data())) {
+    if (b.active === false) continue;
+    const from = str(b.startDate) || str(b.endDate);
+    const to = str(b.endDate) || str(b.startDate);
+    if (from && dateKey >= from && dateKey <= to) {
+      reasons.push(`blackout${b.reason ? `: ${b.reason}` : ""}`);
+    }
   }
-  return clashes;
+  return reasons;
+}
+
+/**
+ * Single-crew guard used on transitions to "scheduled". Throws unless clear or
+ * `override` is set. Returns { overlaps: [jobNumber...], reasons: [...] }.
+ */
+export async function assertSchedulable(startDate, durationMinutes, excludeJobId, override) {
+  const [overlapDocs, reasons] = await Promise.all([
+    overlappingScheduledJobs(startDate, durationMinutes, excludeJobId),
+    schedulabilityReasons(startDate),
+  ]);
+  const overlaps = overlapDocs.map((d) => d.data().jobNumber || d.id);
+  if ((overlaps.length || reasons.length) && !override) {
+    const parts = [];
+    if (overlaps.length) parts.push(`overlaps an approved job (${overlaps.join(", ")})`);
+    if (reasons.length) parts.push(reasons.join("; "));
+    throw new HttpsError("failed-precondition", `Manager override required: ${parts.join(" · ")}.`);
+  }
+  return { overlaps, reasons };
 }
