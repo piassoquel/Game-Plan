@@ -835,3 +835,18 @@ export const rollDailyFeed = onSchedule(
     console.log(`rollDailyFeed: synced ${synced} jobs, pruned ${pruned} stale feed docs`);
   },
 );
+
+// Manager-triggered: re-sync every non-archived job's feed docs + prune.
+// Handy for the initial backfill and if the feed ever drifts.
+export const backfillFeed = onCall(async (request) => {
+  const actor = await resolveActor(request, { pinToken: request.data?.pinToken });
+  requirePermission(actor, "canApproveSchedule", "Manager access is required.");
+  const todayKey = laDateString(new Date());
+  const jobs = await db().collection("gpJobs").where("archived", "==", false).get();
+  let synced = 0;
+  for (const doc of jobs.docs) {
+    try { await syncJobFeed(doc.id, doc.data(), todayKey); synced++; } catch (e) { /* logged in trigger */ }
+  }
+  const pruned = await pruneFeed(14);
+  return { synced, pruned };
+});

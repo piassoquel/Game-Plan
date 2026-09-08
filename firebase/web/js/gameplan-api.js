@@ -7,8 +7,8 @@
 import {
   collection, query, where, getDocs, doc, getDoc,
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
-import { db, auth, functions, httpsCallable } from "./firebase-app.js?v=fb12";
-import { enqueue, flush, count, looksOffline } from "./offline-queue.js?v=fb12";
+import { db, auth, functions, httpsCallable } from "./firebase-app.js?v=fb13";
+import { enqueue, flush, count, looksOffline } from "./offline-queue.js?v=fb13";
 
 const call = (name) => httpsCallable(functions, name);
 
@@ -248,6 +248,11 @@ export class GamePlanApi {
   async finalizePickupInspection(jobId, inspection, pinToken = "") {
     return offlineWrite("finalizePickupInspection", { jobId, inspection, pinToken });
   }
+  async backfillFeed(pinToken = "") {
+    const res = await call("backfillFeed")({ pinToken });
+    return res.data;
+  }
+
   async getStaffManagement() { throw notYet(); }
   async saveStaffProfile() { throw notYet(); }
   async saveCustomer() { throw notYet(); }

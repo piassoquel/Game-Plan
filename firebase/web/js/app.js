@@ -1,6 +1,6 @@
-import { GamePlanApi } from "./gameplan-api.js?v=fb12";
-import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb12";
-import { computeQuote } from "./pricing.mjs?v=fb12";
+import { GamePlanApi } from "./gameplan-api.js?v=fb13";
+import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb13";
+import { computeQuote } from "./pricing.mjs?v=fb13";
 
 const CACHE_KEY = "gameplan-live-bootstrap-v2";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -106,7 +106,7 @@ function refreshLiveDataInBackground() {
 function syncPanel(){
   const stamp=state.lastUpdated?new Date(state.lastUpdated).toLocaleTimeString([],{hour:"numeric",minute:"2-digit"}):"Not yet synced";
   const lastSeconds=state.loadDurationMs?` · ${(state.loadDurationMs/1000).toFixed(1)}s`:"";
-  return `<section class="manager-sync-panel"><span><b>CMS data</b><small>${state.live?`Last synced ${esc(stamp)}${lastSeconds}`:state.cached?`Cached from ${esc(stamp)}`:"Not connected"}${state.pendingPickupCount?` · ${state.pendingPickupCount} pickup pending`:""}</small></span><div class="sync-panel-actions">${state.pendingPickupCount?`<button type="button" class="pending-sync-button" data-sync-pickup-queue ${state.syncingPickups?"disabled":""}><i aria-hidden="true">↑</i>${state.syncingPickups?"Uploading…":`Sync ${state.pendingPickupCount}`}</button>`:""}<button type="button" data-hard-refresh-cms ${state.refreshing?"disabled":""}><i aria-hidden="true">↻</i>${state.refreshing?"Syncing…":"Sync CMS"}</button></div></section>`;
+  return `<section class="manager-sync-panel"><span><b>CMS data</b><small>${state.live?`Last synced ${esc(stamp)}${lastSeconds}`:state.cached?`Cached from ${esc(stamp)}`:"Not connected"}${state.pendingPickupCount?` · ${state.pendingPickupCount} pickup pending`:""}</small></span><div class="sync-panel-actions">${state.pendingPickupCount?`<button type="button" class="pending-sync-button" data-sync-pickup-queue ${state.syncingPickups?"disabled":""}><i aria-hidden="true">↑</i>${state.syncingPickups?"Uploading…":`Sync ${state.pendingPickupCount}`}</button>`:""}<button type="button" data-hard-refresh-cms ${state.refreshing?"disabled":""}><i aria-hidden="true">↻</i>${state.refreshing?"Syncing…":"Sync CMS"}</button>${can("canApproveSchedule")?`<button type="button" data-resync-feed><i aria-hidden="true">▤</i>Resync Dashboard</button>`:""}</div></section>`;
 }
 
 const OFFLINE_DB_NAME = "gameplan-offline-v1";
@@ -2176,6 +2176,15 @@ function bindDynamic() {
   document.querySelectorAll("[data-complete-details]").forEach(el => el.onclick = () => openCompleteDetails(el.dataset.completeDetails));
   view.querySelector("[data-hard-refresh-cms]")?.addEventListener("click",hardRefreshCms);
   view.querySelector("[data-sync-pickup-queue]")?.addEventListener("click",syncPendingPickups);
+  view.querySelector("[data-resync-feed]")?.addEventListener("click",async event=>{
+    const b=event.currentTarget;b.disabled=true;
+    try{
+      const pinToken=await requestManagerApproval("Manager approval to resync the Daily Dashboard feed.");
+      const r=await api.backfillFeed(pinToken);
+      toast(`Dashboard feed resynced · ${r.synced} job${r.synced===1?"":"s"}${r.pruned?`, ${r.pruned} old removed`:""}.`);
+    }catch(error){toast(error.message||"Feed resync failed.");}
+    b.disabled=false;
+  });
   view.querySelectorAll("[data-review-job]").forEach(el => el.onclick = () => openJob(el.dataset.reviewJob));
   view.querySelector("[data-toggle-manager-attention]")?.addEventListener("click",()=>{
     managerHomePanels.attentionOpen=!managerHomePanels.attentionOpen;
