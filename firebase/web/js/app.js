@@ -1,6 +1,6 @@
-import { GamePlanApi } from "./gameplan-api.js?v=fb14";
-import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb14";
-import { computeQuote } from "./pricing.mjs?v=fb14";
+import { GamePlanApi } from "./gameplan-api.js?v=fb15";
+import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb15";
+import { computeQuote } from "./pricing.mjs?v=fb15";
 
 const CACHE_KEY = "gameplan-live-bootstrap-v2";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -1020,6 +1020,7 @@ function bindCompleteDetails(job, items) {
         target.brand=detail.manufacturer||target.brand;
         target.model=detail.model||target.model;
         if(detail.photoDataUrl)target.imageUrl=detail.photoDataUrl;
+        if(detail.description)target.description=detail.description;
       });
       closeJob();
       go("today");
