@@ -551,10 +551,33 @@ export const updateJobDetails = onCall(async (request) => {
     const line = lineSnap.data();
 
     const pickupOnly = line.pickupRequired === true && line.deliveryRequired === false;
-    if (pickupOnly) continue;
+    const hasCatalog = Object.values(products).some((p) => p.equipmentTypeId === line.equipmentTypeId);
+    const description = str(item.description).slice(0, 120);
+
+    if (pickupOnly) {
+      // Free-text description for items with no catalog models (e.g. Other).
+      if (!hasCatalog) {
+        if (line.equipmentTypeId === "EQP-OTHER" && !description && !str(line.description)) {
+          throw new HttpsError("invalid-argument", "Describe every Other item being picked up.");
+        }
+        if (description) {
+          await lineRef.update({ description, updatedBy: actorLabel(actor), updatedAt: now });
+        }
+      }
+      continue;
+    }
 
     const isNew = String(line.condition || "").toLowerCase() === "new";
     let brand, model, productId = str(item.productId), imageUrl = str(line.imageUrl);
+
+    if (isNew && !hasCatalog) {
+      if (!description) throw new HttpsError("invalid-argument", "Enter a short description for every new item without catalog models.");
+      await lineRef.update({
+        description, itemDescription: description, productId: null,
+        updatedBy: actorLabel(actor), updatedAt: now,
+      });
+      continue;
+    }
 
     if (isNew) {
       const p = products[productId];

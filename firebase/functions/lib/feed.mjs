@@ -29,7 +29,8 @@ async function jobSummary(jobId) {
   for (const r of rows) {
     const qty = Math.max(1, num(r.quantity) || 1);
     itemCount += qty;
-    const name = await equipmentName(r.equipmentTypeId);
+    const typeName = await equipmentName(r.equipmentTypeId);
+    const name = r.description ? `${typeName} (${str(r.description)})` : typeName;
     parts.push(qty > 1 ? `${qty}× ${name}` : name);
   }
   return { summary: parts.slice(0, 4).join(" + ") + (parts.length > 4 ? " + …" : ""), itemCount };

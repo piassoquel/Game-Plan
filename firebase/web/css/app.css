@@ -655,3 +655,7 @@ body{background:var(--gp-bg);color:var(--gp-text)}
 .past-due-row__main span{color:var(--gp-muted);font-size:12px;}
 .past-due-age{flex:0 0 auto;font-size:12px;font-weight:700;color:var(--gp-red);white-space:nowrap;}
 .past-due-row .button{flex:0 0 auto;padding:6px 12px;font-size:12px;}
+
+/* --- Equipment description label (Other / no-catalog items) --------------- */
+.equipment-meta-label{display:flex;width:fit-content;max-width:100%;gap:7px;align-items:baseline;margin-top:6px;padding:3px 10px;border-radius:999px;background:color-mix(in srgb,var(--gp-orange) 14%,transparent);border:1px solid color-mix(in srgb,var(--gp-orange) 45%,transparent);color:var(--gp-text);font-size:12px;line-height:1.35;overflow-wrap:anywhere}
+.equipment-meta-label b{flex:0 0 auto;color:var(--gp-orange);font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase}

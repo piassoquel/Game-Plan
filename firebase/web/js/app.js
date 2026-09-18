@@ -1,6 +1,6 @@
-import { GamePlanApi } from "./gameplan-api.js?v=fb13";
-import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb13";
-import { computeQuote } from "./pricing.mjs?v=fb13";
+import { GamePlanApi } from "./gameplan-api.js?v=fb14";
+import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb14";
+import { computeQuote } from "./pricing.mjs?v=fb14";
 
 const CACHE_KEY = "gameplan-live-bootstrap-v2";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -856,6 +856,20 @@ function detailsItemIcon(item) {
   return gpIcon(iconNameFor(type));
 }
 
+// Equipment types with no catalog models (Other, Weight Set, Squat Rack, …)
+// get a free-text description instead of a model dropdown.
+function equipmentHasCatalog(item) {
+  return state.products.some(product => product.equipmentTypeId === item.equipmentTypeId);
+}
+
+function isOtherEquipment(item) {
+  return item.equipmentTypeId === "EQP-OTHER" || /^other$/i.test(equipmentTypeName(item));
+}
+
+function descriptionField(item, required) {
+  return `<label class="details-field"><span>Description <small>(${required ? "Required" : "Optional"})</small></span><input data-detail-description maxlength="80" value="${esc(item.description || "")}" placeholder="e.g. Foosball table, 4-person"></label>`;
+}
+
 function productOptionsFor(item) {
   return state.products.filter(product => product.equipmentTypeId === item.equipmentTypeId)
     .map(product => `<option value="${esc(product.id)}" ${product.id===item.productId?"selected":""}>${esc([product.brand,product.model].filter(Boolean).join(" "))}</option>`).join("");
@@ -873,7 +887,11 @@ function completeDetailsItemCard(item,index) {
   const title = pickupOnly ? equipmentTypeName(item) : `${isNew ? "New" : "Used"} ${equipmentTypeName(item)}`;
   if (pickupOnly) return `<section class="complete-item-card pickup-only-detail-card" data-details-item="${index}">
     <div class="complete-item-head"><span class="item-number">${index+1}</span><i class="equipment-reference-icon">${detailsItemIcon(item)}</i><div><h3>${esc(title)}</h3><p>Quantity: ${Math.max(1,Number(item.quantity||1))}</p></div></div>
-    <div class="pickup-detail-notice"><b>No equipment details required</b><span>Manufacturer, model, condition, and photos will be recorded during the Pickup Item Checklist.</span></div>
+    ${equipmentHasCatalog(item) ? `<div class="pickup-detail-notice"><b>No equipment details required</b><span>Manufacturer, model, condition, and photos will be recorded during the Pickup Item Checklist.</span></div>` : `${descriptionField(item, isOtherEquipment(item))}<div class="pickup-detail-notice"><span>Condition and photos will be recorded during the Pickup Item Checklist.</span></div>`}
+  </section>`;
+  if (isNew && !equipmentHasCatalog(item)) return `<section class="complete-item-card" data-details-item="${index}">
+    <div class="complete-item-head"><span class="item-number">${index+1}</span><i class="equipment-reference-icon">${detailsItemIcon(item)}</i><div><h3>${esc(title)}</h3><p>Quantity: ${Math.max(1,Number(item.quantity||1))}</p></div></div>
+    ${descriptionField(item, true)}
   </section>`;
   if (isNew) return `<section class="complete-item-card" data-details-item="${index}">
     <div class="complete-item-head"><span class="item-number">${index+1}</span><i class="equipment-reference-icon">${detailsItemIcon(item)}</i><div><h3>${esc(title)}</h3><p>Quantity: ${Math.max(1,Number(item.quantity||1))}</p></div></div>
@@ -971,19 +989,21 @@ function bindCompleteDetails(job, items) {
         manufacturer:pickupOnly?"":(isNew?item.brand:(card.querySelector("[data-detail-manufacturer]")?.value.trim()||"")),
         equipmentTypeText:equipmentTypeName(item),
         model:pickupOnly?"":(isNew?item.model:(card.querySelector("[data-detail-model]")?.value.trim()||"")),
-        photoDataUrl:pickupOnly?"":(item.photoDataUrl||""), photoName:pickupOnly?"":(item.photoName||"")
+        photoDataUrl:pickupOnly?"":(item.photoDataUrl||""), photoName:pickupOnly?"":(item.photoName||""),
+        description:card.querySelector("[data-detail-description]")?.value.trim()||""
       };
     });
     const missing=payloadItems.find((detail,index)=>{
       const source=items[index];
       const pickupOnly=source.pickupRequired===true&&source.deliveryRequired===false;
-      if(pickupOnly)return false;
+      const noCatalog=!equipmentHasCatalog(source);
+      if(pickupOnly)return noCatalog&&isOtherEquipment(source)&&!detail.description;
       return String(detail.condition).toLowerCase()==="new"
-        ? !detail.productId
+        ? (noCatalog?!detail.description:!detail.productId)
         : !detail.manufacturer||!detail.model||(!detail.photoDataUrl&&!source.imageUrl);
     });
     const pickupType=screen.querySelector('[name="pickupType"]:checked')?.value||screen.querySelector('[name="pickupType"][type="hidden"]')?.value||"";
-    if(missing){errorBox.textContent="Choose a model for every new delivery item and add a manufacturer, model, and photo for every used delivery item.";return;}
+    if(missing){errorBox.textContent="Choose a model (or enter a description for items without catalog models, like Other) for every new item, and add a manufacturer, model, and photo for every used delivery item.";return;}
     if(job.hasPickup&&!pickupType){errorBox.textContent="Choose Pickup for Sale or Pickup for Disposal.";return;}
     button.disabled=true;button.textContent="Saving…";
     try{
@@ -1151,7 +1171,7 @@ function pickupQuestionRow(key, label) {
 function pickupInspectionItemCard(item, index) {
   const title = [item.brand, item.model].filter(Boolean).join(" ") || `Used ${equipmentTypeName(item)}`;
   return `<section class="pickup-inspection-item" data-pickup-item="${index}">
-    <div class="complete-item-head"><span class="item-number">${index + 1}</span><i class="equipment-reference-icon">${detailsItemIcon(item)}</i><div><h3>${esc(title)}</h3><p>${esc(equipmentTypeName(item))} · Quantity: ${Math.max(1, Number(item.quantity || 1))}</p></div></div>
+    <div class="complete-item-head"><span class="item-number">${index + 1}</span><i class="equipment-reference-icon">${detailsItemIcon(item)}</i><div><h3>${esc(title)}</h3><p>${esc(equipmentTypeName(item))} · Quantity: ${Math.max(1, Number(item.quantity || 1))}</p>${item.description ? `<span class="equipment-meta-label"><b>Description</b>${esc(item.description)}</span>` : ""}</div></div>
     <h3 class="pickup-card-title">Appearance</h3>
     <div class="pickup-question-list">${PICKUP_APPEARANCE_QUESTIONS.map(([key,label]) => pickupQuestionRow(`${index}-appearance-${key}`, label)).join("")}</div>
     <h3 class="pickup-card-title">Function</h3>
@@ -1534,7 +1554,7 @@ function pickupInspectionMarkup(job, item) {
 function equipmentDetailMarkup(job, item) {
   const inspection = pickupInspectionFor(job, item.id);
   const content = `${equipmentImage(item, inspection?.photoUrl || "")}
-    <div class="equipment-copy"><strong>${esc([item.brand,item.model].filter(Boolean).join(" ") || `${String(item.condition || "").toLowerCase() === "new" ? "New" : "Used"} ${equipmentTypeName(item)}`)}</strong><small>${esc(equipmentTypeName(item))}</small>${inspection ? `<em>View Pickup Checklist</em>` : ""}</div>
+    <div class="equipment-copy"><strong>${esc([item.brand,item.model].filter(Boolean).join(" ") || `${String(item.condition || "").toLowerCase() === "new" ? "New" : "Used"} ${equipmentTypeName(item)}`)}</strong><small>${esc(equipmentTypeName(item))}</small>${item.description ? `<span class="equipment-meta-label"><b>Description</b>${esc(item.description)}</span>` : ""}${inspection ? `<em>View Pickup Checklist</em>` : ""}</div>
     <div class="equipment-build-action">${equipmentBuildControl(job, item)}</div>${inspection ? `<i class="pickup-record-chevron">⌄</i>` : ""}`;
   return inspection
     ? `<div class="equipment-card-wrap"><button type="button" class="equipment-card pickup-equipment-card" data-toggle-pickup-record="${esc(item.id)}" aria-expanded="false">${content}</button>${pickupInspectionMarkup(job, item)}</div>`
