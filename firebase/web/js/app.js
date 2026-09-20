@@ -1,6 +1,6 @@
-import { GamePlanApi } from "./gameplan-api.js?v=fb15";
-import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb15";
-import { computeQuote } from "./pricing.mjs?v=fb15";
+import { GamePlanApi } from "./gameplan-api.js?v=fb16";
+import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb16";
+import { computeQuote } from "./pricing.mjs?v=fb16";
 
 const CACHE_KEY = "gameplan-live-bootstrap-v2";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -1932,6 +1932,149 @@ function openEmployeeEditor(profileId = "") {
   };
 }
 
+// --- Availability & blackout dates (manager screen) -------------------------
+const AVAIL_DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
+const availabilityUi = { editing: null }; // null | "new" | blackout id
+
+function availDateLabel(key) {
+  const d = new Date(`${key}T12:00:00`);
+  return Number.isNaN(d.getTime()) ? key : new Intl.DateTimeFormat("en-US",{weekday:"short",month:"short",day:"numeric",year:"numeric"}).format(d);
+}
+function availRangeLabel(b) {
+  const start = String(b.startDate || "").slice(0,10), end = String(b.endDate || b.startDate || "").slice(0,10);
+  return !end || end === start ? availDateLabel(start) : `${availDateLabel(start)} – ${availDateLabel(end)}`;
+}
+
+function renderAvailability() {
+  if (!can("canApproveSchedule")) return `<div class="app-state app-state--error"><div class="app-state__icon">!</div><h2>Manager access required</h2><p>Your GamePlan role does not allow changing delivery availability.</p><button class="button neutral" data-route="more">Back to More</button></div>`;
+  const rules = Object.fromEntries((state.availabilityRules || []).map(r => [String(r.day), r]));
+  const todayKey = dateKeyLocal(new Date());
+  const all = [...(state.blackoutDates || [])].sort((a,b) => String(a.startDate).localeCompare(String(b.startDate)));
+  const upcoming = all.filter(b => String(b.endDate || b.startDate).slice(0,10) >= todayKey);
+  const past = all.filter(b => String(b.endDate || b.startDate).slice(0,10) < todayKey).reverse();
+  const editing = availabilityUi.editing === "new" ? {} : all.find(b => b.id === availabilityUi.editing);
+
+  const weekRows = AVAIL_DAYS.map(day => {
+    const r = rules[day] || {};
+    const open = r.available !== false;
+    return `<div class="avail-row" data-avail-day="${day}">
+      <b>${day}</b>
+      <label class="avail-toggle"><input type="checkbox" data-avail-open ${open ? "checked" : ""}><span>Open for deliveries</span></label>
+      <span class="avail-hours"><input type="time" data-avail-start value="${esc(r.startTime || "")}" aria-label="${day} opening time"><em>to</em><input type="time" data-avail-end value="${esc(r.endTime || "")}" aria-label="${day} closing time"></span>
+      <label class="avail-toggle avail-override"><input type="checkbox" data-avail-override ${r.overrideAllowed === false ? "" : "checked"}><span>Manager can still book</span></label>
+    </div>`;
+  }).join("");
+
+  const blackoutRow = b => {
+    const hard = b.overrideAllowed === false;
+    return `<article class="avail-blackout">
+      <div><b>${esc(availRangeLabel(b))}</b><span>${esc(b.reason || "Blackout date")}</span></div>
+      <span class="badge ${hard ? "attention" : "tentative"}">${hard ? "Closed — no overrides" : "Manager override"}</span>
+      <div class="avail-actions"><button class="button neutral" data-edit-blackout="${esc(b.id)}">Edit</button><button class="button red" data-remove-blackout="${esc(b.id)}">Remove</button></div>
+    </article>`;
+  };
+
+  const form = editing ? `<form class="avail-form" data-blackout-form data-blackout-id="${esc(editing.id || "")}">
+      <h3>${editing.id ? "Edit blackout date" : "Add blackout date"}</h3>
+      <div class="avail-form-grid">
+        <label class="details-field"><span>Start date</span><input type="date" name="startDate" required min="${todayKey}" value="${esc(editing.startDate || "")}"></label>
+        <label class="details-field"><span>End date <small>(optional, for a range)</small></span><input type="date" name="endDate" min="${todayKey}" value="${esc(editing.endDate && editing.endDate !== editing.startDate ? editing.endDate : "")}"></label>
+      </div>
+      <label class="details-field"><span>Reason</span><input name="reason" required maxlength="80" placeholder="e.g. Christmas, Staff event" value="${esc(editing.reason || "")}"></label>
+      <label class="avail-toggle"><input type="checkbox" name="hard" ${editing.overrideAllowed === false ? "checked" : ""}><span><b>Closed completely</b> — nobody can book this date, not even managers</span></label>
+      <div class="complete-details-error" data-blackout-error></div>
+      <div class="avail-form-actions"><button type="button" class="button neutral" data-cancel-blackout>Cancel</button><button type="submit" class="button">Save Blackout Date</button></div>
+    </form>` : "";
+
+  return `<div class="grid two" data-avail-root>
+    <section class="card"><div class="head"><div><h2>Blackout Dates</h2><span class="agenda-subtitle">Special occasions and closures</span></div>${editing ? "" : `<button class="button" data-add-blackout>＋ Add Date</button>`}</div>
+      <div class="body avail-list">${form}
+        ${upcoming.length ? upcoming.map(blackoutRow).join("") : (editing ? "" : `<div class="empty-agenda compact"><b>No upcoming blackout dates</b><span>Add a date to stop employees scheduling deliveries on it.</span></div>`)}
+        ${past.length ? `<details class="avail-past"><summary>Past dates (${past.length})</summary>${past.map(blackoutRow).join("")}</details>` : ""}
+      </div></section>
+    <section class="card"><div class="head"><div><h2>Weekly Delivery Hours</h2><span class="agenda-subtitle">Leave hours blank for the standard 10:00 AM – 2:00 PM window</span></div></div>
+      <div class="body avail-week">${weekRows}
+        <div class="complete-details-error" data-avail-error></div>
+        <button class="button" data-save-availability>Save Weekly Hours</button>
+      </div></section>
+  </div>`;
+}
+
+function bindAvailabilityScreen() {
+  const rerender = () => go("availability");
+  const refresh = () => loadLiveData().catch(error => console.error("Post-availability refresh failed.", error));
+
+  view.querySelector("[data-add-blackout]")?.addEventListener("click", () => { availabilityUi.editing = "new"; rerender(); });
+  view.querySelector("[data-cancel-blackout]")?.addEventListener("click", () => { availabilityUi.editing = null; rerender(); });
+  view.querySelectorAll("[data-edit-blackout]").forEach(el => el.onclick = () => { availabilityUi.editing = el.dataset.editBlackout; rerender(); });
+
+  view.querySelectorAll("[data-remove-blackout]").forEach(el => el.onclick = async () => {
+    const item = state.blackoutDates.find(b => b.id === el.dataset.removeBlackout);
+    if (!item || !window.confirm(`Remove the blackout for ${availRangeLabel(item)} (${item.reason || "blackout"})?\n\nDeliveries can be scheduled on those dates again.`)) return;
+    el.disabled = true;
+    try {
+      const pinToken = await requestManagerApproval("Manager approval to remove a blackout date.");
+      await api.deleteBlackoutDate(item.id, pinToken);
+      touchPinSession();
+      state.blackoutDates = state.blackoutDates.filter(b => b.id !== item.id);
+      toast("Blackout date removed.");
+      rerender(); refresh();
+    } catch (error) { toast(error.message || "The blackout date could not be removed."); el.disabled = false; }
+  });
+
+  const form = view.querySelector("[data-blackout-form]");
+  if (form) form.onsubmit = async event => {
+    event.preventDefault();
+    const errorBox = form.querySelector("[data-blackout-error]");
+    const data = new FormData(form);
+    const startDate = String(data.get("startDate") || ""), endDate = String(data.get("endDate") || "") || startDate;
+    const reason = String(data.get("reason") || "").trim();
+    if (!startDate) return void(errorBox.textContent = "Choose a start date.");
+    if (endDate < startDate) return void(errorBox.textContent = "The end date can't be before the start date.");
+    if (!reason) return void(errorBox.textContent = "Enter a reason.");
+    const submit = form.querySelector('[type="submit"]'); submit.disabled = true; submit.textContent = "Saving…"; errorBox.textContent = "";
+    try {
+      const pinToken = await requestManagerApproval("Manager approval to change delivery availability.");
+      const payload = { id: form.dataset.blackoutId || "", startDate, endDate, reason, overrideAllowed: !data.get("hard") };
+      const result = await api.saveBlackoutDate(payload, pinToken);
+      touchPinSession();
+      const saved = { id: result.id, startDate, endDate, reason, overrideAllowed: payload.overrideAllowed, active: true };
+      state.blackoutDates = [...state.blackoutDates.filter(b => b.id !== saved.id), saved];
+      availabilityUi.editing = null;
+      toast("Blackout date saved.");
+      rerender(); refresh();
+    } catch (error) {
+      errorBox.textContent = error.message || "The blackout date could not be saved.";
+      submit.disabled = false; submit.textContent = "Save Blackout Date";
+    }
+  };
+
+  view.querySelector("[data-save-availability]")?.addEventListener("click", async event => {
+    const button = event.currentTarget, errorBox = view.querySelector("[data-avail-error]");
+    const rules = [...view.querySelectorAll("[data-avail-day]")].map(row => ({
+      day: row.dataset.availDay,
+      available: row.querySelector("[data-avail-open]").checked,
+      startTime: row.querySelector("[data-avail-start]").value,
+      endTime: row.querySelector("[data-avail-end]").value,
+      overrideAllowed: row.querySelector("[data-avail-override]").checked
+    }));
+    const bad = rules.find(r => Boolean(r.startTime) !== Boolean(r.endTime) || (r.startTime && r.startTime >= r.endTime));
+    if (bad) return void(errorBox.textContent = `${bad.day}: set both an opening and closing time (closing after opening), or leave both blank.`);
+    button.disabled = true; button.textContent = "Saving…"; errorBox.textContent = "";
+    try {
+      const pinToken = await requestManagerApproval("Manager approval to change weekly delivery hours.");
+      await api.saveAvailability(rules, pinToken);
+      touchPinSession();
+      state.availabilityRules = rules.map(r => ({ ...r, startTime: r.startTime || null, endTime: r.endTime || null, active: true }));
+      toast("Weekly delivery hours saved.");
+      rerender(); refresh();
+    } catch (error) {
+      errorBox.textContent = error.message || "Weekly hours could not be saved.";
+      button.disabled = false; button.textContent = "Save Weekly Hours";
+    }
+  });
+}
+
 function renderEmployees() {
   if (!can("canEditCMS")) return `<div class="app-state app-state--error"><div class="app-state__icon">!</div><h2>Administrator access required</h2><p>Your GamePlan role does not allow employee management.</p><button class="button neutral" data-route="more">Back to More</button></div>`;
   if (state.staffManagement.loading) return `<div class="app-state"><div class="loading-spinner"></div><h2>Loading employees…</h2></div>`;
@@ -2172,12 +2315,17 @@ const views = {
 
   more: {
     title:"More", sub:"Administration and app information",
-    html:()=>`<div class="grid two"><section class="card"><div class="head"><h2>Administration</h2></div><div class="body list">${can("canEditCMS") ? `<button class="row" data-route="employees"><div><b>Employee Management</b><span>Add staff, assign roles, manage PINs, and deactivate access</span></div><b>›</b></button>` : ""}<button class="row" data-demo-action="Settings"><div><b>Settings</b><span>Pricing, timing, availability, and app rules</span></div><b>⚙</b></button><button class="row" data-demo-action="Huddle Together"><div><b>Huddle Together</b><span>Group scheduled jobs into one operational route</span></div><b>↝</b></button></div></section><section class="card"><div class="head"><h2>System</h2></div><div class="body"><div class="row"><div><b>Data source</b><span>${state.live ? "Live GamePlan CMS" : state.cached ? "Cached live data" : "Not connected"}</span></div><span class="badge ${state.live ? "completed" : "tentative"}">${state.live ? "Live" : state.cached ? "Cached" : "Offline"}</span></div></div></section></div>`
+    html:()=>`<div class="grid two"><section class="card"><div class="head"><h2>Administration</h2></div><div class="body list">${can("canEditCMS") ? `<button class="row" data-route="employees"><div><b>Employee Management</b><span>Add staff, assign roles, manage PINs, and deactivate access</span></div><b>›</b></button>` : ""}${can("canApproveSchedule") ? `<button class="row" data-route="availability"><div><b>Availability &amp; Blackout Dates</b><span>Weekly delivery hours, days off, and special-occasion closures</span></div><b>›</b></button>` : ""}<button class="row" data-demo-action="Settings"><div><b>Settings</b><span>Pricing, timing, availability, and app rules</span></div><b>⚙</b></button><button class="row" data-demo-action="Huddle Together"><div><b>Huddle Together</b><span>Group scheduled jobs into one operational route</span></div><b>↝</b></button></div></section><section class="card"><div class="head"><h2>System</h2></div><div class="body"><div class="row"><div><b>Data source</b><span>${state.live ? "Live GamePlan CMS" : state.cached ? "Cached live data" : "Not connected"}</span></div><span class="badge ${state.live ? "completed" : "tentative"}">${state.live ? "Live" : state.cached ? "Cached" : "Offline"}</span></div></div></section></div>`
   },
 
   employees: {
     title:"Employee Management", sub:"Roles, PINs, login accounts, and access",
     html:()=>renderEmployees()
+  },
+
+  availability: {
+    title:"Availability", sub:"Delivery hours, days off, and blackout dates",
+    html:()=>renderAvailability()
   }
 };
 
@@ -2197,6 +2345,7 @@ function bindDynamic() {
   document.querySelectorAll("[data-complete-details]").forEach(el => el.onclick = () => openCompleteDetails(el.dataset.completeDetails));
   view.querySelector("[data-hard-refresh-cms]")?.addEventListener("click",hardRefreshCms);
   view.querySelector("[data-sync-pickup-queue]")?.addEventListener("click",syncPendingPickups);
+  if(view.querySelector("[data-avail-root]"))bindAvailabilityScreen();
   view.querySelector("[data-resync-feed]")?.addEventListener("click",async event=>{
     const b=event.currentTarget;b.disabled=true;
     try{

@@ -659,3 +659,27 @@ body{background:var(--gp-bg);color:var(--gp-text)}
 /* --- Equipment description label (Other / no-catalog items) --------------- */
 .equipment-meta-label{display:flex;width:fit-content;max-width:100%;gap:7px;align-items:baseline;margin-top:6px;padding:3px 10px;border-radius:999px;background:color-mix(in srgb,var(--gp-orange) 14%,transparent);border:1px solid color-mix(in srgb,var(--gp-orange) 45%,transparent);color:var(--gp-text);font-size:12px;line-height:1.35;overflow-wrap:anywhere}
 .equipment-meta-label b{flex:0 0 auto;color:var(--gp-orange);font-size:10px;font-weight:800;letter-spacing:.06em;text-transform:uppercase}
+
+/* --- Availability & blackout dates screen ---------------------------------- */
+.avail-row{display:grid;grid-template-columns:96px minmax(150px,1fr) auto;gap:8px 14px;align-items:center;padding:10px 0;border-top:1px solid var(--gp-line)}
+.avail-row:first-child{border-top:0}
+.avail-row b{color:var(--gp-text)}
+.avail-hours{display:inline-flex;align-items:center;gap:8px;color:var(--gp-muted)}
+.avail-hours em{font-style:normal;font-size:12px}
+.avail-hours input[type="time"]{background:var(--gp-panel-raised);color:var(--gp-text);border:1px solid var(--gp-line);border-radius:10px;padding:7px 8px;font:inherit}
+.avail-override{grid-column:2 / -1;color:var(--gp-muted);font-size:12px}
+.avail-toggle{display:flex;align-items:center;gap:8px;color:var(--gp-text);font-size:13px}
+.avail-toggle input{width:18px;height:18px;accent-color:var(--gp-orange)}
+.avail-list{display:flex;flex-direction:column;gap:10px}
+.avail-blackout{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px 12px;align-items:center;padding:12px;border:1px solid var(--gp-line);border-radius:12px;background:var(--gp-panel-raised)}
+.avail-blackout div:first-child{display:flex;flex-direction:column;gap:2px;min-width:0}
+.avail-blackout span:not(.badge){color:var(--gp-muted);font-size:12px}
+.avail-actions{grid-column:1 / -1;display:flex;gap:8px}
+.avail-actions .button{padding:6px 14px;font-size:12px}
+.avail-form{display:flex;flex-direction:column;gap:12px;padding:14px;border:1px solid color-mix(in srgb,var(--gp-orange) 45%,transparent);border-radius:12px;background:var(--gp-panel-raised)}
+.avail-form h3{margin:0;font-size:15px;color:var(--gp-text)}
+.avail-form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.avail-form-actions{display:flex;gap:10px;justify-content:flex-end}
+.avail-past summary{cursor:pointer;color:var(--gp-muted);font-size:13px;padding:6px 2px}
+.avail-past .avail-blackout{margin-top:8px;opacity:.75}
+@media (max-width:640px){.avail-row{grid-template-columns:1fr}.avail-override{grid-column:auto}.avail-form-grid{grid-template-columns:1fr}}

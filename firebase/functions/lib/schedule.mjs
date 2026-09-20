@@ -60,13 +60,17 @@ export async function overlappingScheduledJobs(startDate, durationMinutes, exclu
 }
 
 /**
- * Availability-rule window + blackout-date check. Returns an array of
- * human-readable reasons the slot is restricted (empty = clear).
+ * Availability-rule window + blackout-date check.
+ * Returns { soft: [...], hard: [...] } human-readable reasons:
+ *  - soft  = needs a manager override (weekend/off-day, outside hours,
+ *            blackout with overrides allowed)
+ *  - hard  = closed to everyone (blackout or off-day with overrideAllowed=false)
  */
 export async function schedulabilityReasons(startDate) {
   const { weekday, minutes } = laParts(startDate);
   const dateKey = laDateString(startDate);
-  const reasons = [];
+  const soft = [];
+  const hard = [];
 
   const [rulesSnap, blackoutSnap] = await Promise.all([
     db().collection("gpAvailabilityRules").get(),
@@ -77,15 +81,16 @@ export async function schedulabilityReasons(startDate) {
     .find((r) => str(r.day).toLowerCase().startsWith(weekday.toLowerCase().slice(0, 3)));
   if (rule) {
     if (rule.active === false || rule.available === false) {
-      reasons.push(`${weekday} is outside normal delivery days`);
+      const msg = `${weekday} is outside normal delivery days`;
+      (rule.overrideAllowed === true ? soft : hard).push(msg);
     } else {
       const open = hmToMinutes(rule.startTime);
       const close = hmToMinutes(rule.endTime);
-      if (open != null && minutes < open) reasons.push("appointment is before normal hours");
-      if (close != null && minutes > close) reasons.push("appointment is after normal hours");
+      if (open != null && minutes < open) soft.push("appointment is before normal hours");
+      if (close != null && minutes > close) soft.push("appointment is after normal hours");
     }
   } else if (weekday === "Saturday" || weekday === "Sunday") {
-    reasons.push(`${weekday} requires manager discretion`);
+    soft.push(`${weekday} requires manager discretion`);
   }
 
   for (const b of blackoutSnap.docs.map((x) => x.data())) {
@@ -93,27 +98,34 @@ export async function schedulabilityReasons(startDate) {
     const from = str(b.startDate) || str(b.endDate);
     const to = str(b.endDate) || str(b.startDate);
     if (from && dateKey >= from && dateKey <= to) {
-      reasons.push(`blackout${b.reason ? `: ${b.reason}` : ""}`);
+      const msg = `blackout${b.reason ? `: ${b.reason}` : ""}`;
+      (b.overrideAllowed === false ? hard : soft).push(msg);
     }
   }
-  return reasons;
+  return { soft, hard };
 }
 
 /**
- * Single-crew guard used on transitions to "scheduled". Throws unless clear or
- * `override` is set. Returns { overlaps: [jobNumber...], reasons: [...] }.
+ * Guard used when a job takes a time slot. Throws for hard blocks always;
+ * for overlaps unless `override`; for soft policy reasons unless `override`
+ * or `policyOverride` (a caller who may override availability rules).
+ * Returns { overlaps: [jobNumber...], reasons: [...] } (the overridden ones).
  */
-export async function assertSchedulable(startDate, durationMinutes, excludeJobId, override) {
-  const [overlapDocs, reasons] = await Promise.all([
+export async function assertSchedulable(startDate, durationMinutes, excludeJobId, override, policyOverride = false) {
+  const [overlapDocs, { soft, hard }] = await Promise.all([
     overlappingScheduledJobs(startDate, durationMinutes, excludeJobId),
     schedulabilityReasons(startDate),
   ]);
-  const overlaps = overlapDocs.map((d) => d.data().jobNumber || d.id);
-  if ((overlaps.length || reasons.length) && !override) {
-    const parts = [];
-    if (overlaps.length) parts.push(`overlaps an approved job (${overlaps.join(", ")})`);
-    if (reasons.length) parts.push(reasons.join("; "));
-    throw new HttpsError("failed-precondition", `Manager override required: ${parts.join(" · ")}.`);
+  if (hard.length) {
+    throw new HttpsError("failed-precondition", `Closed to deliveries: ${hard.join("; ")}. Choose another date.`);
   }
-  return { overlaps, reasons };
+  const overlaps = overlapDocs.map((d) => d.data().jobNumber || d.id);
+  if (overlaps.length && !override) {
+    throw new HttpsError("failed-precondition",
+      `Manager override required: overlaps an approved job (${overlaps.join(", ")}).`);
+  }
+  if (soft.length && !(override || policyOverride)) {
+    throw new HttpsError("failed-precondition", `Manager override required: ${soft.join("; ")}.`);
+  }
+  return { overlaps, reasons: soft };
 }

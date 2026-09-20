@@ -7,8 +7,8 @@
 import {
   collection, query, where, getDocs, doc, getDoc,
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
-import { db, auth, functions, httpsCallable } from "./firebase-app.js?v=fb15";
-import { enqueue, flush, count, looksOffline } from "./offline-queue.js?v=fb15";
+import { db, auth, functions, httpsCallable } from "./firebase-app.js?v=fb16";
+import { enqueue, flush, count, looksOffline } from "./offline-queue.js?v=fb16";
 
 const call = (name) => httpsCallable(functions, name);
 
@@ -158,8 +158,8 @@ export class GamePlanApi {
       brands: brands.sort((a, b) => (a.name || "").localeCompare(b.name || "")),
       products,
       fulfillmentConditions: [],
-      availabilityRules,
-      blackoutDates,
+      availabilityRules: availabilityRules.filter((r) => r.active !== false),
+      blackoutDates: blackoutDates.filter((b) => b.active !== false),
       pricingSettings: {
         storeAddress: scheduling.storeAddress || "",
         confirmationBufferMinutes: scheduling.confirmationBufferMinutes || 10,
@@ -248,6 +248,21 @@ export class GamePlanApi {
   async finalizePickupInspection(jobId, inspection, pinToken = "") {
     return offlineWrite("finalizePickupInspection", { jobId, inspection, pinToken });
   }
+  async saveBlackoutDate(payload, pinToken = "") {
+    const res = await call("saveBlackoutDate")({ ...payload, pinToken });
+    return res.data;
+  }
+
+  async deleteBlackoutDate(id, pinToken = "") {
+    const res = await call("deleteBlackoutDate")({ id, pinToken });
+    return res.data;
+  }
+
+  async saveAvailability(rules, pinToken = "") {
+    const res = await call("saveAvailability")({ rules, pinToken });
+    return res.data;
+  }
+
   async backfillFeed(pinToken = "") {
     const res = await call("backfillFeed")({ pinToken });
     return res.data;

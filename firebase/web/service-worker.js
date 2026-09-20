@@ -1,4 +1,4 @@
-const CACHE_NAME = "gameplan-firebase-preview-v16";
+const CACHE_NAME = "gameplan-firebase-preview-v17";
 
 // Minimal precache — the offline entry point. Everything else caches lazily.
 const APP_SHELL = [

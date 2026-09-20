@@ -21,7 +21,7 @@ import {
   resolveActor, requirePermission, actorLabel,
 } from "./lib/common.mjs";
 import {
-  combineLocalDateTime, laDateString, assertSchedulable, overlappingScheduledJobs,
+  combineLocalDateTime, laDateString, assertSchedulable, overlappingScheduledJobs, schedulabilityReasons,
 } from "./lib/schedule.mjs";
 import { syncJobFeed, pruneFeed } from "./lib/feed.mjs";
 import { uploadDataUrl } from "./lib/photos.mjs";
@@ -290,7 +290,8 @@ export const createJob = onCall(async (request) => {
   if (str(data.scheduledDate) && str(data.scheduledTime)) {
     const when = combineLocalDateTime(data.scheduledDate, data.scheduledTime);
     const { overlaps, reasons } = await assertSchedulable(
-      when, priced.durationMinutes, null, Boolean(data.overrideSchedule));
+      when, priced.durationMinutes, null, Boolean(data.overrideSchedule),
+      Boolean(actor.permissions?.canOverrideConflict));
     if (overlaps.length || reasons.length) {
       requirePermission(actor, "canOverrideConflict", "This user cannot override schedule restrictions.");
     }
@@ -447,7 +448,8 @@ export const updateJobStatus = onCall(async (request) => {
   if (target === "scheduled") {
     if (!job.scheduledAt) throw new HttpsError("failed-precondition", "Give this job a date and time before scheduling it.");
     const { overlaps, reasons } = await assertSchedulable(
-      job.scheduledAt.toDate(), job.durationMinutes, jobId, Boolean(data.overrideSchedule));
+      job.scheduledAt.toDate(), job.durationMinutes, jobId, Boolean(data.overrideSchedule),
+      Boolean(approver?.permissions?.canOverrideConflict));
     clashes = [...overlaps, ...reasons];
     if (clashes.length) requirePermission(approver, "canOverrideConflict", "This manager cannot override schedule restrictions.");
   }
@@ -749,6 +751,10 @@ export const updateJobSchedule = onCall(async (request) => {
   if (!jobSnap.exists) throw new HttpsError("not-found", "Job not found.");
   const job = jobSnap.data();
 
+  const { soft: policySoft, hard: policyHard } = await schedulabilityReasons(when);
+  if (policyHard.length) {
+    throw new HttpsError("failed-precondition", `Closed to deliveries: ${policyHard.join("; ")}. Choose another date.`);
+  }
   const overlapDocs = await overlappingScheduledJobs(when, job.durationMinutes, jobId);
   if (overlapDocs.length && !piggyback) {
     throw new HttpsError("failed-precondition",
@@ -768,6 +774,16 @@ export const updateJobSchedule = onCall(async (request) => {
     if (piggyback) {
       requirePermission(approver, "canOverrideConflict", "This manager cannot approve Piggyback overlaps.");
     }
+  }
+
+  // Off-days / outside hours / soft blackouts need someone allowed to override.
+  if (policySoft.length) {
+    const overrider = actor.permissions?.canOverrideConflict
+      ? actor
+      : await resolveActor(request, { pinToken: data.approvalToken });
+    requirePermission(overrider, "canOverrideConflict",
+      `Manager override required: ${policySoft.join("; ")}.`);
+    if (!approver) approver = overrider;
   }
 
   const partnerNumbers = overlapDocs.map((x) => x.data().jobNumber || x.id);
@@ -872,4 +888,106 @@ export const backfillFeed = onCall(async (request) => {
   }
   const pruned = await pruneFeed(14);
   return { synced, pruned };
+});
+
+// ======================================================= availability admin
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+const DAY_IDS = {
+  Monday: "AVL-MON", Tuesday: "AVL-TUE", Wednesday: "AVL-WED", Thursday: "AVL-THU",
+  Friday: "AVL-FRI", Saturday: "AVL-SAT", Sunday: "AVL-SUN",
+};
+
+async function auditAdmin(entity, entityId, action, oldValue, newValue, actor) {
+  await db().doc(`gpAudit/${newId("AUD")}`).set({
+    entity, entityId, action,
+    oldValue: JSON.stringify(oldValue || {}), newValue: JSON.stringify(newValue || {}),
+    performedBy: actorLabel(actor), performedAt: Timestamp.now(), source: "GamePlan App",
+  });
+}
+
+async function requireScheduleAdmin(request, pinToken) {
+  const actor = await resolveActor(request, { pinToken });
+  requirePermission(actor, "canApproveSchedule", "Manager access is required to change availability.");
+  return actor;
+}
+
+export const saveBlackoutDate = onCall(async (request) => {
+  const data = request.data || {};
+  const actor = await requireScheduleAdmin(request, data.pinToken);
+
+  const startDate = str(data.startDate);
+  const endDate = str(data.endDate) || startDate;
+  const reason = str(data.reason).slice(0, 80);
+  if (!DATE_RE.test(startDate) || !DATE_RE.test(endDate)) {
+    throw new HttpsError("invalid-argument", "Choose a valid date.");
+  }
+  if (endDate < startDate) throw new HttpsError("invalid-argument", "The end date can't be before the start date.");
+  if (!reason) throw new HttpsError("invalid-argument", "Enter a reason (e.g. Christmas).");
+
+  const id = str(data.id) || newId("BLK");
+  const ref = db().doc(`gpBlackoutDates/${id}`);
+  const before = await ref.get();
+  const doc = {
+    startDate, endDate, reason,
+    overrideAllowed: data.overrideAllowed !== false,
+    active: true,
+    updatedBy: actorLabel(actor), updatedAt: Timestamp.now(),
+  };
+  if (!before.exists) { doc.createdBy = actorLabel(actor); doc.createdAt = Timestamp.now(); }
+  await ref.set(doc, { merge: true });
+  await auditAdmin("blackout", id, before.exists ? "Blackout Updated" : "Blackout Added",
+    before.exists ? before.data() : {}, doc, actor);
+  return { id };
+});
+
+export const deleteBlackoutDate = onCall(async (request) => {
+  const data = request.data || {};
+  const actor = await requireScheduleAdmin(request, data.pinToken);
+  const id = str(data.id);
+  if (!id) throw new HttpsError("invalid-argument", "id is required.");
+  const ref = db().doc(`gpBlackoutDates/${id}`);
+  const before = await ref.get();
+  if (!before.exists) return { id, deleted: false };
+  await ref.delete();
+  await auditAdmin("blackout", id, "Blackout Removed", before.data(), {}, actor);
+  return { id, deleted: true };
+});
+
+export const saveAvailability = onCall(async (request) => {
+  const data = request.data || {};
+  const actor = await requireScheduleAdmin(request, data.pinToken);
+  const rules = Array.isArray(data.rules) ? data.rules : [];
+  if (!rules.length) throw new HttpsError("invalid-argument", "No changes to save.");
+
+  const batch = db().batch();
+  const changes = [];
+  for (const r of rules) {
+    const day = str(r.day);
+    const id = DAY_IDS[day];
+    if (!id) throw new HttpsError("invalid-argument", `Unknown day: ${day}`);
+    const startTime = str(r.startTime) || null;
+    const endTime = str(r.endTime) || null;
+    if ((startTime && !HHMM_RE.test(startTime)) || (endTime && !HHMM_RE.test(endTime))) {
+      throw new HttpsError("invalid-argument", `${day}: enter times like 09:00.`);
+    }
+    if (Boolean(startTime) !== Boolean(endTime)) {
+      throw new HttpsError("invalid-argument", `${day}: set both an opening and a closing time, or leave both blank.`);
+    }
+    if (startTime && endTime && startTime >= endTime) {
+      throw new HttpsError("invalid-argument", `${day}: the closing time must be after the opening time.`);
+    }
+    const next = {
+      day, available: r.available !== false, startTime, endTime,
+      overrideAllowed: r.overrideAllowed !== false, active: true,
+      updatedBy: actorLabel(actor), updatedAt: Timestamp.now(),
+    };
+    const ref = db().doc(`gpAvailabilityRules/${id}`);
+    const before = await ref.get();
+    batch.set(ref, next, { merge: true });
+    changes.push({ id, before: before.exists ? before.data() : {}, next });
+  }
+  await batch.commit();
+  for (const c of changes) await auditAdmin("availability", c.id, "Weekly Availability Updated", c.before, c.next, actor);
+  return { saved: changes.length };
 });
