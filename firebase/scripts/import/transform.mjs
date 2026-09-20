@@ -122,13 +122,15 @@ export function transform(sheets) {
       STAFF_LOGIN_OVERRIDE[legacyId] ||
       loginEmailById[str(r.LoginAccountID)] ||
       "";
+    // PIN hash goes to a SERVER-ONLY collection (no client rule), never gpStaff.
+    if (str(r.PINHash)) w("gpStaffSecrets", slug(displayName), { pinHash: str(r.PINHash) }); // salted "v1$salt$hash"
     w("gpStaff", slug(displayName), {
       legacyId,
       displayName,
       loginEmail,
       roleId: str(r.RoleID),
       pinEnabled: bool(r.PINEnabled),
-      pinHash: str(r.PINHash) || null, // salted "v1$salt$hash" format preserved
+      pinConfigured: Boolean(str(r.PINHash)),
       active: bool(r.Active),
     });
   }
