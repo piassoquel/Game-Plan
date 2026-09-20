@@ -1,0 +1,382 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isApproved() {
+      return request.auth != null
+        && request.auth.token.email != null
+        && exists(/databases/$(database)/documents/allowedUsers/$(request.auth.token.email));
+    }
+
+    function isApprovedManager() {
+      return isApproved()
+        && get(/databases/$(database)/documents/allowedUsers/$(request.auth.token.email)).data.role == "manager";
+    }
+
+    function isApprovedEmployee() {
+      return isApproved()
+        && get(/databases/$(database)/documents/allowedUsers/$(request.auth.token.email)).data.role == "employee";
+    }
+
+    function validEmployeePin(employeeKey) {
+      return employeeKey is string
+        && exists(/databases/$(database)/documents/stores/soquel/employees/$(employeeKey))
+        && get(/databases/$(database)/documents/stores/soquel/employees/$(employeeKey)).data.active == true
+        && get(/databases/$(database)/documents/stores/soquel/employees/$(employeeKey)).data.pinSet == true;
+    }
+
+    // A PIN that also carries the "supervisor" flag (set by a manager in the
+    // Employee PIN Directory). The one extra capability: adding tasks to the
+    // Daily Checklist board.
+    function isSupervisorPin(employeeKey) {
+      return validEmployeePin(employeeKey)
+        && get(/databases/$(database)/documents/stores/soquel/employees/$(employeeKey)).data.get("supervisor", false) == true;
+    }
+
+    match /allowedUsers/{email} {
+      allow read: if request.auth != null
+        && request.auth.token.email != null
+        && request.auth.token.email == email;
+      allow write: if false;
+    }
+
+    match /stores/soquel/state/current {
+      allow read: if isApproved();
+      allow write: if isApprovedManager();
+    }
+
+    match /stores/soquel/snapshots/{snapshotId} {
+      allow read: if isApproved();
+      allow write: if isApprovedManager();
+    }
+
+    // Staff schedule — everyone signed in can read; only managers write.
+    match /stores/soquel/schedule/{shiftId} {
+      allow read: if isApproved();
+      allow write: if isApprovedManager();
+    }
+    match /stores/soquel/scheduleMonths/{monthId} {
+      allow read: if isApproved();
+      allow write: if isApprovedManager();
+    }
+    // Per-employee availability rules — manager-maintained, everyone reads.
+    match /stores/soquel/availability/{employeeKey} {
+      allow read: if isApproved();
+      allow write: if isApprovedManager();
+    }
+    // Shared time-off / blackout calendar — written only by calendarSync.
+    match /stores/soquel/calendarEvents/{eventId} {
+      allow read: if isApproved();
+      allow write: if false;
+    }
+    // Shift drop / coverage requests. An employee opens one for their own
+    // shift (PIN); managers move it through pool -> approved/rejected; any
+    // employee may add themselves to the coverage pool while it is pooled.
+    match /stores/soquel/shiftRequests/{reqId} {
+      allow read: if isApproved();
+      allow create: if isApprovedEmployee()
+        && request.resource.data.status == "pending"
+        && request.resource.data.covers.size() == 0
+        && request.resource.data.requestedByEmployeeKey == request.resource.data.shiftEmployeeKey
+        && validEmployeePin(request.resource.data.requestedByEmployeeKey);
+      allow update: if isApprovedManager()
+        || (isApprovedEmployee()
+          && resource.data.status == "pooled"
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["covers"])
+          && request.resource.data.covers.size() == resource.data.covers.size() + 1);
+      allow delete: if isApprovedManager();
+    }
+    // Store configuration (e.g. schedule hours). Manager-writable, all read.
+    match /stores/soquel/config/{docId} {
+      allow read: if isApproved();
+      allow write: if isApprovedManager();
+    }
+
+    match /stores/soquel/employeeTasks/{taskId} {
+      function fromStatus() { return resource.data.status; }
+      function toStatus() { return request.resource.data.status; }
+      function touched() { return request.resource.data.diff(resource.data).affectedKeys(); }
+
+      // No-PIN employee transitions. Identification is trust-based: employees
+      // share one Google login, so the rules cannot tell them apart without a
+      // PIN. These only move a checklist task between working states — never
+      // edit task content (name / priority / steps / due), archive, or delete.
+      // Field lists are exhaustive.
+      function empStart() {
+        return fromStatus() in ["assigned", "in-progress"]
+          && toStatus() == "in-progress"
+          && touched().hasOnly([
+            "status", "startedByEmployeeKey", "startedByName", "startedAt",
+            "completedSteps", "updatedBy", "updatedAt"
+          ]);
+      }
+      function empBlock() {
+        return fromStatus() in ["assigned", "in-progress"]
+          && toStatus() == "blocked"
+          && touched().hasOnly([
+            "status", "questions", "blockedByEmployeeKey", "blockedByName",
+            "blockedAt", "updatedBy", "updatedAt"
+          ]);
+      }
+      function empReturn() {
+        return fromStatus() in ["assigned", "in-progress"]
+          && toStatus() == "returned"
+          && touched().hasOnly([
+            "status", "returnedReason", "returnedByEmployeeKey", "returnedByName",
+            "returnedAt", "updatedBy", "updatedAt"
+          ]);
+      }
+      function empClaim() {
+        return fromStatus() == "assigned"
+          && resource.data.get("assigneeEmployeeKey", "") == ""
+          && toStatus() in ["assigned", "in-progress"]
+          && touched().hasOnly([
+            "assigneeEmployeeKey", "assigneeName", "status",
+            "startedByEmployeeKey", "startedByName", "startedAt",
+            "updatedBy", "updatedAt"
+          ]);
+      }
+      // The one hard checkpoint: a valid, active PIN is required, and it — not
+      // the roster tap — is what gets recorded as the doer.
+      function empComplete() {
+        return fromStatus() in ["assigned", "in-progress", "blocked", "returned"]
+          && toStatus() == "completed"
+          && request.resource.data.completedBy == request.auth.token.email
+          && validEmployeePin(request.resource.data.completedByEmployeeKey)
+          && touched().hasOnly([
+            "status", "completedBy", "completedByName", "completedAt",
+            "completedByEmployeeKey", "completedByDisplay", "completionSource",
+            "completedSteps", "completionNotes",
+            "foundQuantity", "result", "note",
+            "startedByEmployeeKey", "startedByName", "startedAt",
+            "updatedBy", "updatedAt"
+          ]);
+      }
+
+      // Two-way comment thread on a submission. Trust-based identity (the
+      // shift-bar active person), like "From the Floor" — no PIN. Employees
+      // may only append to the conversation and flip its resolved flag;
+      // never touch the task's workflow status or content.
+      function empThreadReply() {
+        return touched().hasOnly([
+            "thread", "threadStatus", "lastThreadActor", "lastThreadAt",
+            "updatedBy", "updatedAt"
+          ])
+          && request.resource.data.get("threadStatus", "open") in ["open", "resolved"];
+      }
+
+      // A supervisor PIN may add a checklist task to the board — nothing else.
+      function supervisorAddsTask() {
+        return request.resource.data.type == "checklist"
+          && request.resource.data.status == "assigned"
+          && request.resource.data.source == "supervisor"
+          && request.resource.data.assignedBy == request.auth.token.email
+          && isSupervisorPin(request.resource.data.assignedByEmployeeKey);
+      }
+
+      allow read: if isApproved();
+      allow create: if isApprovedEmployee()
+        && (
+          ( request.resource.data.submittedBy == request.auth.token.email
+            && validEmployeePin(request.resource.data.submittedByEmployeeKey)
+            && request.resource.data.status == "open" )
+          || supervisorAddsTask()
+        );
+      allow update: if isApprovedManager()
+        || (isApprovedEmployee()
+          && (empStart() || empBlock() || empReturn() || empClaim() || empComplete() || empThreadReply()));
+      allow delete: if false;
+    }
+
+    match /stores/soquel/shifts/{dayKey} {
+      allow read: if isApproved();
+      allow create: if isApproved()
+        && request.resource.data.roster is list
+        && request.resource.data.keys().hasOnly(["roster", "updatedBy", "updatedAt"]);
+      allow update: if isApproved()
+        && request.resource.data.roster is list
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["roster", "updatedBy", "updatedAt"]);
+      allow delete: if false;
+    }
+
+    match /stores/soquel/timeclock/{docId} {
+      // Written only by the jibbleSync Cloud Function (Admin SDK bypasses rules).
+      allow read: if isApproved();
+      allow write: if false;
+    }
+
+    match /stores/soquel/employees/{employeeKey} {
+      // An employee-role session may read a single employee doc only when it
+      // can name the doc id — which is the SHA-256 of the PIN, so this means
+      // "you hold that PIN". Needed for the supervisor-PIN unlock check.
+      // Listing/enumerating the collection stays manager-only.
+      allow get: if isApprovedManager()
+        || (isApprovedEmployee() && validEmployeePin(employeeKey));
+      allow list, create, delete: if isApprovedManager();
+      allow update: if isApprovedManager()
+        || (isApprovedEmployee()
+          && validEmployeePin(employeeKey)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            "color", "updatedAt"
+          ]));
+    }
+
+    match /stores/soquel/customerRequests/{requestId} {
+      allow read: if isApproved();
+      allow create: if isApproved()
+        && request.resource.data.createdBy == request.auth.token.email
+        && request.resource.data.status == "active";
+      allow update: if isApproved();
+      allow delete: if isApprovedManager();
+    }
+
+    match /stores/soquel/floorNotes/{noteId} {
+      // "From the Floor" — two-way employee/management comms. Identity is
+      // trust-based (shift-bar active person), like the checklist. Anyone
+      // approved posts and reads; employees may append to the conversation,
+      // mark it seen, or resolve/reopen it, but not rewrite the callout.
+      allow read: if isApproved();
+      allow create: if isApproved()
+        && request.resource.data.createdBy == request.auth.token.email
+        && request.resource.data.status == "open"
+        && request.resource.data.category in ["order", "supplies", "question", "heads-up", "message"];
+      allow update: if isApproved() && (
+        isApprovedManager()
+        || (isApprovedEmployee()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            "messages", "lastActor", "lastAt", "employeeSeenAt", "managerSeenAt",
+            "status", "resolvedBy", "resolvedByName", "resolvedAt", "updatedAt"
+          ])
+          && request.resource.data.status in ["open", "resolved"])
+      );
+      allow delete: if isApprovedManager();
+    }
+
+    match /stores/soquel/announcements/{annId} {
+      // Manager-authored notices. Managers write anything; employees may only
+      // add their own views/acks entries (trust-based, like the checklist).
+      allow read: if isApproved();
+      allow create, delete: if isApprovedManager();
+      allow update: if isApprovedManager()
+        || (isApproved()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["views", "acks"]));
+    }
+
+    match /stores/soquel/onlineOrders/{orderId} {
+      allow read: if isApproved();
+      allow create, delete: if isApprovedManager();
+      allow update: if isApprovedManager() || (isApprovedEmployee()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          "status", "updatedBy", "updatedAt", "foundBy", "foundAt",
+          "packedBy", "packedAt", "pickupReadyBy", "pickupReadyAt",
+          "notFoundBy", "notFoundAt"
+        ])
+        && ((resource.data.status == "needs-pick" && request.resource.data.status in ["found", "not-found"])
+          || (resource.data.status == "found" && request.resource.data.status in ["ready-for-shipment", "ready-for-pickup"])));
+    }
+
+    match /stores/soquel/specialOrders/{orderId} {
+      // Employees may log a customer-contact attempt and complete a pickup on
+      // an order that has arrived. Both are PIN-gated and field-allowlisted;
+      // an employee can never order from a vendor, set an ETA, cancel, or
+      // refund. Ordering / arrival / cancel / refund stay manager-only.
+      function soLogContact() {
+        return resource.data.arrived == true
+          && resource.data.status in ["arrived", "awaiting-contact"]
+          && request.resource.data.status == "awaiting-contact"
+          && request.resource.data.contactedBy == request.auth.token.email
+          && validEmployeePin(request.resource.data.contactedByEmployeeKey)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            "status", "lastContactOutcome", "lastContactAt", "contactedBy",
+            "contactedByName", "contactedByEmployeeKey", "followUpAt",
+            "contactAttempts", "contactHistory", "updatedBy", "updatedAt"
+          ]);
+      }
+      function soPickedUp() {
+        return resource.data.arrived == true
+          && resource.data.status in ["arrived", "awaiting-contact"]
+          && request.resource.data.status == "archived"
+          && request.resource.data.completedBy == request.auth.token.email
+          && validEmployeePin(request.resource.data.completedByEmployeeKey)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            "status", "archivedAt", "completedAt", "pickedUp",
+            "completedBy", "completedByName", "completedByEmployeeKey",
+            "updatedBy", "updatedAt"
+          ]);
+      }
+
+      allow read: if isApproved();
+      allow create: if (isApprovedManager()
+          || (isApprovedEmployee()
+            && validEmployeePin(request.resource.data.createdByEmployeeKey)))
+        && request.resource.data.createdBy == request.auth.token.email
+        && request.resource.data.status == "active"
+        && request.resource.data.ordered == false
+        && request.resource.data.arrived == false
+        && request.resource.data.paid is bool;
+      allow update: if (isApprovedManager()
+          && !(resource.data.ordered == true && request.resource.data.ordered != true)
+          && !(resource.data.arrived == true && request.resource.data.arrived != true))
+        || (isApprovedEmployee() && (soLogContact() || soPickedUp()));
+      allow delete: if false;
+    }
+
+    // Manager-published, employee-readable helper data (e.g. the employee
+    // name/key list the shift roster picker needs — employees cannot read
+    // the employees collection because its docs are keyed by PIN hash).
+    match /stores/soquel/meta/{docId} {
+      allow read: if isApproved();
+      allow write: if isApprovedManager();
+    }
+
+    // ===================================================================
+    // GamePlan (delivery/assembly app) — shares this Firebase project.
+    // GamePlan owns the gp* collections and only READS the deliveries feed
+    // below (it is written by GamePlan's Cloud Function via the Admin SDK).
+    // Blocks supplied by the GamePlan team; see dashboardhandoff.
+    // ===================================================================
+    function gpStoreUser() {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && exists(/databases/$(database)/documents/gpLoginAccounts/$(request.auth.token.email))
+        && get(/databases/$(database)/documents/gpLoginAccounts/$(request.auth.token.email)).data.active == true;
+    }
+
+    match /gpJobs/{jobId} {
+      allow read, create, update: if gpStoreUser();
+      allow delete: if false;
+      match /{document=**} { allow read, write: if gpStoreUser(); }
+    }
+    match /gpCustomers/{customerId} {
+      allow read, create, update: if gpStoreUser();
+      allow delete: if false;
+      match /{document=**} { allow read, write: if gpStoreUser(); }
+    }
+    match /gpEquipmentTypes/{id}    { allow read, write: if gpStoreUser(); }
+    match /gpAccessConditions/{id}  { allow read, write: if gpStoreUser(); }
+    match /gpJobTypes/{id}          { allow read, write: if gpStoreUser(); }
+    match /gpProducts/{id}          { allow read, write: if gpStoreUser(); }
+    match /gpBrands/{id}            { allow read, write: if gpStoreUser(); }
+    match /gpBlackoutDates/{id}     { allow read, write: if gpStoreUser(); }
+    match /gpAvailabilityRules/{id} { allow read, write: if gpStoreUser(); }
+    match /gpConfig/{doc}           { allow read, write: if gpStoreUser(); }
+    match /gpRoles/{roleId}         { allow read, write: if gpStoreUser(); }
+    match /gpLoginAccounts/{email}  { allow read, write: if gpStoreUser(); }
+    match /gpStaff/{staffId}        { allow read, write: if gpStoreUser(); }
+    match /gpAudit/{id} {
+      allow read, create: if gpStoreUser();
+      allow update, delete: if false;
+    }
+
+    // Today feed consumed by this dashboard. Written ONLY by GamePlan's
+    // Cloud Function via the Admin SDK (which bypasses rules).
+    match /stores/soquel/deliveries/{id} {
+      allow read: if isApproved();
+      allow write: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if isApprovedManager();
+    }
+  }
+}
