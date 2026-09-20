@@ -145,7 +145,7 @@ export const verifyPin = onCall(async (request) => {
   const matches = [];
   for (const doc of candidates.docs) {
     const st = { id: doc.id, ...doc.data() };
-    const storedHash = hashById[doc.id] || st.pinHash; // st.pinHash: legacy, until migrated
+    const storedHash = hashById[doc.id];
     if (!storedHash || !pinMatchesHash(pin, storedHash)) continue;
     if (!roleCache[st.roleId]) {
       roleCache[st.roleId] = (await db().doc(`gpRoles/${st.roleId}`).get()).data() || { permissions: {} };
@@ -994,24 +994,4 @@ export const saveAvailability = onCall(async (request) => {
   await batch.commit();
   for (const c of changes) await auditAdmin("availability", c.id, "Weekly Availability Updated", c.before, c.next, actor);
   return { saved: changes.length };
-});
-
-// ============================================ one-time PIN-hash migration
-// Moves pinHash out of client-readable gpStaff docs into server-only
-// gpStaffSecrets/{staffId}. Idempotent. Runs every 5 min until removed.
-export const migratePinHashesOnce = onSchedule({ schedule: "every 5 minutes" }, async () => {
-  const snap = await db().collection("gpStaff").get();
-  let moved = 0;
-  for (const doc of snap.docs) {
-    const hash = doc.data().pinHash;
-    if (!hash) continue;
-    const batch = db().batch();
-    batch.set(db().doc(`gpStaffSecrets/${doc.id}`), { pinHash: hash, movedAt: Timestamp.now() }, { merge: true });
-    batch.update(doc.ref, { pinHash: FieldValue.delete(), pinConfigured: true });
-    await batch.commit();
-    moved++;
-  }
-  const secrets = (await db().collection("gpStaffSecrets").get()).size;
-  const remaining = (await db().collection("gpStaff").get()).docs.filter((d) => d.data().pinHash).length;
-  console.log(`migratePinHashesOnce: moved ${moved}; gpStaffSecrets=${secrets}; gpStaff docs still holding a hash=${remaining}`);
 });
