@@ -7,8 +7,8 @@
 import {
   collection, query, where, getDocs, doc, getDoc,
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
-import { db, auth, functions, httpsCallable } from "./firebase-app.js?v=fb16";
-import { enqueue, flush, count, looksOffline } from "./offline-queue.js?v=fb16";
+import { db, auth, functions, httpsCallable } from "./firebase-app.js?v=fb17";
+import { enqueue, flush, count, looksOffline } from "./offline-queue.js?v=fb17";
 
 const call = (name) => httpsCallable(functions, name);
 
@@ -256,6 +256,16 @@ export class GamePlanApi {
   async deleteBlackoutDate(id, pinToken = "") {
     const res = await call("deleteBlackoutDate")({ id, pinToken });
     return res.data;
+  }
+
+  async savePricing(payload, pinToken = "") {
+    const res = await call("savePricing")({ ...payload, pinToken });
+    return res.data;
+  }
+
+  async getPricingScenarios() {
+    const snap = await getDoc(doc(db, "gpConfig", "pricingScenarios"));
+    return snap.exists() ? (snap.data().items || []) : [];
   }
 
   async saveAvailability(rules, pinToken = "") {

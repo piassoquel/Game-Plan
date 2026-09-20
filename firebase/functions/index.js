@@ -995,3 +995,114 @@ export const saveAvailability = onCall(async (request) => {
   for (const c of changes) await auditAdmin("availability", c.id, "Weekly Availability Updated", c.before, c.next, actor);
   return { saved: changes.length };
 });
+
+// ============================================================ pricing admin
+const PRICING_LIMITS = {
+  baseTripCharge: [0, 2000], vehicleRatePerMile: [0, 50], laborRatePerEmployeeHour: [0, 500],
+  minimumServiceCharge: [0, 2000], priceRoundingIncrement: [1, 100],
+  usedItemDeliveryCharge: [0, 1000], tradeInPickupDiscount: [0, 1000],
+};
+const TYPE_LIMITS = {
+  deliveryMinutes: [0, 1440], pickupMinutes: [0, 1440], defaultCrewSize: [1, 10],
+  defaultAssemblyCharge: [0, 2000], defaultDisposalCharge: [0, 2000],
+};
+const ACCESS_LIMITS = { defaultMinutes: [0, 600], flatCharge: [0, 2000] };
+
+function cleanNumbers(input, limits, label) {
+  const out = {};
+  for (const [key, value] of Object.entries(input || {})) {
+    const range = limits[key];
+    if (!range) throw new HttpsError("invalid-argument", `${label}: "${key}" can't be changed here.`);
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < range[0] || n > range[1]) {
+      throw new HttpsError("invalid-argument", `${label}: ${key} must be between ${range[0]} and ${range[1]}.`);
+    }
+    out[key] = key === "defaultCrewSize" ? Math.round(n) : Math.round(n * 100) / 100;
+  }
+  return out;
+}
+
+function pick(obj, keys) {
+  const out = {};
+  for (const k of keys) out[k] = obj?.[k] ?? null;
+  return out;
+}
+
+function cleanScenarios(list, typeIds, accessIds) {
+  if (!Array.isArray(list) || list.length > 12) throw new HttpsError("invalid-argument", "Keep sample jobs to 12 or fewer.");
+  return list.map((s, i) => {
+    const name = str(s.name).slice(0, 60);
+    if (!name) throw new HttpsError("invalid-argument", `Sample job ${i + 1} needs a name.`);
+    const miles = Number(s.roundTripMiles), minutes = Number(s.driveMinutes);
+    if (!(miles >= 0 && miles <= 500) || !(minutes >= 0 && minutes <= 600)) {
+      throw new HttpsError("invalid-argument", `${name}: check the miles and drive minutes.`);
+    }
+    const pickupType = ["trade-in", "disposal"].includes(s.pickupType) ? s.pickupType : null;
+    const items = (Array.isArray(s.items) ? s.items : []).slice(0, 6).map((it) => {
+      if (!typeIds.has(str(it.equipmentTypeId))) throw new HttpsError("invalid-argument", `${name}: unknown equipment type.`);
+      const qty = Math.round(Number(it.quantity));
+      if (!(qty >= 1 && qty <= 20)) throw new HttpsError("invalid-argument", `${name}: quantity must be 1–20.`);
+      return {
+        equipmentTypeId: str(it.equipmentTypeId),
+        condition: it.condition === "new" ? "new" : "used",
+        quantity: qty,
+        movement: it.movement === "pickup" ? "pickup" : "delivery",
+      };
+    });
+    if (!items.length) throw new HttpsError("invalid-argument", `${name}: add at least one item.`);
+    const access = (Array.isArray(s.access) ? s.access : []).map(str).filter((id) => accessIds.has(id));
+    return { id: str(s.id) || newId("SCN"), name, roundTripMiles: miles, driveMinutes: minutes, pickupType, items, access };
+  });
+}
+
+export const savePricing = onCall(async (request) => {
+  const data = request.data || {};
+  const actor = await resolveActor(request, { pinToken: data.pinToken });
+  requirePermission(actor, "canEditCMS", "Administrator access is required to change pricing.");
+
+  const d = db();
+  const now = Timestamp.now();
+  const batch = d.batch();
+  const audits = [];
+  const who = { updatedBy: actorLabel(actor), updatedAt: now };
+
+  if (data.settings && Object.keys(data.settings).length) {
+    const clean = cleanNumbers(data.settings, PRICING_LIMITS, "Rates");
+    const ref = d.doc("gpConfig/pricing");
+    const before = await ref.get();
+    batch.set(ref, { ...clean, ...who }, { merge: true });
+    audits.push({ id: "pricing", before: pick(before.data(), Object.keys(clean)), after: clean });
+  }
+
+  for (const t of Array.isArray(data.equipmentTypes) ? data.equipmentTypes : []) {
+    const id = str(t.id);
+    const ref = d.doc(`gpEquipmentTypes/${id}`);
+    const snap = await ref.get();
+    if (!snap.exists) throw new HttpsError("not-found", `Equipment type ${id} no longer exists.`);
+    const clean = cleanNumbers(t.values, TYPE_LIMITS, snap.data().name || id);
+    if (!Object.keys(clean).length) continue;
+    batch.set(ref, { ...clean, ...who }, { merge: true });
+    audits.push({ id, before: pick(snap.data(), Object.keys(clean)), after: clean });
+  }
+
+  for (const a of Array.isArray(data.accessConditions) ? data.accessConditions : []) {
+    const id = str(a.id);
+    const ref = d.doc(`gpAccessConditions/${id}`);
+    const snap = await ref.get();
+    if (!snap.exists) throw new HttpsError("not-found", `Access condition ${id} no longer exists.`);
+    const clean = cleanNumbers(a.values, ACCESS_LIMITS, snap.data().name || id);
+    if (!Object.keys(clean).length) continue;
+    batch.set(ref, { ...clean, ...who }, { merge: true });
+    audits.push({ id, before: pick(snap.data(), Object.keys(clean)), after: clean });
+  }
+
+  if (Array.isArray(data.scenarios)) {
+    const [ts, as] = await Promise.all([d.collection("gpEquipmentTypes").get(), d.collection("gpAccessConditions").get()]);
+    const items = cleanScenarios(data.scenarios, new Set(ts.docs.map((x) => x.id)), new Set(as.docs.map((x) => x.id)));
+    batch.set(d.doc("gpConfig/pricingScenarios"), { items, ...who });
+  }
+
+  await batch.commit();
+  for (const a of audits) await auditAdmin("pricing", a.id, "Pricing Updated", a.before, a.after, actor);
+  return { saved: true, changed: audits.length };
+});

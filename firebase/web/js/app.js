@@ -1,6 +1,6 @@
-import { GamePlanApi } from "./gameplan-api.js?v=fb16";
-import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb16";
-import { computeQuote } from "./pricing.mjs?v=fb16";
+import { GamePlanApi } from "./gameplan-api.js?v=fb17";
+import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb17";
+import { computeQuote } from "./pricing.mjs?v=fb17";
 
 const CACHE_KEY = "gameplan-live-bootstrap-v2";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -1932,6 +1932,273 @@ function openEmployeeEditor(profileId = "") {
   };
 }
 
+// --- Pricing dashboard + simulator (Administrator) ---------------------------
+const PRICING_SETTING_FIELDS = [
+  ["baseTripCharge", "Base trip charge", "0.01", "Charged once per appointment"],
+  ["vehicleRatePerMile", "Price per mile", "0.01", "Applied to round-trip miles"],
+  ["laborRatePerEmployeeHour", "Labor rate per hour", "0.01", "Per crew member: drive + on-site time"],
+  ["minimumServiceCharge", "Minimum charge", "0.01", "No job prices below this"],
+  ["priceRoundingIncrement", "Round total to nearest", "1", "Final quote rounding"],
+  ["usedItemDeliveryCharge", "Used item delivery charge", "0.01", "Per used item delivered"],
+  ["tradeInPickupDiscount", "Trade-in pickup discount", "0.01", "Taken off trade-in pickups"]
+];
+const PRICING_TYPE_FIELDS = [
+  ["deliveryMinutes", "Delivery min", "1"], ["pickupMinutes", "Pickup min", "1"], ["defaultCrewSize", "Crew", "1"],
+  ["defaultAssemblyCharge", "Assembly $", "0.01"], ["defaultDisposalCharge", "Disposal $", "0.01"]
+];
+const PRICING_ACCESS_FIELDS = [["defaultMinutes", "Added minutes", "1"], ["flatCharge", "Flat charge $", "0.01"]];
+const PRICING_BREAKDOWN = [
+  ["baseTripCharge", "Base trip"], ["mileageCharge", "Mileage"], ["travelLaborCharge", "Labor (drive + on-site)"],
+  ["assemblyCharge", "Assembly"], ["usedItemDeliveryCharge", "Used item delivery"], ["disposalCharge", "Disposal"],
+  ["accessLaborCharge", "Access modifiers"], ["tradeInPickupDiscount", "Trade-in discount (−)"],
+  ["minimumChargeAdjustment", "Minimum-charge bump"], ["calculatedSubtotal", "Subtotal"], ["roundedTotal", "Quote (rounded)"]
+];
+const pricingUi = { loaded: false, loading: false, base: null, draft: null, scenarios: [], baseScenariosJson: "", editing: null, open: null };
+
+const pMoney = n => { const v = Math.round(Number(n) * 100) / 100; return Number.isFinite(v) ? (v % 1 ? `$${v.toFixed(2)}` : `$${v}`) : "—"; };
+const pDiffers = (a, b) => !(Number(a) === Number(b));
+
+function pricingSnapshot() {
+  const settings = {}; PRICING_SETTING_FIELDS.forEach(([k]) => settings[k] = Number(state.pricingSettings?.[k]) || 0);
+  const types = {}; (state.equipmentTypes || []).forEach(t => { types[t.id] = {}; PRICING_TYPE_FIELDS.forEach(([k]) => types[t.id][k] = Number(t[k]) || 0); });
+  const access = {}; (state.accessConditions || []).forEach(a => { access[a.id] = {}; PRICING_ACCESS_FIELDS.forEach(([k]) => access[a.id][k] = Number(a[k]) || 0); });
+  return { settings, types, access };
+}
+
+function defaultPricingScenarios() {
+  const hasT = id => (state.equipmentTypes || []).some(t => t.id === id), hasA = id => (state.accessConditions || []).some(a => a.id === id);
+  const it = (id, condition, movement = "delivery", quantity = 1) => ({ equipmentTypeId: id, condition, quantity, movement });
+  return [
+    { name: "Nearby new treadmill", roundTripMiles: 5, driveMinutes: 20, pickupType: null, items: [it("EQP-TREAD", "new")], access: [] },
+    { name: "Across town: used elliptical + stairs", roundTripMiles: 16, driveMinutes: 30, pickupType: null, items: [it("EQP-ELLIP", "used")], access: ["ACC-STAIR1"] },
+    { name: "Trade-in pickup", roundTripMiles: 10, driveMinutes: 24, pickupType: "trade-in", items: [it("EQP-ELLIP", "used", "pickup")], access: [] },
+    { name: "Disposal pickup, long haul", roundTripMiles: 30, driveMinutes: 55, pickupType: "disposal", items: [it("EQP-TREAD", "used", "pickup")], access: [] },
+    { name: "Home gym delivery", roundTripMiles: 20, driveMinutes: 40, pickupType: null, items: [it("EQP-HGYM", "new")], access: ["ACC-LONG"] }
+  ].map((s, i) => ({ ...s, id: `default-${i}`, items: s.items.filter(x => hasT(x.equipmentTypeId)), access: s.access.filter(hasA) })).filter(s => s.items.length);
+}
+
+async function loadPricingScreen() {
+  pricingUi.loading = true;
+  try { const saved = await api.getPricingScenarios(); pricingUi.scenarios = saved.length ? saved : defaultPricingScenarios(); }
+  catch (error) { console.warn("Sample jobs could not be loaded.", error); pricingUi.scenarios = defaultPricingScenarios(); }
+  pricingUi.base = pricingSnapshot(); pricingUi.draft = structuredClone(pricingUi.base);
+  pricingUi.baseScenariosJson = JSON.stringify(pricingUi.scenarios);
+  pricingUi.loaded = true; pricingUi.loading = false;
+  if (location.hash.slice(1) === "pricing") go("pricing");
+}
+
+// Draft with any blank/invalid value replaced by the saved value, for simulating.
+function pricingEffectiveDraft() {
+  const fix = (d, b) => { const o = {}; Object.keys(b).forEach(k => o[k] = Number.isFinite(d[k]) && d[k] >= 0 ? d[k] : b[k]); return o; };
+  const out = { settings: fix(pricingUi.draft.settings, pricingUi.base.settings), types: {}, access: {} };
+  Object.keys(pricingUi.base.types).forEach(id => out.types[id] = fix(pricingUi.draft.types[id], pricingUi.base.types[id]));
+  Object.keys(pricingUi.base.access).forEach(id => out.access[id] = fix(pricingUi.draft.access[id], pricingUi.base.access[id]));
+  return out;
+}
+function pricingCfg(snap) {
+  const types = {}; (state.equipmentTypes || []).forEach(t => { types[t.id] = { ...t, ...(snap.types[t.id] || {}) }; });
+  const access = {}; (state.accessConditions || []).forEach(a => { access[a.id] = { ...a, ...(snap.access[a.id] || {}) }; });
+  return { settings: { ...state.pricingSettings, ...snap.settings }, types, access };
+}
+function simulateScenario(sc, cfg) {
+  const out = Math.ceil((Number(sc.driveMinutes) || 0) / 2);
+  try {
+    return computeQuote({
+      equipment: sc.items.map(i => ({ equipmentTypeId: i.equipmentTypeId, condition: i.condition, quantity: i.quantity, deliveryRequired: i.movement !== "pickup", pickupRequired: i.movement === "pickup", fulfillmentConditionId: "NIB" })),
+      access: sc.access.map(id => ({ accessConditionId: id, quantity: 1 })),
+      route: { roundTripMiles: Number(sc.roundTripMiles) || 0, outboundMinutes: out, returnMinutes: Math.max(0, (Number(sc.driveMinutes) || 0) - out) },
+      pickupType: sc.pickupType || null, equipmentTypes: cfg.types, accessConditions: cfg.access, settings: cfg.settings
+    });
+  } catch (_) { return null; }
+}
+function scenarioDescription(sc) {
+  const items = sc.items.map(i => `${i.quantity > 1 ? `${i.quantity}× ` : ""}${i.condition === "new" ? "New" : "Used"} ${equipmentTypeName({ equipmentTypeId: i.equipmentTypeId })}${i.movement === "pickup" ? " (pickup)" : ""}`).join(", ");
+  return `${sc.roundTripMiles} mi · ${sc.driveMinutes} min drive · ${items}${sc.access.length ? ` · ${sc.access.length} modifier${sc.access.length === 1 ? "" : "s"}` : ""}`;
+}
+
+function pricingChanges() {
+  const d = pricingUi.draft, b = pricingUi.base, out = [];
+  PRICING_SETTING_FIELDS.forEach(([k, label]) => { if (pDiffers(d.settings[k], b.settings[k])) out.push({ scope: "settings", id: "", key: k, label, from: b.settings[k], to: d.settings[k] }); });
+  (state.equipmentTypes || []).forEach(t => PRICING_TYPE_FIELDS.forEach(([k, label]) => { if (pDiffers(d.types[t.id][k], b.types[t.id][k])) out.push({ scope: "types", id: t.id, key: k, label: `${t.name} · ${label}`, from: b.types[t.id][k], to: d.types[t.id][k] }); }));
+  (state.accessConditions || []).forEach(a => PRICING_ACCESS_FIELDS.forEach(([k, label]) => { if (pDiffers(d.access[a.id][k], b.access[a.id][k])) out.push({ scope: "access", id: a.id, key: k, label: `${a.name} · ${label}`, from: b.access[a.id][k], to: d.access[a.id][k] }); }));
+  return out;
+}
+function pricingInvalid() {
+  const bad = o => Object.values(o).some(v => !Number.isFinite(v) || v < 0);
+  const d = pricingUi.draft;
+  return bad(d.settings) || Object.values(d.types).some(bad) || Object.values(d.access).some(bad) || d.settings.priceRoundingIncrement < 1;
+}
+
+function pInput(path, value, step, baseValue) {
+  const bad = !Number.isFinite(value) || value < 0;
+  return `<input type="number" inputmode="decimal" step="${step}" min="0" data-pricing-input="${esc(path)}" value="${Number.isFinite(value) ? value : ""}" class="${pDiffers(value, baseValue) ? "changed" : ""}${bad ? " invalid" : ""}">`;
+}
+
+function pricingSaveBarHtml() {
+  const n = pricingChanges().length, bad = pricingInvalid();
+  return `<div class="pricing-savebar ${n ? "dirty" : ""}"><span>${bad ? "Fix the highlighted values to save." : n ? `<b>${n}</b> unsaved change${n === 1 ? "" : "s"} — new quotes will use them once saved.` : "No changes. Edit a value to see how sample jobs reprice."}</span>
+    <div><button class="button neutral" data-pricing-discard ${n ? "" : "disabled"}>Discard</button><button class="button" data-pricing-save ${n && !bad ? "" : "disabled"}>Save Pricing</button></div></div>`;
+}
+
+function pricingResultsHtml() {
+  const cur = pricingCfg(pricingUi.base), prop = pricingCfg(pricingEffectiveDraft());
+  let total = 0, counted = 0;
+  const rows = pricingUi.scenarios.map(sc => {
+    const a = simulateScenario(sc, cur), b = simulateScenario(sc, prop);
+    if (!a || !b) return `<article class="sim-row"><div class="sim-head"><div class="sim-name"><b>${esc(sc.name)}</b><span>This sample job can't be priced — check its items.</span></div></div></article>`;
+    const delta = b.finalTotal - a.finalTotal; total += delta; counted++;
+    const pct = a.finalTotal ? Math.round(delta / a.finalTotal * 1000) / 10 : 0;
+    const deltaText = delta === 0 ? "No change" : `${delta > 0 ? "+" : "−"}${pMoney(Math.abs(delta))} (${delta > 0 ? "+" : "−"}${Math.abs(pct)}%)`;
+    const open = pricingUi.open === sc.id;
+    const detail = open ? `<div class="sim-detail"><table><thead><tr><th></th><th>Now</th><th>Proposed</th></tr></thead><tbody>
+      ${PRICING_BREAKDOWN.map(([k, label]) => { const x = a.pricing[k] || 0, y = b.pricing[k] || 0; return (x || y || k === "roundedTotal") ? `<tr class="${k === "roundedTotal" || k === "calculatedSubtotal" ? "strong" : ""} ${pDiffers(x, y) ? "diff" : ""}"><td>${label}</td><td>${pMoney(x)}</td><td>${pMoney(y)}</td></tr>` : ""; }).join("")}
+      <tr><td>Job length · crew</td><td>${a.durationMinutes} min · ${a.crewSize}</td><td>${b.durationMinutes} min · ${b.crewSize}</td></tr></tbody></table></div>` : "";
+    return `<article class="sim-row ${open ? "open" : ""}"><div class="sim-head">
+      <button type="button" class="sim-main" data-sim-toggle="${esc(sc.id)}" aria-expanded="${open}"><div class="sim-name"><b>${esc(sc.name)}</b><span>${esc(scenarioDescription(sc))}</span></div>
+        <div class="sim-num"><small>Now</small><b>${pMoney(a.finalTotal)}</b></div><div class="sim-num"><small>Proposed</small><b>${pMoney(b.finalTotal)}</b></div>
+        <div class="sim-delta ${delta > 0 ? "up" : delta < 0 ? "down" : "flat"}">${deltaText}</div></button>
+      <button type="button" class="button neutral sim-edit" data-scn-edit="${esc(sc.id)}">Edit</button></div>${detail}</article>`;
+  }).join("");
+  const avg = counted ? total / counted : 0;
+  const summary = counted ? `<div class="sim-summary ${avg > 0 ? "up" : avg < 0 ? "down" : ""}">${avg === 0 ? "Sample jobs are unchanged." : `Across ${counted} sample job${counted === 1 ? "" : "s"}, prices change by an average of <b>${avg > 0 ? "+" : "−"}${pMoney(Math.abs(avg))}</b>.`}</div>` : "";
+  return `${summary}${rows || `<div class="empty-agenda compact"><b>No sample jobs</b><span>Add one to test your pricing.</span></div>`}`;
+}
+
+function scenarioEditorHtml(sc) {
+  const typeOptions = selected => (state.equipmentTypes || []).map(t => `<option value="${esc(t.id)}" ${t.id === selected ? "selected" : ""}>${esc(t.name)}</option>`).join("");
+  return `<form class="scn-editor" data-scn-editor-form onsubmit="return false">
+    <h3>Edit sample job</h3>
+    <label class="details-field"><span>Name</span><input data-scn-field="name" maxlength="60" value="${esc(sc.name)}"></label>
+    <div class="avail-form-grid">
+      <label class="details-field"><span>Round-trip miles</span><input type="number" min="0" step="0.1" data-scn-field="roundTripMiles" value="${esc(sc.roundTripMiles)}"></label>
+      <label class="details-field"><span>Round-trip drive minutes</span><input type="number" min="0" step="1" data-scn-field="driveMinutes" value="${esc(sc.driveMinutes)}"></label>
+    </div>
+    <label class="details-field"><span>Pickup purpose</span><select data-scn-field="pickupType"><option value="" ${!sc.pickupType ? "selected" : ""}>None</option><option value="trade-in" ${sc.pickupType === "trade-in" ? "selected" : ""}>Trade-In</option><option value="disposal" ${sc.pickupType === "disposal" ? "selected" : ""}>Disposal</option></select></label>
+    <div class="scn-items"><b>Items</b>${sc.items.map((it, i) => `<div class="scn-item" data-scn-item="${i}">
+      <select data-scn-item-field="equipmentTypeId">${typeOptions(it.equipmentTypeId)}</select>
+      <select data-scn-item-field="condition"><option value="new" ${it.condition === "new" ? "selected" : ""}>New</option><option value="used" ${it.condition === "used" ? "selected" : ""}>Used</option></select>
+      <select data-scn-item-field="movement"><option value="delivery" ${it.movement !== "pickup" ? "selected" : ""}>Delivery</option><option value="pickup" ${it.movement === "pickup" ? "selected" : ""}>Pickup</option></select>
+      <input type="number" min="1" max="20" step="1" data-scn-item-field="quantity" value="${esc(it.quantity)}" aria-label="Quantity">
+      <button type="button" class="button neutral" data-scn-remove-item="${i}" ${sc.items.length < 2 ? "disabled" : ""}>×</button></div>`).join("")}
+      <button type="button" class="button neutral" data-scn-add-item ${sc.items.length >= 6 ? "disabled" : ""}>＋ Add item</button></div>
+    <div class="scn-access"><b>Access modifiers</b>${(state.accessConditions || []).map(a => `<label class="avail-toggle"><input type="checkbox" data-scn-access="${esc(a.id)}" ${sc.access.includes(a.id) ? "checked" : ""}><span>${esc(a.name)}</span></label>`).join("")}</div>
+    <div class="avail-form-actions"><button type="button" class="button red" data-scn-delete>Delete sample job</button><button type="button" class="button" data-scn-done>Done</button></div>
+  </form>`;
+}
+
+function renderPricing() {
+  if (!can("canEditCMS")) return `<div class="app-state app-state--error"><div class="app-state__icon">!</div><h2>Administrator access required</h2><p>Pricing can only be changed by an Administrator.</p><button class="button neutral" data-route="more">Back to More</button></div>`;
+  if (!pricingUi.loaded) {
+    if (!pricingUi.loading) loadPricingScreen();
+    return `<div class="app-state"><div class="loading-spinner"></div><h2>Loading pricing…</h2></div>`;
+  }
+  const d = pricingUi.draft, b = pricingUi.base;
+  const editing = pricingUi.scenarios.find(s => s.id === pricingUi.editing);
+  const dirtySamples = JSON.stringify(pricingUi.scenarios) !== pricingUi.baseScenariosJson;
+  return `<div class="pricing-root" data-pricing-root>
+    <div data-pricing-savebar>${pricingSaveBarHtml()}</div>
+    <div class="grid two pricing-top">
+      <section class="card"><div class="head"><div><h2>Rates</h2><span class="agenda-subtitle">Applied to every quote</span></div></div><div class="body pricing-grid">
+        ${PRICING_SETTING_FIELDS.map(([k, label, step, hint]) => `<label class="pricing-field"><span>${label}</span>${pInput(`settings.${k}`, d.settings[k], step, b.settings[k])}<small>${hint}${pDiffers(d.settings[k], b.settings[k]) ? ` · was ${pMoney(b.settings[k])}` : ""}</small></label>`).join("")}
+      </div></section>
+      <section class="card"><div class="head"><div><h2>Sample Jobs</h2><span class="agenda-subtitle">Reprices live as you edit. Tap a job for the line-by-line.</span></div><button class="button neutral" data-scn-add>＋ Add</button></div>
+        <div class="body"><div data-pricing-results>${pricingResultsHtml()}</div><div data-scn-editor>${editing ? scenarioEditorHtml(editing) : ""}</div>
+          <div class="avail-form-actions"><button class="button" data-scn-save ${dirtySamples ? "" : "disabled"}>Save Sample Jobs</button></div></div></section>
+    </div>
+    <section class="card"><div class="head"><div><h2>Equipment</h2><span class="agenda-subtitle">On-site minutes, crew, and per-item charges. Assembly is a flat charge on new delivered items (built at the store beforehand).</span></div></div>
+      <div class="body pricing-table-wrap"><table class="pricing-table"><thead><tr><th>Equipment</th>${PRICING_TYPE_FIELDS.map(([, l]) => `<th>${l}</th>`).join("")}</tr></thead><tbody>
+        ${(state.equipmentTypes || []).map(t => `<tr><th scope="row">${esc(t.name)}</th>${PRICING_TYPE_FIELDS.map(([k, , step]) => `<td>${pInput(`types.${t.id}.${k}`, d.types[t.id][k], step, b.types[t.id][k])}</td>`).join("")}</tr>`).join("")}
+      </tbody></table></div></section>
+    <section class="card"><div class="head"><div><h2>Delivery Modifiers</h2><span class="agenda-subtitle">Access conditions add crew time and a flat charge</span></div></div>
+      <div class="body pricing-table-wrap"><table class="pricing-table"><thead><tr><th>Condition</th>${PRICING_ACCESS_FIELDS.map(([, l]) => `<th>${l}</th>`).join("")}</tr></thead><tbody>
+        ${(state.accessConditions || []).map(a => `<tr><th scope="row">${esc(a.name)}</th>${PRICING_ACCESS_FIELDS.map(([k, , step]) => `<td>${pInput(`access.${a.id}.${k}`, d.access[a.id][k], step, b.access[a.id][k])}</td>`).join("")}</tr>`).join("")}
+      </tbody></table></div></section>
+    <p class="pricing-note">Changes apply to <b>new quotes</b> right away. Jobs already quoted keep the price they were given. Every change is recorded in the audit log.</p>
+  </div>`;
+}
+
+function bindPricingScreen() {
+  const root = view.querySelector("[data-pricing-root]");
+  const refresh = () => {
+    root.querySelector("[data-pricing-results]").innerHTML = pricingResultsHtml();
+    root.querySelector("[data-pricing-savebar]").innerHTML = pricingSaveBarHtml();
+    const dirty = JSON.stringify(pricingUi.scenarios) !== pricingUi.baseScenariosJson;
+    const saveSamples = root.querySelector("[data-scn-save]"); if (saveSamples) saveSamples.disabled = !dirty;
+  };
+  const rerender = () => go("pricing");
+  const editingScenario = () => pricingUi.scenarios.find(s => s.id === pricingUi.editing);
+
+  root.addEventListener("input", event => {
+    const el = event.target;
+    if (el.dataset.pricingInput) {
+      const [scope, a, b] = el.dataset.pricingInput.split(".");
+      const value = el.value === "" ? NaN : Number(el.value);
+      if (scope === "settings") pricingUi.draft.settings[a] = value; else pricingUi.draft[scope][a][b] = value;
+      const baseValue = scope === "settings" ? pricingUi.base.settings[a] : pricingUi.base[scope][a][b];
+      el.classList.toggle("changed", pDiffers(value, baseValue)); el.classList.toggle("invalid", !Number.isFinite(value) || value < 0);
+      refresh(); return;
+    }
+    const sc = editingScenario(); if (!sc) return;
+    if (el.dataset.scnField) { const k = el.dataset.scnField; sc[k] = (k === "name") ? el.value : (k === "pickupType" ? (el.value || null) : (el.value === "" ? 0 : Number(el.value))); refresh(); }
+    else if (el.dataset.scnItemField) { const item = sc.items[Number(el.closest("[data-scn-item]").dataset.scnItem)]; const k = el.dataset.scnItemField; item[k] = k === "quantity" ? Math.max(1, Math.round(Number(el.value) || 1)) : el.value; refresh(); }
+  });
+  root.addEventListener("change", event => {
+    const el = event.target, sc = editingScenario();
+    if (el.dataset.scnAccess && sc) { sc.access = el.checked ? [...new Set([...sc.access, el.dataset.scnAccess])] : sc.access.filter(id => id !== el.dataset.scnAccess); refresh(); }
+    else if (el.dataset.scnField || el.dataset.scnItemField) refresh();
+  });
+
+  root.addEventListener("click", async event => {
+    const t = event.target.closest("button"); if (!t) return;
+    if (t.dataset.simToggle) { pricingUi.open = pricingUi.open === t.dataset.simToggle ? null : t.dataset.simToggle; refresh(); return; }
+    if (t.dataset.scnEdit) { pricingUi.editing = t.dataset.scnEdit; root.querySelector("[data-scn-editor]").innerHTML = scenarioEditorHtml(editingScenario()); root.querySelector("[data-scn-editor]").scrollIntoView({ behavior: "smooth", block: "nearest" }); return; }
+    if (t.hasAttribute("data-scn-done")) { pricingUi.editing = null; root.querySelector("[data-scn-editor]").innerHTML = ""; return; }
+    if (t.hasAttribute("data-scn-add")) {
+      const first = state.equipmentTypes?.[0]; if (!first) return;
+      const sc = { id: `new-${Date.now()}`, name: "New sample job", roundTripMiles: 10, driveMinutes: 25, pickupType: null, items: [{ equipmentTypeId: first.id, condition: "new", quantity: 1, movement: "delivery" }], access: [] };
+      pricingUi.scenarios.push(sc); pricingUi.editing = sc.id; rerender(); return;
+    }
+    if (t.hasAttribute("data-scn-add-item")) { const sc = editingScenario(); sc.items.push({ equipmentTypeId: state.equipmentTypes[0].id, condition: "used", quantity: 1, movement: "delivery" }); root.querySelector("[data-scn-editor]").innerHTML = scenarioEditorHtml(sc); refresh(); return; }
+    if (t.dataset.scnRemoveItem !== undefined) { const sc = editingScenario(); sc.items.splice(Number(t.dataset.scnRemoveItem), 1); root.querySelector("[data-scn-editor]").innerHTML = scenarioEditorHtml(sc); refresh(); return; }
+    if (t.hasAttribute("data-scn-delete")) {
+      const sc = editingScenario(); if (!sc || !window.confirm(`Delete the sample job "${sc.name}"?`)) return;
+      pricingUi.scenarios = pricingUi.scenarios.filter(s => s.id !== sc.id); pricingUi.editing = null; rerender(); return;
+    }
+    if (t.hasAttribute("data-pricing-discard")) { pricingUi.draft = structuredClone(pricingUi.base); rerender(); return; }
+
+    if (t.hasAttribute("data-scn-save")) {
+      t.disabled = true;
+      try {
+        const pinToken = await requestPin("canEditCMS", "Enter your PIN to save sample jobs.");
+        await api.savePricing({ scenarios: pricingUi.scenarios }, pinToken); touchPinSession();
+        pricingUi.baseScenariosJson = JSON.stringify(pricingUi.scenarios); toast("Sample jobs saved."); refresh();
+      } catch (error) { toast(error.message || "Sample jobs could not be saved."); t.disabled = false; }
+      return;
+    }
+    if (t.hasAttribute("data-pricing-save")) {
+      const changes = pricingChanges(); if (!changes.length || pricingInvalid()) return;
+      const lines = changes.slice(0, 12).map(c => `• ${c.label}: ${pMoney(c.from)} → ${pMoney(c.to)}`).join("\n") + (changes.length > 12 ? `\n…and ${changes.length - 12} more` : "");
+      if (!window.confirm(`Save ${changes.length} pricing change${changes.length === 1 ? "" : "s"}?\n\n${lines}\n\nNew quotes will use these values immediately. Jobs already quoted keep their price.`)) return;
+      t.disabled = true; t.textContent = "Saving…";
+      const payload = { settings: {}, equipmentTypes: [], accessConditions: [] };
+      const grouped = { types: {}, access: {} };
+      changes.forEach(c => { if (c.scope === "settings") payload.settings[c.key] = c.to; else (grouped[c.scope][c.id] ||= {})[c.key] = c.to; });
+      Object.entries(grouped.types).forEach(([id, values]) => payload.equipmentTypes.push({ id, values }));
+      Object.entries(grouped.access).forEach(([id, values]) => payload.accessConditions.push({ id, values }));
+      try {
+        const pinToken = await requestPin("canEditCMS", "Enter your PIN to change pricing.");
+        await api.savePricing(payload, pinToken); touchPinSession();
+        Object.assign(state.pricingSettings, payload.settings);
+        state.equipmentTypes = state.equipmentTypes.map(x => grouped.types[x.id] ? { ...x, ...grouped.types[x.id] } : x);
+        state.accessConditions = state.accessConditions.map(x => grouped.access[x.id] ? { ...x, ...grouped.access[x.id] } : x);
+        pricingUi.base = structuredClone(pricingUi.draft);
+        toast(`Pricing saved · ${changes.length} change${changes.length === 1 ? "" : "s"}.`); rerender();
+        loadLiveData().catch(error => console.error("Post-pricing refresh failed.", error));
+      } catch (error) { toast(error.message || "Pricing could not be saved."); t.disabled = false; t.textContent = "Save Pricing"; }
+    }
+  });
+}
+
 // --- Availability & blackout dates (manager screen) -------------------------
 const AVAIL_DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
 const availabilityUi = { editing: null }; // null | "new" | blackout id
@@ -2315,7 +2582,7 @@ const views = {
 
   more: {
     title:"More", sub:"Administration and app information",
-    html:()=>`<div class="grid two"><section class="card"><div class="head"><h2>Administration</h2></div><div class="body list">${can("canEditCMS") ? `<button class="row" data-route="employees"><div><b>Employee Management</b><span>Add staff, assign roles, manage PINs, and deactivate access</span></div><b>›</b></button>` : ""}${can("canApproveSchedule") ? `<button class="row" data-route="availability"><div><b>Availability &amp; Blackout Dates</b><span>Weekly delivery hours, days off, and special-occasion closures</span></div><b>›</b></button>` : ""}<button class="row" data-demo-action="Settings"><div><b>Settings</b><span>Pricing, timing, availability, and app rules</span></div><b>⚙</b></button><button class="row" data-demo-action="Huddle Together"><div><b>Huddle Together</b><span>Group scheduled jobs into one operational route</span></div><b>↝</b></button></div></section><section class="card"><div class="head"><h2>System</h2></div><div class="body"><div class="row"><div><b>Data source</b><span>${state.live ? "Live GamePlan CMS" : state.cached ? "Cached live data" : "Not connected"}</span></div><span class="badge ${state.live ? "completed" : "tentative"}">${state.live ? "Live" : state.cached ? "Cached" : "Offline"}</span></div></div></section></div>`
+    html:()=>`<div class="grid two"><section class="card"><div class="head"><h2>Administration</h2></div><div class="body list">${can("canEditCMS") ? `<button class="row" data-route="employees"><div><b>Employee Management</b><span>Add staff, assign roles, manage PINs, and deactivate access</span></div><b>›</b></button>` : ""}${can("canEditCMS") ? `<button class="row" data-route="pricing"><div><b>Pricing &amp; Simulator</b><span>Rates, equipment and delivery modifiers, with live sample-job pricing</span></div><b>›</b></button>` : ""}${can("canApproveSchedule") ? `<button class="row" data-route="availability"><div><b>Availability &amp; Blackout Dates</b><span>Weekly delivery hours, days off, and special-occasion closures</span></div><b>›</b></button>` : ""}<button class="row" data-demo-action="Settings"><div><b>Settings</b><span>Pricing, timing, availability, and app rules</span></div><b>⚙</b></button><button class="row" data-demo-action="Huddle Together"><div><b>Huddle Together</b><span>Group scheduled jobs into one operational route</span></div><b>↝</b></button></div></section><section class="card"><div class="head"><h2>System</h2></div><div class="body"><div class="row"><div><b>Data source</b><span>${state.live ? "Live GamePlan CMS" : state.cached ? "Cached live data" : "Not connected"}</span></div><span class="badge ${state.live ? "completed" : "tentative"}">${state.live ? "Live" : state.cached ? "Cached" : "Offline"}</span></div></div></section></div>`
   },
 
   employees: {
@@ -2326,6 +2593,11 @@ const views = {
   availability: {
     title:"Availability", sub:"Delivery hours, days off, and blackout dates",
     html:()=>renderAvailability()
+  },
+
+  pricing: {
+    title:"Pricing", sub:"Rates, modifiers, and the pricing simulator",
+    html:()=>renderPricing()
   }
 };
 
@@ -2346,6 +2618,7 @@ function bindDynamic() {
   view.querySelector("[data-hard-refresh-cms]")?.addEventListener("click",hardRefreshCms);
   view.querySelector("[data-sync-pickup-queue]")?.addEventListener("click",syncPendingPickups);
   if(view.querySelector("[data-avail-root]"))bindAvailabilityScreen();
+  if(view.querySelector("[data-pricing-root]"))bindPricingScreen();
   view.querySelector("[data-resync-feed]")?.addEventListener("click",async event=>{
     const b=event.currentTarget;b.disabled=true;
     try{
