@@ -21,6 +21,8 @@ GamePlan data) when going around the app. Nobody can write gp* from a browser.
 - The GamePlan web app makes no client-side Firestore writes (verified).
 
 ## Status
-Compiles (`firebase deploy --only firestore:rules --dry-run`). NOT yet applied
-to the dashboard's canonical file or deployed — see the conversation.
+**Deployed 2026-09-20** to daily-inventory-operations (released to cloud.firestore)
+and applied to the dashboard repo's canonical `firestore.rules` (left
+uncommitted there for the dashboard thread to commit).
+Not run through the rules emulator (no Java on this Mac) — smoke-test both apps.
 Rollback: redeploy `firestore.rules.dashboard-before`.
