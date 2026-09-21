@@ -1,6 +1,6 @@
-import { GamePlanApi } from "./gameplan-api.js?v=fb17";
-import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb17";
-import { computeQuote } from "./pricing.mjs?v=fb17";
+import { GamePlanApi } from "./gameplan-api.js?v=fb18";
+import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb18";
+import { computeQuote } from "./pricing.mjs?v=fb18";
 
 const CACHE_KEY = "gameplan-live-bootstrap-v2";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -1084,6 +1084,7 @@ function renderJobSummaryCard(job, options = {}) {
       <div class="detail-line"><span>Appointment</span><strong>${esc(job.date)}, ${esc(job.time)}</strong></div>
       <div class="detail-line"><span>Estimated duration</span><strong>${esc(job.duration || "—")}</strong></div>${countLines}
       <div class="detail-line summary-created-by"><span>Set up by</span><strong>${esc(createdByName)}</strong></div>
+      ${job.createdAt ? `<div class="detail-line"><span>Set up on</span><strong>${esc(formatActivityStamp(job.createdAt))}</strong></div>` : ""}
     </section>`;
 }
 
@@ -1679,6 +1680,8 @@ async function openJob(jobId) {
       <div class="detail-line"><span>Total price</span><strong class="detail-total">$${Number(job.total || 0).toFixed(2)}</strong></div>
     </section>
 
+    <section class="detail-card job-activity" data-job-activity="${esc(job.id)}"><h3>Activity</h3><div class="job-activity-body"><small>Loading…</small></div></section>
+
     <div class="drawer-actions">
       ${workflowActions(job)}
     </div>
@@ -1687,6 +1690,28 @@ async function openJob(jobId) {
   drawerBackdrop.classList.add("open");
   drawer.setAttribute("aria-hidden","false");
   bindDynamic();
+  loadJobActivity(job.id);
+}
+
+function formatActivityStamp(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }).format(d);
+}
+
+// Who did what and when, straight from the job's history log.
+async function loadJobActivity(jobId) {
+  const slot = () => drawerContent.querySelector(`[data-job-activity="${CSS.escape(String(jobId))}"] .job-activity-body`);
+  try {
+    const events = await api.getJobHistory(jobId);
+    const box = slot(); if (!box) return;
+    box.innerHTML = events.length
+      ? events.map(e => `<div class="activity-row"><i aria-hidden="true"></i><div><b>${esc(e.eventType || "Update")}</b>${e.description ? `<span>${esc(e.description)}</span>` : ""}<small>${esc(formatActivityStamp(e.performedAt))}${employeeDisplayName(e.performedBy) ? ` · ${esc(employeeDisplayName(e.performedBy))}` : ""}</small></div></div>`).join("")
+      : `<small>No recorded activity for this job.</small>`;
+  } catch (error) {
+    console.warn("Job activity could not be loaded.", error);
+    const box = slot(); if (box) box.innerHTML = `<small>Activity isn't available right now (you may be offline).</small>`;
+  }
 }
 
 async function changeJobStatus(jobId, newStatus, {piggyback=false, overridePickupInspection=false} = {}) {

@@ -7,8 +7,8 @@
 import {
   collection, query, where, getDocs, doc, getDoc,
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
-import { db, auth, functions, httpsCallable } from "./firebase-app.js?v=fb17";
-import { enqueue, flush, count, looksOffline } from "./offline-queue.js?v=fb17";
+import { db, auth, functions, httpsCallable } from "./firebase-app.js?v=fb18";
+import { enqueue, flush, count, looksOffline } from "./offline-queue.js?v=fb18";
 
 const call = (name) => httpsCallable(functions, name);
 
@@ -174,6 +174,22 @@ export class GamePlanApi {
       currentUser: auth0.currentUser,
       staffChoices: auth0.staffChoices || [],
     };
+  }
+
+  // Per-job activity log (gpJobs/<id>/history), oldest first.
+  async getJobHistory(jobId) {
+    const snap = await getDocs(collection(db, `gpJobs/${jobId}/history`));
+    return snap.docs.map((d) => {
+      const h = d.data();
+      return {
+        id: d.id,
+        eventType: h.eventType || "",
+        description: h.description || "",
+        performedBy: h.performedBy || "",
+        performedAt: h.performedAt ? ts(h.performedAt).toISOString() : "",
+        source: h.source || "",
+      };
+    }).sort((a, b) => String(a.performedAt).localeCompare(String(b.performedAt)));
   }
 
   async getDirectory() {
@@ -380,6 +396,10 @@ export class GamePlanApi {
       status: STATUS_TO_UI[j.status] || "Scheduled",
       piggyback: !!j.isPiggyback,
       internalNotes: j.internalNotes || "",
+      createdBy: j.createdBy || "",
+      createdAt: j.createdAt ? ts(j.createdAt).toISOString() : "",
+      updatedBy: j.updatedBy || "",
+      updatedAt: j.updatedAt ? ts(j.updatedAt).toISOString() : "",
       total: Number(j.finalTotal) || 0,
       crewSize,
       duration: durationLabel(j.durationMinutes),

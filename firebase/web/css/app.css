@@ -723,3 +723,14 @@ body{background:var(--gp-bg);color:var(--gp-text)}
 .scn-access{display:flex;flex-direction:column;gap:6px}
 .pricing-note{color:var(--gp-muted);font-size:12px;margin:0 4px 20px}
 @media (max-width:720px){.pricing-grid{grid-template-columns:1fr}.sim-main{grid-template-columns:1fr auto auto}.sim-delta{grid-column:1/-1;justify-self:start}.scn-item{grid-template-columns:1fr 1fr}}
+
+/* --- Job activity timeline ------------------------------------------------- */
+.job-activity h3{margin:0 0 10px}
+.job-activity-body{display:flex;flex-direction:column}
+.job-activity-body>small{color:var(--gp-muted)}
+.activity-row{display:grid;grid-template-columns:14px 1fr;gap:10px;padding:0 0 12px;position:relative}
+.activity-row:not(:last-child)::before{content:"";position:absolute;left:6px;top:14px;bottom:0;width:2px;background:var(--gp-line)}
+.activity-row>i{width:10px;height:10px;margin-top:4px;border-radius:50%;background:var(--gp-orange);box-shadow:0 0 0 3px color-mix(in srgb,var(--gp-orange) 22%,transparent)}
+.activity-row b{display:block;color:var(--gp-text);font-size:13px}
+.activity-row span{display:block;color:var(--gp-muted);font-size:12px;line-height:1.4;margin-top:1px}
+.activity-row small{display:block;color:var(--gp-muted);font-size:11px;margin-top:3px}
