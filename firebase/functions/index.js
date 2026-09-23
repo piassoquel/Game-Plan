@@ -16,7 +16,7 @@ import { Timestamp, FieldValue } from "firebase-admin/firestore";
 import { randomUUID } from "node:crypto";
 
 import {
-  db, str, num, newId, phoneDigits, pinMatchesHash, normalizedAddressKey,
+  db, str, num, newId, phoneDigits, pinMatchesHash, newPinHash, normalizedAddressKey,
   requireAuthorizedLogin,
   resolveActor, requirePermission, actorLabel,
 } from "./lib/common.mjs";
@@ -135,6 +135,14 @@ export const verifyPin = onCall(async (request) => {
     return { token: "", expiresInSeconds: 900, employee: { ...employeeView(email, staff, role), sharedAccount: false, pinRequired: false } };
   }
 
+  // shared account — throttle guessing: 8 wrong PINs in 5 minutes locks the shared login for 5 minutes
+  const attemptsRef = db().doc(`gpPinAttempts/${email}`);
+  const attempts = (await attemptsRef.get()).data() || {};
+  if (attempts.lockedUntil && attempts.lockedUntil.toMillis() > Date.now()) {
+    const mins = Math.max(1, Math.ceil((attempts.lockedUntil.toMillis() - Date.now()) / 60000));
+    throw new HttpsError("resource-exhausted", `Too many incorrect PINs. Try again in ${mins} minute${mins === 1 ? "" : "s"}.`);
+  }
+
   // shared account — match a PIN-enabled staff hash
   const [candidates, secretsSnap] = await Promise.all([
     db().collection("gpStaff").where("active", "==", true).where("pinEnabled", "==", true).get(),
@@ -154,9 +162,17 @@ export const verifyPin = onCall(async (request) => {
     matches.push({ st, role: roleCache[st.roleId] });
   }
   if (!matches.length) {
+    const nowMs = Date.now();
+    const fresh = !attempts.windowStart || nowMs - attempts.windowStart.toMillis() > 5 * 60 * 1000;
+    const fails = (fresh ? 0 : attempts.fails || 0) + 1;
+    await attemptsRef.set({
+      fails, windowStart: fresh ? Timestamp.now() : attempts.windowStart,
+      lockedUntil: fails >= 8 ? Timestamp.fromMillis(nowMs + 5 * 60 * 1000) : null,
+    });
     throw new HttpsError("permission-denied",
       requiredPermission ? "That PIN cannot approve this action." : "Incorrect PIN.");
   }
+  if (attempts.fails) await attemptsRef.delete().catch(() => {});
   if (matches.length > 1) {
     throw new HttpsError("failed-precondition", "This PIN is assigned to more than one employee. A manager must set unique PINs.");
   }
@@ -1105,4 +1121,134 @@ export const savePricing = onCall(async (request) => {
   await batch.commit();
   for (const a of audits) await auditAdmin("pricing", a.id, "Pricing Updated", a.before, a.after, actor);
   return { saved: true, changed: audits.length };
+});
+
+// ========================================================= employee management
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const slugify = (v) => str(v).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "employee";
+
+export const saveStaffProfile = onCall(async (request) => {
+  const data = request.data || {};
+  const actor = await resolveActor(request, { pinToken: data.pinToken });
+  requirePermission(actor, "canEditCMS", "Administrator access is required to manage employees.");
+
+  const d = db();
+  const displayName = str(data.displayName).slice(0, 80);
+  const roleId = str(data.roleId);
+  const loginMode = str(data.loginMode).toLowerCase();
+  const requestedActive = data.active !== false && data.active !== "false";
+  const pinEnabled = data.pinEnabled === true || data.pinEnabled === "true";
+  const pin = str(data.pin);
+  const existingId = str(data.staffProfileId);
+  if (!displayName) throw new HttpsError("invalid-argument", "Display name is required.");
+  if (!["shared", "personal"].includes(loginMode)) throw new HttpsError("invalid-argument", "Choose a shared or personal Google login.");
+  if (pin && !/^\d{4,8}$/.test(pin)) throw new HttpsError("invalid-argument", "PINs must contain 4–8 digits.");
+
+  const [staffSnap, loginSnap, rolesSnap, secretsSnap] = await Promise.all([
+    d.collection("gpStaff").get(), d.collection("gpLoginAccounts").get(),
+    d.collection("gpRoles").get(), d.collection("gpStaffSecrets").get(),
+  ]);
+  const staff = staffSnap.docs.map((x) => ({ id: x.id, ...x.data() }));
+  const roles = Object.fromEntries(rolesSnap.docs.map((x) => [x.id, x.data()]));
+  const hashById = Object.fromEntries(secretsSnap.docs.map((x) => [x.id, x.data().pinHash]));
+  const existing = existingId ? staff.find((x) => x.id === existingId) : null;
+  if (existingId && !existing) throw new HttpsError("not-found", "That employee no longer exists.");
+  if (!roles[roleId] || roles[roleId].active === false) throw new HttpsError("invalid-argument", "Choose an active role.");
+
+  // ---- which Google login does this person use? ----
+  let loginEmail = "";
+  let newLogin = null;
+  if (loginMode === "shared") {
+    const acct = loginSnap.docs.find((x) => x.data().loginAccountId === str(data.loginAccountId));
+    if (!acct || acct.data().sharedAccount !== true || acct.data().active !== true) {
+      throw new HttpsError("invalid-argument", "Choose an active shared Google login account.");
+    }
+    loginEmail = acct.id;
+  } else {
+    loginEmail = str(data.googleEmail).toLowerCase();
+    if (!EMAIL_RE.test(loginEmail)) throw new HttpsError("invalid-argument", "Enter a valid personal Google email address.");
+    const acct = loginSnap.docs.find((x) => x.id === loginEmail);
+    if (acct && acct.data().sharedAccount === true) throw new HttpsError("invalid-argument", "That email is already set up as a shared store account.");
+    if (staff.some((x) => x.id !== existingId && x.loginEmail === loginEmail && x.active)) {
+      throw new HttpsError("invalid-argument", "That personal Google account already has an active employee profile.");
+    }
+    if (!acct) {
+      const max = loginSnap.docs.reduce((m, x) => Math.max(m, Number((/^LOG-(\d+)$/.exec(x.data().loginAccountId || "") || [])[1]) || 0), 0);
+      newLogin = { loginAccountId: `LOG-${String(max + 1).padStart(3, "0")}`, sharedAccount: false };
+    }
+  }
+
+  // ---- shared-account staff are identified by PIN, so it's required ----
+  if (loginMode === "shared" && requestedActive && !pinEnabled) {
+    throw new HttpsError("invalid-argument", "Employees on the shared store login need a PIN so their work is recorded under their name.");
+  }
+
+  // ---- always keep at least one active Administrator ----
+  const targetId = existing ? existing.id : (() => {
+    const base = slugify(displayName); let id = base, n = 2;
+    while (staff.some((x) => x.id === id)) id = `${base}-${n++}`;
+    return id;
+  })();
+  const adminCount = staff.filter((x) => {
+    const isTarget = x.id === targetId;
+    const act = isTarget ? requestedActive : x.active === true;
+    const rid = isTarget ? roleId : x.roleId;
+    return act && roles[rid]?.permissions?.canEditCMS === true;
+  }).length + (existing || !(requestedActive && roles[roleId]?.permissions?.canEditCMS) ? 0 : 1);
+  if (adminCount < 1) throw new HttpsError("failed-precondition", "GamePlan must always have at least one active Administrator.");
+
+  // ---- PIN ----
+  let nextHash = null;      // set => write; null => leave; "" => clear
+  if (pinEnabled) {
+    if (pin) {
+      for (const other of staff) {
+        if (other.id === targetId || other.active !== true || other.pinEnabled !== true) continue;
+        if (hashById[other.id] && pinMatchesHash(pin, hashById[other.id])) {
+          throw new HttpsError("invalid-argument", "That PIN is already assigned to another active employee. Choose a unique PIN.");
+        }
+      }
+      nextHash = newPinHash(pin);
+    } else if (!hashById[targetId]) {
+      throw new HttpsError("invalid-argument", "Set a PIN before enabling PIN access for this employee.");
+    }
+  } else if (hashById[targetId]) {
+    nextHash = "";
+  }
+  const pinConfigured = nextHash === "" ? false : Boolean(nextHash || hashById[targetId]);
+
+  // ---- write ----
+  const now = Timestamp.now();
+  const batch = d.batch();
+  const staffDoc = {
+    displayName, loginEmail, roleId, pinEnabled, pinConfigured, active: requestedActive,
+    updatedBy: actorLabel(actor), updatedAt: now,
+  };
+  if (!existing) { staffDoc.createdBy = actorLabel(actor); staffDoc.createdAt = now; }
+  batch.set(d.doc(`gpStaff/${targetId}`), staffDoc, { merge: true });
+  if (nextHash) batch.set(d.doc(`gpStaffSecrets/${targetId}`), { pinHash: nextHash, updatedAt: now });
+  if (nextHash === "") batch.delete(d.doc(`gpStaffSecrets/${targetId}`));
+
+  if (loginMode === "personal") {
+    // A personal login's access follows the person: deactivating them locks the
+    // account out of GamePlan data immediately (the rules check this flag).
+    batch.set(d.doc(`gpLoginAccounts/${loginEmail}`), {
+      ...(newLogin || {}), active: requestedActive, updatedAt: now,
+      ...(newLogin ? { createdAt: now } : {}),
+    }, { merge: true });
+  }
+  const prevEmail = existing?.loginEmail;
+  if (prevEmail && prevEmail !== loginEmail) {
+    const prev = loginSnap.docs.find((x) => x.id === prevEmail);
+    const stillUsed = staff.some((x) => x.id !== targetId && x.loginEmail === prevEmail && x.active === true);
+    if (prev && prev.data().sharedAccount !== true && !stillUsed) {
+      batch.set(d.doc(`gpLoginAccounts/${prevEmail}`), { active: false, updatedAt: now }, { merge: true });
+    }
+  }
+  await batch.commit();
+
+  await auditAdmin("staff", targetId, existing ? "Employee Updated" : "Employee Created",
+    existing ? { displayName: existing.displayName, roleId: existing.roleId, loginEmail: existing.loginEmail, active: existing.active, pinEnabled: existing.pinEnabled } : {},
+    { displayName, roleId, loginEmail, active: requestedActive, pinEnabled, pinChanged: Boolean(pin) }, actor);
+
+  return { staffProfileId: targetId, saved: true };
 });

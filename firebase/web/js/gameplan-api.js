@@ -7,8 +7,8 @@
 import {
   collection, query, where, getDocs, doc, getDoc,
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
-import { db, auth, functions, httpsCallable } from "./firebase-app.js?v=fb18";
-import { enqueue, flush, count, looksOffline } from "./offline-queue.js?v=fb18";
+import { db, auth, functions, httpsCallable } from "./firebase-app.js?v=fb19";
+import { enqueue, flush, count, looksOffline } from "./offline-queue.js?v=fb19";
 
 const call = (name) => httpsCallable(functions, name);
 
@@ -294,8 +294,42 @@ export class GamePlanApi {
     return res.data;
   }
 
-  async getStaffManagement() { throw notYet(); }
-  async saveStaffProfile() { throw notYet(); }
+  // Staff list for the Employee Management screen. PIN hashes are never
+  // readable here (server-only); pinConfigured is just a flag on the record.
+  async getStaffManagement() {
+    const [staffSnap, loginSnap, roleSnap] = await Promise.all([
+      getDocs(collection(db, "gpStaff")), getDocs(collection(db, "gpLoginAccounts")), getDocs(collection(db, "gpRoles")),
+    ]);
+    const loginAccounts = loginSnap.docs.map((d) => {
+      const l = d.data();
+      return { id: l.loginAccountId || d.id, email: d.id, sharedAccount: !!l.sharedAccount, active: l.active === true };
+    });
+    const byEmail = Object.fromEntries(loginAccounts.map((l) => [l.email, l]));
+    const profiles = staffSnap.docs.map((d) => {
+      const p = d.data();
+      const acct = byEmail[String(p.loginEmail || "").toLowerCase()] || {};
+      return {
+        id: d.id,
+        displayName: p.displayName || d.id,
+        loginAccountId: acct.id || "",
+        googleEmail: acct.sharedAccount ? "" : (p.loginEmail || ""),
+        sharedAccount: !!acct.sharedAccount,
+        roleId: p.roleId || "",
+        pinEnabled: !!p.pinEnabled,
+        pinConfigured: !!p.pinConfigured,
+        active: p.active === true,
+        updatedAt: p.updatedAt ? ts(p.updatedAt).toISOString() : "",
+      };
+    });
+    const roles = roleSnap.docs.filter((d) => d.data().active !== false)
+      .map((d) => ({ id: d.id, name: d.data().name || d.id, permissions: d.data().permissions || {} }));
+    return { profiles, roles, loginAccounts };
+  }
+
+  async saveStaffProfile(staffData, pinToken = "") {
+    const res = await call("saveStaffProfile")({ ...staffData, pinToken });
+    return res.data;
+  }
   async saveCustomer() { throw notYet(); }
 
   async calculateRoute(destinationAddress, destinationPlaceId = "") {

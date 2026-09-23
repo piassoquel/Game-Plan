@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomUUID, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { getFirestore } from "firebase-admin/firestore";
 import { HttpsError } from "firebase-functions/v2/https";
 
@@ -10,11 +10,23 @@ export const phoneDigits = (v) => String(v || "").replace(/\D/g, "").replace(/^1
 export const str = (v) => (v == null ? "" : String(v).trim());
 export const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
-// Matches the Apps Script salted PIN format: v1$<salt>$<sha256hex(salt + ":" + pin)>
+// PIN hashes (server-only, in gpStaffSecrets):
+//   v2$<salt>$<scrypt hex>   new PINs — deliberately slow to guess
+//   v1$<salt>$<sha256 hex>   legacy (Apps Script era) — still verifies until the PIN is reset
+export function newPinHash(pin) {
+  const salt = randomBytes(16).toString("hex");
+  return `v2$${salt}$${scryptSync(String(pin), salt, 32, { N: 16384, r: 8, p: 1 }).toString("hex")}`;
+}
+
 export function pinMatchesHash(pin, storedValue) {
   const stored = str(storedValue).toLowerCase();
   if (!stored) return false;
   const parts = stored.split("$");
+  if (parts.length === 3 && parts[0] === "v2") {
+    const want = Buffer.from(parts[2], "hex");
+    const got = scryptSync(String(pin), parts[1], want.length || 32, { N: 16384, r: 8, p: 1 });
+    return want.length === got.length && timingSafeEqual(want, got);
+  }
   if (parts.length === 3 && parts[0] === "v1") {
     return sha256hex(`${parts[1]}:${pin}`) === parts[2];
   }

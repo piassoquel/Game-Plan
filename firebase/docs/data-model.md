@@ -101,7 +101,7 @@ address-match), latitude, longitude, accessNotes, isDefault, active`.
 | `gpRoles/{roleId}` | `Roles` | `name, permissions{ canCreateQuote, canCreateTentative, canApproveSchedule, canOverrideConflict, canOverridePrice, canOverrideDuration, canEditCMS }` |
 | `gpLoginAccounts/{email}` | `LoginAccounts` | doc ID = lowercased Google email (the rules gate). `loginAccountId, sharedAccount (bool), active`. `piasemployee@gmail.com` imported as **`active: false`** so historical `performedBy` strings still resolve, but it cannot sign in. *(Also remove it from the dashboard's `allowedUsers` — flagged to that thread.)* |
 | `gpStaff/{staffId}` | `StaffProfiles` | `displayName, loginEmail, roleId, pinEnabled, pinConfigured, active, legacyId` (PIN hashes are NOT here — see `gpStaffSecrets`). **8** employees share `employee@playitagainsoquel.com` (incl. Parker Brown, moved off the retired gmail account); James, Andrew, Dustin Moore on personal Workspace logins |
-| `gpStaffSecrets/{staffId}` | `StaffProfiles` (PINHash) | **server-only, no client rule.** `pinHash` (salted `v1$salt$sha256`). Read only by Cloud Functions (`verifyPin`). |
+| `gpStaffSecrets/{staffId}` | `StaffProfiles` (PINHash) | **server-only, no client rule.** `pinHash`: `v2$salt$scrypt` for PINs set in the app, legacy `v1$salt$sha256` for imported ones (both verify). Read only by Cloud Functions (`verifyPin`, `saveStaffProfile`). Wrong-PIN attempts are throttled via server-only `gpPinAttempts/{loginEmail}`. |
 | `gpAudit/{id}` | `StaffAuditLog` + `CustomerAuditLog` + future | `entity, entityId, action, oldValue, newValue, performedBy, performedAt` |
 
 ## Working set vs. history

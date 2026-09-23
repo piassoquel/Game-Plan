@@ -1,6 +1,6 @@
-import { GamePlanApi } from "./gameplan-api.js?v=fb18";
-import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb18";
-import { computeQuote } from "./pricing.mjs?v=fb18";
+import { GamePlanApi } from "./gameplan-api.js?v=fb19";
+import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb19";
+import { computeQuote } from "./pricing.mjs?v=fb19";
 
 const CACHE_KEY = "gameplan-live-bootstrap-v2";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -2375,7 +2375,7 @@ function renderEmployees() {
   return `<section class="card employees-card"><div class="head employees-head"><div><h2>Employees</h2><span class="agenda-subtitle">${profiles.filter(item=>item.active).length} active · ${profiles.length} total</span></div><button class="button" data-add-employee>＋ Add Employee</button></div><div class="body employee-list">${profiles.map(profile => `<article class="employee-row ${profile.active ? "" : "inactive"}">
     <div class="employee-avatar">${esc(profile.displayName.charAt(0).toUpperCase())}</div>
     <div class="employee-copy"><b>${esc(profile.displayName)}</b><span>${esc(staffRoleName(profile.roleId))} · ${profile.sharedAccount ? `Shared login: ${esc(sharedLoginName(profile.loginAccountId))}` : esc(profile.googleEmail)}</span><small>${profile.pinConfigured ? (profile.sharedAccount ? "Employee PIN configured" : "Approval PIN configured") : (profile.sharedAccount ? "PIN not configured" : "Personal Google sign-in · no approval PIN")}</small></div>
-    <div class="employee-status"><span class="badge ${profile.active ? "completed" : "attention"}">${profile.active ? "Active" : "Inactive"}</span><button class="button neutral" data-edit-employee="${esc(profile.id)}">Edit</button></div>
+    <div class="employee-status"><span class="badge ${profile.active ? "completed" : "attention"}">${profile.active ? "Active" : "Inactive"}</span><button class="button neutral" data-edit-employee="${esc(profile.id)}">Edit</button><button class="button ${profile.active ? "red" : "neutral"}" data-toggle-employee="${esc(profile.id)}">${profile.active ? "Deactivate" : "Reactivate"}</button></div>
   </article>`).join("") || `<div class="empty-agenda"><b>No employees yet</b><span>Add the first staff profile to begin.</span></div>`}</div></section>`;
 }
 
@@ -2857,6 +2857,27 @@ function bindDynamic() {
   view.querySelector("[data-load-staff]")?.addEventListener("click", () => loadStaffManagement());
   view.querySelector("[data-add-employee]")?.addEventListener("click", () => openEmployeeEditor());
   view.querySelectorAll("[data-edit-employee]").forEach(el => el.onclick = () => openEmployeeEditor(el.dataset.editEmployee));
+  view.querySelectorAll("[data-toggle-employee]").forEach(el => el.onclick = async () => {
+    const profile = state.staffManagement.profiles.find(item => item.id === el.dataset.toggleEmployee);
+    if (!profile) return;
+    const turningOff = profile.active;
+    const consequence = turningOff
+      ? `${profile.displayName} will no longer be able to use their PIN${profile.sharedAccount ? "" : " or sign in to GamePlan"}. Their past work stays in the history.`
+      : `${profile.displayName} will be able to use GamePlan again.`;
+    if (!window.confirm(`${turningOff ? "Deactivate" : "Reactivate"} ${profile.displayName}?\n\n${consequence}`)) return;
+    el.disabled = true;
+    try {
+      const pinToken = await requestPin("canEditCMS", "Administrator verification is required to change employee access.");
+      await api.saveStaffProfile({
+        staffProfileId: profile.id, displayName: profile.displayName, roleId: profile.roleId,
+        loginMode: profile.sharedAccount ? "shared" : "personal", loginAccountId: profile.loginAccountId,
+        googleEmail: profile.googleEmail, pinEnabled: profile.pinEnabled, active: !turningOff, pin: ""
+      }, pinToken);
+      touchPinSession();
+      await loadStaffManagement(true);
+      toast(`${profile.displayName} was ${turningOff ? "deactivated" : "reactivated"}.`);
+    } catch (error) { toast(error.message || "The change could not be saved."); el.disabled = false; }
+  });
 }
 
 function loadingView() {
