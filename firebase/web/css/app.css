@@ -734,3 +734,7 @@ body{background:var(--gp-bg);color:var(--gp-text)}
 .activity-row b{display:block;color:var(--gp-text);font-size:13px}
 .activity-row span{display:block;color:var(--gp-muted);font-size:12px;line-height:1.4;margin-top:1px}
 .activity-row small{display:block;color:var(--gp-muted);font-size:11px;margin-top:3px}
+
+/* --- App update banner ------------------------------------------------------ */
+.update-banner{position:fixed;left:12px;right:12px;bottom:calc(76px + env(safe-area-inset-bottom));z-index:9999;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;border-radius:14px;border:1px solid color-mix(in srgb,var(--gp-orange) 60%,transparent);background:var(--gp-panel);color:var(--gp-text);box-shadow:0 10px 30px rgba(0,0,0,.45);font-size:13px}
+.update-banner button{flex:0 0 auto;background:var(--gp-orange);color:#111;border:0;border-radius:10px;padding:8px 14px;font:inherit;font-weight:800;cursor:pointer}

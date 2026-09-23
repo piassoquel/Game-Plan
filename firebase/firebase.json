@@ -7,7 +7,11 @@
     {
       "source": "functions",
       "codebase": "gameplan",
-      "ignore": ["node_modules", ".git", "*.log"],
+      "ignore": [
+        "node_modules",
+        ".git",
+        "*.log"
+      ],
       "predeploy": [
         "cp \"$RESOURCE_DIR/../web/js/pricing.mjs\" \"$RESOURCE_DIR/pricing.mjs\""
       ]
@@ -16,15 +20,45 @@
   "hosting": {
     "site": "gameplan-soquel",
     "public": "web",
-    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
-    "rewrites": [{ "source": "**", "destination": "/index.html" }]
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ],
+    "headers": [
+      {
+        "source": "**/*.@(html|js|mjs|css|json)",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache"
+          }
+        ]
+      }
+    ]
   },
   "emulators": {
-    "auth": { "port": 9099 },
-    "functions": { "port": 5001 },
-    "firestore": { "port": 8080 },
-    "hosting": { "port": 5000 },
-    "ui": { "enabled": true },
+    "auth": {
+      "port": 9099
+    },
+    "functions": {
+      "port": 5001
+    },
+    "firestore": {
+      "port": 8080
+    },
+    "hosting": {
+      "port": 5000
+    },
+    "ui": {
+      "enabled": true
+    },
     "singleProjectMode": true
   }
 }

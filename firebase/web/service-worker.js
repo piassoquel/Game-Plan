@@ -1,4 +1,4 @@
-const CACHE_NAME = "gameplan-firebase-preview-v20";
+const CACHE_NAME = "gameplan-fb20";
 
 // Minimal precache — the offline entry point. Everything else caches lazily.
 const APP_SHELL = [
@@ -32,6 +32,8 @@ self.addEventListener("fetch", (event) => {
   // Firestore / Auth manage their own offline cache — never intercept.
   if (/firestore\.googleapis\.com|identitytoolkit|securetoken\.googleapis\.com/.test(url.href)) return;
 
+  if (url.pathname.endsWith("/version.json")) return; // update checks must hit the network
+
   const sameOrigin = url.origin === self.location.origin;
   const isCode = event.request.mode === "navigate" ||
     ["document", "script", "style", "worker"].includes(event.request.destination) ||
@@ -40,7 +42,7 @@ self.addEventListener("fetch", (event) => {
   // Code + navigations: network-first, fall back to cache, then to index.html.
   if (isCode) {
     event.respondWith(
-      fetch(event.request)
+      fetch(event.request, { cache: "no-cache" })
         .then((res) => {
           if (sameOrigin || url.hostname === "www.gstatic.com") {
             const copy = res.clone();

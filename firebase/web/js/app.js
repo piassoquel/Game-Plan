@@ -1,6 +1,10 @@
-import { GamePlanApi } from "./gameplan-api.js?v=fb19";
-import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb19";
-import { computeQuote } from "./pricing.mjs?v=fb19";
+import { GamePlanApi } from "./gameplan-api.js?v=fb20";
+import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb20";
+import { computeQuote } from "./pricing.mjs?v=fb20";
+
+// The build this page is running — taken from the ?v= on its own URL, so it can
+// never disagree with the code actually loaded.
+const RUNNING_BUILD = new URL(import.meta.url).searchParams.get("v") || "dev";
 
 const CACHE_KEY = "gameplan-live-bootstrap-v2";
 const CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -2607,7 +2611,7 @@ const views = {
 
   more: {
     title:"More", sub:"Administration and app information",
-    html:()=>`<div class="grid two"><section class="card"><div class="head"><h2>Administration</h2></div><div class="body list">${can("canEditCMS") ? `<button class="row" data-route="employees"><div><b>Employee Management</b><span>Add staff, assign roles, manage PINs, and deactivate access</span></div><b>›</b></button>` : ""}${can("canEditCMS") ? `<button class="row" data-route="pricing"><div><b>Pricing &amp; Simulator</b><span>Rates, equipment and delivery modifiers, with live sample-job pricing</span></div><b>›</b></button>` : ""}${can("canApproveSchedule") ? `<button class="row" data-route="availability"><div><b>Availability &amp; Blackout Dates</b><span>Weekly delivery hours, days off, and special-occasion closures</span></div><b>›</b></button>` : ""}<button class="row" data-demo-action="Settings"><div><b>Settings</b><span>Pricing, timing, availability, and app rules</span></div><b>⚙</b></button><button class="row" data-demo-action="Huddle Together"><div><b>Huddle Together</b><span>Group scheduled jobs into one operational route</span></div><b>↝</b></button></div></section><section class="card"><div class="head"><h2>System</h2></div><div class="body"><div class="row"><div><b>Data source</b><span>${state.live ? "Live GamePlan CMS" : state.cached ? "Cached live data" : "Not connected"}</span></div><span class="badge ${state.live ? "completed" : "tentative"}">${state.live ? "Live" : state.cached ? "Cached" : "Offline"}</span></div></div></section></div>`
+    html:()=>`<div class="grid two"><section class="card"><div class="head"><h2>Administration</h2></div><div class="body list">${can("canEditCMS") ? `<button class="row" data-route="employees"><div><b>Employee Management</b><span>Add staff, assign roles, manage PINs, and deactivate access</span></div><b>›</b></button>` : ""}${can("canEditCMS") ? `<button class="row" data-route="pricing"><div><b>Pricing &amp; Simulator</b><span>Rates, equipment and delivery modifiers, with live sample-job pricing</span></div><b>›</b></button>` : ""}${can("canApproveSchedule") ? `<button class="row" data-route="availability"><div><b>Availability &amp; Blackout Dates</b><span>Weekly delivery hours, days off, and special-occasion closures</span></div><b>›</b></button>` : ""}<button class="row" data-demo-action="Settings"><div><b>Settings</b><span>Pricing, timing, availability, and app rules</span></div><b>⚙</b></button><button class="row" data-demo-action="Huddle Together"><div><b>Huddle Together</b><span>Group scheduled jobs into one operational route</span></div><b>↝</b></button></div></section><section class="card"><div class="head"><h2>System</h2></div><div class="body"><div class="row"><div><b>App version</b><span>${esc(RUNNING_BUILD)}${state.latestBuild && state.latestBuild !== RUNNING_BUILD ? ` · update available (${esc(state.latestBuild)})` : " · up to date"}</span></div>${state.latestBuild && state.latestBuild !== RUNNING_BUILD ? `<button class="button" data-apply-update>Update now</button>` : `<button class="button neutral" data-check-update>Check for updates</button>`}</div><div class="row"><div><b>Signed in as</b><span>${esc(state.currentUser?.displayName || state.currentUser?.email || "—")}${state.currentUser?.roleName ? ` · ${esc(state.currentUser.roleName)}` : ""}</span></div><button class="button red" data-more-signout>Sign out</button></div><div class="row"><div><b>Data source</b><span>${state.live ? "Live GamePlan CMS" : state.cached ? "Cached live data" : "Not connected"}</span></div><span class="badge ${state.live ? "completed" : "tentative"}">${state.live ? "Live" : state.cached ? "Cached" : "Offline"}</span></div></div></section></div>`
   },
 
   employees: {
@@ -2642,6 +2646,9 @@ function bindDynamic() {
   document.querySelectorAll("[data-complete-details]").forEach(el => el.onclick = () => openCompleteDetails(el.dataset.completeDetails));
   view.querySelector("[data-hard-refresh-cms]")?.addEventListener("click",hardRefreshCms);
   view.querySelector("[data-sync-pickup-queue]")?.addEventListener("click",syncPendingPickups);
+  view.querySelector("[data-check-update]")?.addEventListener("click",()=>checkForAppUpdate({manual:true}));
+  view.querySelector("[data-apply-update]")?.addEventListener("click",applyAppUpdate);
+  view.querySelector("[data-more-signout]")?.addEventListener("click",()=>{ if(window.confirm("Sign out of GamePlan?")) signOutOfGamePlan(); });
   if(view.querySelector("[data-avail-root]"))bindAvailabilityScreen();
   if(view.querySelector("[data-pricing-root]"))bindPricingScreen();
   view.querySelector("[data-resync-feed]")?.addEventListener("click",async event=>{
@@ -4487,6 +4494,43 @@ if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => navigator.serviceWorker.register("./service-worker.js").catch(console.error));
 }
 
+// --- App updates ------------------------------------------------------------
+async function checkForAppUpdate({ manual = false } = {}) {
+  try {
+    const res = await fetch(`./version.json?ts=${Date.now()}`, { cache: "no-store" });
+    if (!res.ok) throw new Error(`version ${res.status}`);
+    const latest = await res.json();
+    state.latestBuild = latest.build || "";
+    if (state.latestBuild && state.latestBuild !== RUNNING_BUILD) {
+      showUpdateBanner();
+      if (manual) toast(`Update available (${state.latestBuild}).`);
+      if (location.hash.slice(1) === "more") go("more");
+      return true;
+    }
+    if (manual) toast(`You're on the latest version (${RUNNING_BUILD}).`);
+    return false;
+  } catch (error) {
+    if (manual) toast("Couldn't check for updates. Are you online?");
+    return false;
+  }
+}
+
+async function applyAppUpdate() {
+  try { const regs = (await navigator.serviceWorker?.getRegistrations?.()) || []; await Promise.all(regs.map(r => r.unregister())); } catch (_) {}
+  try { const keys = await caches.keys(); await Promise.all(keys.map(k => caches.delete(k))); } catch (_) {}
+  // Sign-in and any saved offline work live in IndexedDB and are untouched.
+  location.replace(`${location.pathname}?u=${Date.now()}${location.hash}`);
+}
+
+function showUpdateBanner() {
+  if (document.querySelector("#updateBanner")) return;
+  const banner = document.createElement("div");
+  banner.id = "updateBanner"; banner.className = "update-banner"; banner.setAttribute("role", "status");
+  banner.innerHTML = `<span>A new version of GamePlan is ready.</span><button type="button">Update now</button>`;
+  banner.querySelector("button").onclick = applyAppUpdate;
+  document.body.appendChild(banner);
+}
+
 async function flushOfflineWrites() {
   let result;
   try {
@@ -4503,7 +4547,14 @@ async function flushOfflineWrites() {
   }
 }
 
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") checkForAppUpdate(); });
+setTimeout(() => checkForAppUpdate(), 2500);
+setInterval(() => checkForAppUpdate(), 10 * 60 * 1000);
+const buildBadge = document.querySelector(".build-badge");
+if (buildBadge) buildBadge.textContent = `Preview · ${RUNNING_BUILD}`;
+
 window.addEventListener("online", async () => {
+  checkForAppUpdate();
   await refreshPendingPickupCount({render:true});
   if (state.pendingPickupCount) toast(`${state.pendingPickupCount} saved pickup${state.pendingPickupCount===1?" is":"s are"} ready to sync.`);
   flushOfflineWrites();
