@@ -738,3 +738,11 @@ body{background:var(--gp-bg);color:var(--gp-text)}
 /* --- App update banner ------------------------------------------------------ */
 .update-banner{position:fixed;left:12px;right:12px;bottom:calc(76px + env(safe-area-inset-bottom));z-index:9999;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;border-radius:14px;border:1px solid color-mix(in srgb,var(--gp-orange) 60%,transparent);background:var(--gp-panel);color:var(--gp-text);box-shadow:0 10px 30px rgba(0,0,0,.45);font-size:13px}
 .update-banner button{flex:0 0 auto;background:var(--gp-orange);color:#111;border:0;border-radius:10px;padding:8px 14px;font:inherit;font-weight:800;cursor:pointer}
+
+/* --- Delivery vs pickup groups on Job Details --------------------------------- */
+.equipment-group{margin-top:14px}
+.equipment-group:first-of-type{margin-top:6px}
+.equipment-group-title{display:flex;align-items:center;justify-content:space-between;margin:0 0 8px;padding:6px 10px;border-radius:9px;font-size:11px;font-weight:800;letter-spacing:.07em;text-transform:uppercase}
+.equipment-group-title em{font-style:normal;opacity:.8}
+.equipment-group.delivery .equipment-group-title{color:var(--gp-orange);background:color-mix(in srgb,var(--gp-orange) 13%,transparent)}
+.equipment-group.pickup .equipment-group-title{color:var(--gp-blue);background:color-mix(in srgb,var(--gp-blue) 14%,transparent)}

@@ -304,19 +304,20 @@ export const createJob = onCall(async (request) => {
     return `GP-${year}-${String(next).padStart(4, "0")}`;
   });
 
-  // ---- optional scheduling (conflict-checked) ----
+  // ---- requested appointment time ----
+  // A new job is ALWAYS created "unscheduled" (shown as Tentative), even when a
+  // time was picked. The time is held on the job; it becomes Scheduled only when
+  // a manager confirms it after the equipment details are complete
+  // (updateJobStatus). Closed dates are still refused up front.
   let scheduledAt = null;
-  let status = "unscheduled";
+  const status = "unscheduled";
   if (str(data.scheduledDate) && str(data.scheduledTime)) {
     const when = combineLocalDateTime(data.scheduledDate, data.scheduledTime);
-    const { overlaps, reasons } = await assertSchedulable(
-      when, priced.durationMinutes, null, Boolean(data.overrideSchedule),
-      Boolean(actor.permissions?.canOverrideConflict));
-    if (overlaps.length || reasons.length) {
-      requirePermission(actor, "canOverrideConflict", "This user cannot override schedule restrictions.");
+    const { hard } = await schedulabilityReasons(when);
+    if (hard.length) {
+      throw new HttpsError("failed-precondition", `Closed to deliveries: ${hard.join("; ")}. Choose another date.`);
     }
     scheduledAt = Timestamp.fromDate(when);
-    status = "scheduled";
   }
 
   // ---- atomic write ----
@@ -399,7 +400,7 @@ export const createJob = onCall(async (request) => {
   await batch.commit();
   return {
     jobId, jobNumber, customerId, addressId, status, jobEquipmentIds,
-    message: status === "scheduled" ? "Job scheduled" : "Quote created",
+    message: "Tentative appointment saved",
   };
 });
 
@@ -467,6 +468,9 @@ export const updateJobStatus = onCall(async (request) => {
   let clashes = [];
   if (target === "scheduled") {
     if (!job.scheduledAt) throw new HttpsError("failed-precondition", "Give this job a date and time before scheduling it.");
+    if (job.detailsStatus !== "complete") {
+      throw new HttpsError("failed-precondition", "Complete the equipment details (models, photos) before confirming this appointment.");
+    }
     const { overlaps, reasons } = await assertSchedulable(
       job.scheduledAt.toDate(), job.durationMinutes, jobId, Boolean(data.overrideSchedule),
       Boolean(approver?.permissions?.canOverrideConflict));

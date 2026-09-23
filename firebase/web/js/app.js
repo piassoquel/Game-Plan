@@ -1,6 +1,6 @@
-import { GamePlanApi } from "./gameplan-api.js?v=fb20";
-import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb20";
-import { computeQuote } from "./pricing.mjs?v=fb20";
+import { GamePlanApi } from "./gameplan-api.js?v=fb21";
+import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb21";
+import { computeQuote } from "./pricing.mjs?v=fb21";
 
 // The build this page is running — taken from the ?v= on its own URL, so it can
 // never disagree with the code actually loaded.
@@ -706,6 +706,7 @@ function jobHasFutureAppointment(job) {
 
 function jobNeedsOfficeAttention(job) {
   const status = String(job.status || "").toLowerCase();
+  if (status === "scheduled") return jobNeedsDetails(job); // confirmed but still missing models/photos
   if (status !== "tentative" || !jobHasFutureAppointment(job)) return false;
   return jobNeedsDetails(job) || scheduledConflictsFor(job).length > 0;
 }
@@ -1557,14 +1558,40 @@ function pickupInspectionMarkup(job, item) {
   </div>`;
 }
 
+// Delivery and pickup items are shown in separate, labelled groups so a
+// "Delivery + Pickup" job never reads as if everything is being delivered.
+function equipmentSectionMarkup(job) {
+  const items = job.equipment || [];
+  const isPickupItem = item => item.pickupRequired === true && item.deliveryRequired === false;
+  const deliveries = items.filter(item => !isPickupItem(item));
+  const pickups = items.filter(isPickupItem);
+  const group = (label, list, cls) => list.length
+    ? `<div class="equipment-group ${cls}"><h4 class="equipment-group-title"><span>${label}</span><em>${list.length}</em></h4>${list.map(item => equipmentDetailMarkup(job, item)).join("")}</div>`
+    : "";
+  if (deliveries.length && pickups.length) {
+    return `<section class="detail-card"><h3>Equipment (${items.length})</h3>${group("Delivering to customer", deliveries, "delivery")}${group("Picking up from customer", pickups, "pickup")}</section>`;
+  }
+  return `<section class="detail-card"><h3>${pickups.length ? "Pickup Items" : "Delivery Items"} (${items.length})</h3>${items.map(item => equipmentDetailMarkup(job, item)).join("")}</section>`;
+}
+
 function equipmentDetailMarkup(job, item) {
   const inspection = pickupInspectionFor(job, item.id);
   const content = `${equipmentImage(item, inspection?.photoUrl || "")}
     <div class="equipment-copy"><strong>${esc([item.brand,item.model].filter(Boolean).join(" ") || `${String(item.condition || "").toLowerCase() === "new" ? "New" : "Used"} ${equipmentTypeName(item)}`)}</strong><small>${esc(equipmentTypeName(item))}</small>${item.description ? `<span class="equipment-meta-label"><b>Description</b>${esc(item.description)}</span>` : ""}${inspection ? `<em>View Pickup Checklist</em>` : ""}</div>
-    <div class="equipment-build-action">${equipmentBuildControl(job, item)}</div>${inspection ? `<i class="pickup-record-chevron">⌄</i>` : ""}`;
+    ${item.pickupRequired === true && item.deliveryRequired === false ? "" : `<div class="equipment-build-action">${equipmentBuildControl(job, item)}</div>`}${inspection ? `<i class="pickup-record-chevron">⌄</i>` : ""}`;
   return inspection
     ? `<div class="equipment-card-wrap"><button type="button" class="equipment-card pickup-equipment-card" data-toggle-pickup-record="${esc(item.id)}" aria-expanded="false">${content}</button>${pickupInspectionMarkup(job, item)}</div>`
     : `<div class="equipment-card">${content}</div>`;
+}
+
+// Confirmed jobs: anyone can finish missing details; only managers/admins can
+// edit details that are already complete.
+function detailsActionFor(job) {
+  if (!jobDetailsComplete(job)) {
+    return `<button class="button primary-action" data-complete-details="${esc(job.id)}">Complete Job Details</button>
+      ${workflowNotice("Equipment details needed", "This job is missing equipment details (model or photo). Add them so the crew knows exactly what they're handling.")}`;
+  }
+  return isManager() ? `<button class="button neutral" data-complete-details="${esc(job.id)}">Edit Equipment Details</button>` : "";
 }
 
 function workflowActions(job) {
@@ -1585,6 +1612,7 @@ function workflowActions(job) {
         : `<button class="button primary-action" data-status-action="Scheduled" data-job-id="${esc(job.id)}">✓ Confirm Appointment</button>`
       : permissionNotice("This appointment is awaiting manager confirmation before it is added to the finalized schedule.");
     return `${confirm}
+      ${isManager()?`<button class="button neutral" data-complete-details="${esc(job.id)}">Edit Equipment Details</button>`:""}
       ${conflicts.length?"":`<button class="button neutral" data-reschedule-job="${esc(job.id)}">Edit / Reschedule</button>`}
       <button class="button red" data-status-action="Cancelled" data-job-id="${esc(job.id)}">Cancel Job</button>`;
   }
@@ -1601,6 +1629,7 @@ function workflowActions(job) {
           : `<button class="button green primary-action" disabled title="Finalize the pickup inspection first">✓ Complete Job</button>`)
       : `<button class="button green primary-action" data-status-action="Completed" data-job-id="${esc(job.id)}">✓ Complete Job</button>`;
     return `
+      ${detailsActionFor(job)}
       ${overdue ? `<div class="job-conflict-banner"><strong>⚠ Past due</strong><span>${daysOverdue(job)} day${daysOverdue(job) === 1 ? "" : "s"} overdue — close this out.</span></div>` : ""}
       <a class="button call-action" href="tel:${esc(job.phone)}">Call Customer</a>
       <a class="button neutral map-action" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(job.address || "")}" target="_blank" rel="noopener">View on Map</a>
@@ -1612,8 +1641,9 @@ function workflowActions(job) {
     const pickupAction = job.hasPickup && !pickupInspectionComplete(job)
       ? `<button class="button pickup-inspection-action" data-pickup-inspection="${esc(job.id)}">Begin Pickup Inspection</button>`
       : "";
-    if (!isManager() && !state.currentUser?.sharedAccount) return `${pickupAction}${permissionNotice("This appointment is finalized. A manager must reschedule or cancel it.")}`;
+    if (!isManager() && !state.currentUser?.sharedAccount) return `${detailsActionFor(job)}${pickupAction}${permissionNotice("This appointment is finalized. A manager must reschedule or cancel it.")}`;
     return `
+      ${detailsActionFor(job)}
       ${pickupAction}
       <button class="button neutral" data-reschedule-job="${esc(job.id)}">Edit / Reschedule</button>
       <button class="button red" data-status-action="Cancelled" data-job-id="${esc(job.id)}">Cancel Job</button>`;
@@ -1671,10 +1701,7 @@ async function openJob(jobId) {
 
     ${deliveryModifiersMarkup(job)}
 
-    <section class="detail-card">
-      <h3>Equipment (${job.equipment?.length || 0})</h3>
-      ${(job.equipment || []).map(item => equipmentDetailMarkup(job, item)).join("")}
-    </section>
+    ${equipmentSectionMarkup(job)}
 
     ${pickupSummaryMarkup(job)}
 
