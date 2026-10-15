@@ -1,6 +1,6 @@
-import { GamePlanApi } from "./gameplan-api.js?v=fb21";
-import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb21";
-import { computeQuote } from "./pricing.mjs?v=fb21";
+import { GamePlanApi } from "./gameplan-api.js?v=fb22";
+import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb22";
+import { computeQuote } from "./pricing.mjs?v=fb22";
 
 // The build this page is running — taken from the ?v= on its own URL, so it can
 // never disagree with the code actually loaded.

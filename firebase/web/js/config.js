@@ -4,5 +4,5 @@
 // in the Google Cloud console.
 window.GAMEPLAN_CONFIG = {
   environment: "firebase-preview",
-  placesApiKey: "AIzaSyBNLnFQ_z9rfOiWeFzqqm4kus6S9iwoTZ0",
+  placesApiKey: "AIzaSyDLaR7iVcIOx4jv3OfRmXivkGqssXZ8Pdg",
 };
