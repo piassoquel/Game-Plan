@@ -3,12 +3,19 @@
 //
 // Doc ids are deterministic: gp_<jobId>_delivery | _pickup | _build
 // Contract: see firebase/docs/dashboard-handoff.md
+//
+// Also publishes a MANAGER-ONLY "awaiting approval" doc per Tentative job that
+// has a requested appointment: stores/soquel/gpPending/gp_<jobId>_pending.
+// It is a separate collection on purpose — the dashboard shows every doc in
+// `deliveries` to all users (employees included), so pending approvals must not
+// live there.
 
 import { Timestamp, FieldValue } from "firebase-admin/firestore";
 import { db, num, str } from "./common.mjs";
 import { laDateString } from "./schedule.mjs";
 
 const FEED = "stores/soquel/deliveries";
+const PENDING = "stores/soquel/gpPending";
 const KINDS = ["delivery", "pickup", "build"];
 const BUILD_LEAD_MS = 48 * 60 * 60 * 1000;
 
@@ -97,11 +104,44 @@ export async function feedDocsForJob(jobId, job, todayKey = laDateString(new Dat
   return docs;
 }
 
+/**
+ * The "awaiting manager approval" doc for a job, or null. Only Tentative jobs
+ * that carry a requested appointment still in the future qualify (same test the
+ * app's Needs Attention list uses).
+ */
+export async function pendingDocForJob(jobId, job) {
+  if (!job || job.archived === true) return null;
+  if (str(job.status) !== "unscheduled" || !job.scheduledAt) return null;
+  if (job.scheduledAt.toMillis() < Date.now()) return null;
+  const { summary, itemCount } = await jobSummary(jobId);
+  return {
+    id: `gp_${jobId}_pending`,
+    data: {
+      status: "pending",
+      jobType: str(job.jobType), // delivery | pickup | delivery+pickup
+      date: laDateString(job.scheduledAt.toDate()),
+      requestedAt: job.scheduledAt,
+      customerName: str(job.customerName),
+      summary, itemCount,
+      address: str(job.serviceAddress) || null,
+      needsDetails: job.detailsStatus !== "complete",
+      createdByName: str(job.createdBy) || null,
+      jobCreatedAt: job.createdAt || null,
+      sourceJobId: jobId,
+      updatedAt: FieldValue.serverTimestamp(),
+    },
+  };
+}
+
 /** Upsert the job's desired feed docs and delete any of its stale ones. */
 export async function syncJobFeed(jobId, job, todayKey) {
   const want = await feedDocsForJob(jobId, job, todayKey);
   const wantIds = new Set(want.map((w) => w.id));
+  const pending = await pendingDocForJob(jobId, job);
   const batch = db().batch();
+
+  if (pending) batch.set(db().doc(`${PENDING}/${pending.id}`), pending.data, { merge: true });
+  else batch.delete(db().doc(`${PENDING}/gp_${jobId}_pending`));
 
   for (const w of want) {
     batch.set(db().doc(`${FEED}/${w.id}`), { ...w.data, createdAt: FieldValue.serverTimestamp() }, { merge: true });
