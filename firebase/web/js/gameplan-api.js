@@ -7,8 +7,8 @@
 import {
   collection, query, where, getDocs, doc, getDoc,
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
-import { db, auth, functions, httpsCallable } from "./firebase-app.js?v=fb22";
-import { enqueue, flush, count, looksOffline } from "./offline-queue.js?v=fb22";
+import { db, auth, functions, httpsCallable } from "./firebase-app.js?v=fb23";
+import { enqueue, flush, count, looksOffline } from "./offline-queue.js?v=fb23";
 
 const call = (name) => httpsCallable(functions, name);
 
@@ -240,6 +240,13 @@ export class GamePlanApi {
 
   async updateJobDetails(jobId, equipment, pickupType = "", pickupNotes = "", pinToken = "") {
     return offlineWrite("updateJobDetails", { jobId, equipment, pickupType, pickupNotes, pinToken });
+  }
+
+  // Add pickup item(s) to an open job and re-quote it. `preview` returns the new
+  // quote without saving. Online only (it re-prices on the server).
+  async addPickupToJob(jobId, items, pickupType = "", { preview = false, overrideSchedule = false } = {}, pinToken = "") {
+    const res = await call("addPickupToJob")({ jobId, items, pickupType, preview, overrideSchedule, pinToken });
+    return res.data;
   }
 
   async pendingWriteCount() { return count(); }

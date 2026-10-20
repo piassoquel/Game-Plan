@@ -1,6 +1,6 @@
-import { GamePlanApi } from "./gameplan-api.js?v=fb22";
-import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb22";
-import { computeQuote } from "./pricing.mjs?v=fb22";
+import { GamePlanApi } from "./gameplan-api.js?v=fb23";
+import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb23";
+import { computeQuote } from "./pricing.mjs?v=fb23";
 
 // The build this page is running — taken from the ?v= on its own URL, so it can
 // never disagree with the code actually loaded.
@@ -1584,6 +1584,126 @@ function equipmentDetailMarkup(job, item) {
     : `<div class="equipment-card">${content}</div>`;
 }
 
+// Customer asks for a pickup (trade-in / disposal) after the delivery was
+// quoted. Open jobs only; a confirmed appointment changes length and price, so
+// that needs a manager. The server re-quotes the whole job.
+function addPickupActionFor(job) {
+  if (!["Tentative", "Scheduled"].includes(job.status)) return "";
+  if (job.status === "Scheduled" ? !isManager() : !(can("canCreateQuote") || state.currentUser?.sharedAccount)) return "";
+  return `<button class="button neutral add-pickup-action" data-add-pickup="${esc(job.id)}">＋ Add Pickup${job.hasPickup ? " Item" : ""}</button>`;
+}
+
+const PICKUP_QUOTE_LINES = [
+  ["travelLaborCharge", "Labor & travel"],
+  ["disposalCharge", "Disposal charge"],
+  ["tradeInPickupDiscount", "Trade-in discount", -1],
+  ["minimumChargeAdjustment", "Minimum charge"],
+];
+
+async function openAddPickup(jobId) {
+  const job = state.jobs.find(j => String(j.id) === String(jobId));
+  if (!job) return;
+  let pinToken = "";
+  try {
+    pinToken = await requestPin(job.status === "Scheduled" ? "canApproveSchedule" : "canCreateQuote",
+      "Enter your PIN to add a pickup to this job and stamp your name into its history.");
+  } catch (_) { return; }
+
+  const lockedPurpose = normalizedPickupType(job.pickupType); // "Trade-In" | "Disposal" | ""
+  const sel = { items: {}, purpose: lockedPurpose };
+  const money = v => `$${Number(v || 0).toFixed(2)}`;
+  const types = (state.equipmentTypes || []).filter(t => t.active !== false);
+  let seq = 0, clashes = [];
+
+  document.querySelector("#addPickupSheet")?.remove();
+  const sheet = document.createElement("section");
+  sheet.id = "addPickupSheet";
+  sheet.className = "ux-sheet-backdrop open add-pickup-sheet";
+  sheet.innerHTML = `<section class="ux-sheet" role="dialog" aria-modal="true" aria-labelledby="addPickupTitle">
+    <div class="ux-sheet-handle"></div>
+    <small>ADD PICKUP · ${esc(job.number)}</small>
+    <h3 id="addPickupTitle">What are we picking up?</h3>
+    <div class="add-pickup-list">${types.map(t => `<div class="add-pickup-row" data-type="${esc(t.id)}">
+      <span>${esc(t.name)}</span>
+      <div class="add-pickup-qty"><button type="button" data-dec aria-label="Fewer ${esc(t.name)}">−</button><b data-qty>0</b><button type="button" data-inc aria-label="More ${esc(t.name)}">+</button></div>
+    </div>`).join("")}</div>
+    <div class="add-pickup-purpose" role="radiogroup" aria-label="Pickup purpose">
+      ${["Trade-In", "Disposal"].map(p => `<button type="button" class="pickup-purpose-choice ${p === "Trade-In" ? "trade-in" : "disposal"}" data-purpose="${p}" ${lockedPurpose && lockedPurpose !== p ? "disabled" : ""}><b>${p}</b><small>${p === "Trade-In" ? "No disposal charge" : "Disposal charge per item"}</small></button>`).join("")}
+    </div>
+    ${lockedPurpose ? `<p class="ux-helper">This job's pickup is already set up as ${esc(lockedPurpose)}.</p>` : ""}
+    <div class="add-pickup-quote" data-quote>Choose an item and a purpose to see the updated quote.</div>
+    <div class="complete-details-error" data-error></div>
+    <button type="button" class="button primary-action" data-confirm disabled>Add Pickup &amp; Update Quote</button>
+    <button type="button" class="button neutral" data-cancel>Cancel</button>
+  </section>`;
+  document.body.appendChild(sheet);
+
+  const quoteBox = sheet.querySelector("[data-quote]");
+  const errorBox = sheet.querySelector("[data-error]");
+  const confirmBtn = sheet.querySelector("[data-confirm]");
+  const chosenItems = () => Object.entries(sel.items).filter(([, q]) => q > 0).map(([equipmentTypeId, quantity]) => ({ equipmentTypeId, quantity }));
+  const markPurpose = () => sheet.querySelectorAll("[data-purpose]").forEach(b => b.classList.toggle("selected", b.dataset.purpose === sel.purpose));
+  markPurpose();
+
+  async function refresh() {
+    const items = chosenItems();
+    confirmBtn.disabled = true; errorBox.textContent = ""; clashes = [];
+    if (!items.length || !sel.purpose) { quoteBox.textContent = "Choose an item and a purpose to see the updated quote."; return; }
+    const mine = ++seq;
+    quoteBox.textContent = "Calculating the updated quote…";
+    try {
+      const r = await api.addPickupToJob(job.id, items, sel.purpose, { preview: true }, pinToken);
+      if (mine !== seq) return;
+      clashes = r.clashes || [];
+      const diff = r.after.finalTotal - r.before.finalTotal;
+      const rows = PICKUP_QUOTE_LINES.map(([key, label, sign = 1]) => {
+        const delta = (Number(r.after.pricing?.[key]) || 0) - (Number(r.before.pricing?.[key]) || 0);
+        return Math.abs(delta) < 0.005 ? "" : `<div class="detail-line"><span>${label}</span><strong>${delta * sign > 0 ? "+" : "−"}${money(Math.abs(delta))}</strong></div>`;
+      }).join("");
+      quoteBox.innerHTML = `<div class="detail-line"><span>Current quote</span><strong>${money(r.before.finalTotal)}</strong></div>
+        ${rows}
+        <div class="detail-line add-pickup-total"><span>Updated quote</span><strong>${money(r.after.finalTotal)} <em>${diff >= 0 ? "+" : "−"}${money(Math.abs(diff))}</em></strong></div>
+        <div class="detail-line"><span>Appointment length</span><strong>${esc(formatEstimatedDuration(r.before.durationMinutes))} → ${esc(formatEstimatedDuration(r.after.durationMinutes))}</strong></div>
+        ${clashes.length ? `<div class="job-conflict-banner"><strong>⚠ Longer appointment overlaps</strong><span>${esc(clashes.join(", "))}. A manager can still add the pickup.</span></div>` : ""}`;
+      confirmBtn.disabled = false;
+    } catch (error) {
+      if (mine !== seq) return;
+      quoteBox.textContent = "";
+      errorBox.textContent = error.message || "The updated quote could not be calculated.";
+    }
+  }
+
+  sheet.querySelectorAll(".add-pickup-row").forEach(row => {
+    const id = row.dataset.type, out = row.querySelector("[data-qty]");
+    const set = q => { sel.items[id] = Math.max(0, Math.min(20, q)); out.textContent = sel.items[id]; row.classList.toggle("selected", sel.items[id] > 0); refresh(); };
+    row.querySelector("[data-inc]").onclick = () => set((sel.items[id] || 0) + 1);
+    row.querySelector("[data-dec]").onclick = () => set((sel.items[id] || 0) - 1);
+  });
+  sheet.querySelectorAll("[data-purpose]").forEach(b => b.onclick = () => { if (b.disabled) return; sel.purpose = b.dataset.purpose; markPurpose(); refresh(); });
+  sheet.querySelector("[data-cancel]").onclick = () => sheet.remove();
+  sheet.addEventListener("click", e => { if (e.target === sheet) sheet.remove(); });
+
+  confirmBtn.onclick = async () => {
+    confirmBtn.disabled = true; confirmBtn.textContent = "Updating quote…"; errorBox.textContent = "";
+    try {
+      const res = await api.addPickupToJob(job.id, chosenItems(), sel.purpose, { overrideSchedule: clashes.length > 0 }, pinToken);
+      touchPinSession();
+      sheet.remove();
+      const fresh = await api.getJob(job.id);
+      const index = state.jobs.findIndex(j => String(j.id) === String(job.id));
+      if (index >= 0) state.jobs[index] = fresh; else state.jobs.push(fresh);
+      persistOptimisticJobs();
+      go(location.hash.slice(1) || "today");
+      await openJob(job.id);
+      toast(`✓ Pickup added. Quote ${money(res.before.finalTotal)} → ${money(res.after.finalTotal)}.`);
+    } catch (error) {
+      console.error(error);
+      errorBox.textContent = error.message || "The pickup could not be added.";
+      confirmBtn.disabled = false; confirmBtn.textContent = "Add Pickup & Update Quote";
+    }
+  };
+}
+
 // Confirmed jobs: anyone can finish missing details; only managers/admins can
 // edit details that are already complete.
 function detailsActionFor(job) {
@@ -1600,6 +1720,7 @@ function workflowActions(job) {
     if (!jobDetailsComplete(job)) {
       return `<button class="button primary-action" data-complete-details="${esc(job.id)}">Complete Job Details</button>
         ${workflowNotice("Equipment details needed", "Add the required equipment information now, or return later. A manager can approve the appointment after these details are complete.")}
+        ${addPickupActionFor(job)}
         <button class="button neutral" data-reschedule-job="${esc(job.id)}">Edit / Reschedule</button>
         <button class="button red" data-status-action="Cancelled" data-job-id="${esc(job.id)}">Cancel Job</button>`;
     }
@@ -1613,6 +1734,7 @@ function workflowActions(job) {
       : permissionNotice("This appointment is awaiting manager confirmation before it is added to the finalized schedule.");
     return `${confirm}
       ${isManager()?`<button class="button neutral" data-complete-details="${esc(job.id)}">Edit Equipment Details</button>`:""}
+      ${addPickupActionFor(job)}
       ${conflicts.length?"":`<button class="button neutral" data-reschedule-job="${esc(job.id)}">Edit / Reschedule</button>`}
       <button class="button red" data-status-action="Cancelled" data-job-id="${esc(job.id)}">Cancel Job</button>`;
   }
@@ -1634,6 +1756,7 @@ function workflowActions(job) {
       <a class="button call-action" href="tel:${esc(job.phone)}">Call Customer</a>
       <a class="button neutral map-action" href="https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(job.address || "")}" target="_blank" rel="noopener">View on Map</a>
       ${pickupAction}
+      ${addPickupActionFor(job)}
       ${completeAction}
       <button class="button red" data-status-action="Cancelled" data-job-id="${esc(job.id)}">Cancel Job</button>`;
   }
@@ -1645,6 +1768,7 @@ function workflowActions(job) {
     return `
       ${detailsActionFor(job)}
       ${pickupAction}
+      ${addPickupActionFor(job)}
       <button class="button neutral" data-reschedule-job="${esc(job.id)}">Edit / Reschedule</button>
       <button class="button red" data-status-action="Cancelled" data-job-id="${esc(job.id)}">Cancel Job</button>`;
   }
@@ -2671,6 +2795,7 @@ function bindDynamic() {
     if (url) window.open(url, "_blank", "noopener");
   });
   document.querySelectorAll("[data-complete-details]").forEach(el => el.onclick = () => openCompleteDetails(el.dataset.completeDetails));
+  document.querySelectorAll("[data-add-pickup]").forEach(el => el.onclick = () => openAddPickup(el.dataset.addPickup));
   view.querySelector("[data-hard-refresh-cms]")?.addEventListener("click",hardRefreshCms);
   view.querySelector("[data-sync-pickup-queue]")?.addEventListener("click",syncPendingPickups);
   view.querySelector("[data-check-update]")?.addEventListener("click",()=>checkForAppUpdate({manual:true}));

@@ -404,6 +404,162 @@ export const createJob = onCall(async (request) => {
   };
 });
 
+// -------------------------------------------------------------- addPickupToJob
+// A customer asks for a trade-in / disposal pickup AFTER the delivery was
+// quoted. Adds the pickup item(s) to the open job and re-quotes the WHOLE job
+// through the single pricing engine (current CMS prices). `preview: true`
+// returns the new quote without saving so the app can show before -> after.
+export const addPickupToJob = onCall(async (request) => {
+  const d = db();
+  const data = request.data || {};
+  const now = Timestamp.now();
+  const actor = await resolveActor(request, { pinToken: data.pinToken });
+  requirePermission(actor, "canCreateQuote", "You do not have permission to change quotes.");
+
+  const jobId = str(data.jobId);
+  const jobRef = d.doc(`gpJobs/${jobId}`);
+  const jobSnap = await jobRef.get();
+  if (!jobSnap.exists) throw new HttpsError("not-found", "Job not found.");
+  const job = jobSnap.data();
+  if (!["unscheduled", "scheduled"].includes(job.status)) {
+    throw new HttpsError("failed-precondition", "A pickup can only be added to a job that is still open.");
+  }
+  // A confirmed appointment changes length and price: managers only.
+  if (job.status === "scheduled") {
+    requirePermission(actor, "canApproveSchedule", "A manager must add a pickup to a confirmed appointment.");
+  }
+
+  const itemsIn = Array.isArray(data.items) ? data.items : [];
+  if (!itemsIn.length) throw new HttpsError("invalid-argument", "Choose at least one item to pick up.");
+
+  const cleanType = (v) => {
+    const t = str(v).toLowerCase().replace(/\s+/g, "-");
+    return t === "sale" ? "trade-in" : t;
+  };
+  let pickupType = cleanType(data.pickupType);
+  const existingType = cleanType(job.pickupType);
+  if (existingType) {
+    if (pickupType && pickupType !== existingType) {
+      throw new HttpsError("failed-precondition",
+        `This job's pickup is already set up as ${existingType === "trade-in" ? "Trade-In" : "Disposal"}. Add the new item under the same purpose.`);
+    }
+    pickupType = existingType;
+  }
+  if (!["trade-in", "disposal"].includes(pickupType)) {
+    throw new HttpsError("invalid-argument", "Choose Trade-In or Disposal for the pickup.");
+  }
+
+  const [etSnap, acSnap, priceSnap, jtSnap, eqSnap, jobAccSnap] = await Promise.all([
+    d.collection("gpEquipmentTypes").get(),
+    d.collection("gpAccessConditions").get(),
+    d.doc("gpConfig/pricing").get(),
+    d.collection("gpJobTypes").get(),
+    d.collection(`gpJobs/${jobId}/equipment`).get(),
+    d.collection(`gpJobs/${jobId}/access`).get(),
+  ]);
+  const equipmentTypes = Object.fromEntries(etSnap.docs.map((x) => [x.id, x.data()]));
+  const accessConditions = Object.fromEntries(acSnap.docs.map((x) => [x.id, x.data()]));
+  const settings = priceSnap.exists ? priceSnap.data() : {};
+
+  const newItems = itemsIn.map((it) => ({
+    equipmentTypeId: str(it.equipmentTypeId),
+    condition: "used",
+    quantity: Math.max(1, num(it.quantity) || 1),
+    deliveryRequired: false,
+    pickupRequired: true,
+    fulfillmentConditionId: "NIB",
+    notes: str(it.notes),
+  }));
+  for (const it of newItems) {
+    if (!equipmentTypes[it.equipmentTypeId]) throw new HttpsError("invalid-argument", "One of the items to pick up is not a known equipment type.");
+  }
+
+  // Existing items exactly as originally quoted (fulfillment id is not stored,
+  // so rebuild it: only buildRequired items were "in box").
+  const existing = eqSnap.docs.map((x) => x.data()).filter((r) => r.active !== false).map((r) => ({
+    equipmentTypeId: r.equipmentTypeId,
+    condition: r.condition || "used",
+    quantity: Math.max(1, num(r.quantity) || 1),
+    deliveryRequired: r.deliveryRequired !== false,
+    pickupRequired: r.pickupRequired === true,
+    fulfillmentConditionId: r.buildRequired === true || String(r.condition) !== "new" ? "NIB" : "ASSEMBLED",
+  }));
+  const access = jobAccSnap.docs.map((x) => x.data()).filter((a) => a.active !== false)
+    .map((a) => ({ accessConditionId: a.accessConditionId, quantity: Math.max(1, num(a.quantity) || 1) }));
+  const jr = job.route || {};
+
+  let priced;
+  try {
+    priced = computeQuote({
+      equipment: [...existing, ...newItems],
+      access,
+      route: { roundTripMiles: num(jr.roundTripMiles), outboundMinutes: num(jr.outboundMinutes), returnMinutes: num(jr.returnMinutes) },
+      pickupType, equipmentTypes, accessConditions, settings,
+    });
+  } catch (err) {
+    throw new HttpsError("failed-precondition", `Could not re-quote this job: ${err.message}`);
+  }
+
+  // A confirmed appointment gets longer: it must still fit the schedule.
+  let clashes = [];
+  if (job.status === "scheduled" && job.scheduledAt) {
+    const { overlaps, reasons } = await assertSchedulable(
+      job.scheduledAt.toDate(), priced.durationMinutes, jobId, Boolean(data.overrideSchedule),
+      Boolean(actor.permissions?.canOverrideConflict));
+    clashes = [...overlaps, ...reasons];
+    if (clashes.length && !data.preview) {
+      requirePermission(actor, "canOverrideConflict",
+        `Adding this pickup makes the appointment longer and it would conflict: ${clashes.join(", ")}.`);
+    }
+  }
+
+  const before = { finalTotal: num(job.finalTotal), durationMinutes: num(job.durationMinutes), pricing: job.pricing || {} };
+  const after = { finalTotal: priced.finalTotal, durationMinutes: priced.durationMinutes, pricing: priced.pricing };
+  if (data.preview) return { preview: true, pickupType, before, after, clashes };
+
+  const kind = job.jobType === "pickup" ? "pickup" : "delivery+pickup";
+  const jtDoc = jtSnap.docs.find((x) => (x.data().kind || "") === kind);
+  const jobTypeName = jtDoc ? jtDoc.data().name : (kind === "pickup" ? "Pickup" : "Delivery + Pickup");
+
+  const batch = d.batch();
+  const start = eqSnap.size;
+  const addedIds = [];
+  newItems.forEach((it, i) => {
+    const lineId = newId("JEQ");
+    addedIds.push(lineId);
+    batch.set(d.doc(`gpJobs/${jobId}/equipment/${lineId}`), {
+      equipmentTypeId: it.equipmentTypeId, condition: "used",
+      brand: "", model: "", itemDescription: it.notes, productId: null, quantity: it.quantity, imageUrl: "",
+      deliveryRequired: false, pickupRequired: true, buildRequired: false, buildComplete: true,
+      calculatedServiceMinutes: 0,
+      minimumCrewSize: num((equipmentTypes[it.equipmentTypeId] || {}).defaultCrewSize) || 1,
+      specialNotes: it.notes, sortOrder: start + i + 1, active: true,
+      createdBy: actorLabel(actor), createdAt: now,
+    });
+  });
+  batch.update(jobRef, {
+    jobType: kind, jobTypeName, pickupType,
+    pickupInspectionStatus: "needed",
+    detailsStatus: "needed", // the new pickup item still needs its model / photos
+    pricing: priced.pricing, finalTotal: priced.finalTotal,
+    durationMinutes: priced.durationMinutes, crewSize: priced.crewSize,
+    hasBuildItems: priced.hasBuildItems,
+    updatedBy: actorLabel(actor), updatedAt: now,
+  });
+  const names = newItems.map((it) => `${it.quantity > 1 ? `${it.quantity}× ` : ""}${(equipmentTypes[it.equipmentTypeId] || {}).name || it.equipmentTypeId}`);
+  batch.set(d.doc(`gpJobs/${jobId}/history/${newId("HIS")}`), {
+    eventType: "Pickup Added",
+    description: `Added ${pickupType === "trade-in" ? "trade-in" : "disposal"} pickup: ${names.join(", ")}. ` +
+      `Quote $${before.finalTotal.toFixed(2)} → $${after.finalTotal.toFixed(2)}.` +
+      (clashes.length ? ` Manager override: overlaps ${clashes.join(", ")}.` : ""),
+    previousValue: String(before.finalTotal), newValue: String(after.finalTotal),
+    performedBy: actorLabel(actor), performedAt: now, source: "GamePlan App",
+  });
+  await batch.commit();
+
+  return { jobId, pickupType, jobType: kind, status: job.status, before, after, addedEquipmentIds: addedIds };
+});
+
 // ------------------------------------------------------------- updateJobStatus
 const UI_TO_ENUM = { Scheduled: "scheduled", Completed: "completed", Cancelled: "cancelled", Tentative: "unscheduled" };
 const VALID_NEXT = {

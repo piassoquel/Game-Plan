@@ -94,3 +94,25 @@ test("web and functions copies of pricing.mjs are identical", () => {
   const b = readFileSync(fileURLToPath(new URL("../functions/pricing.mjs", import.meta.url)), "utf8");
   assert.equal(a, b, "functions/pricing.mjs is stale — re-copy from web/js/pricing.mjs");
 });
+
+test("adding a pickup to an already-quoted delivery re-quotes the whole job", () => {
+  const delivery = { equipmentTypeId: "EQP-TREAD", condition: "new", quantity: 1, deliveryRequired: true, pickupRequired: false, fulfillmentConditionId: "NIB" };
+  const pickup = { equipmentTypeId: "EQP-ELLIP", condition: "used", quantity: 1, deliveryRequired: false, pickupRequired: true, fulfillmentConditionId: "NIB" };
+  const base = { access: [], route: { roundTripMiles: 10, outboundMinutes: 12, returnMinutes: 12 }, equipmentTypes: EQUIPMENT_TYPES, accessConditions: ACCESS_CONDITIONS, settings: SETTINGS };
+
+  const before = computeQuote({ ...base, equipment: [delivery], pickupType: null });
+  const trade = computeQuote({ ...base, equipment: [delivery, pickup], pickupType: "trade-in" });
+  const dispose = computeQuote({ ...base, equipment: [delivery, pickup], pickupType: "disposal" });
+
+  // Extra on-site time for the pickup lengthens the appointment...
+  assert.equal(trade.durationMinutes - before.durationMinutes, 20);
+  // ...trade-in takes the discount; disposal adds the per-item disposal charge.
+  assert.equal(trade.pricing.tradeInPickupDiscount, 15);
+  assert.equal(trade.pricing.disposalCharge, 0);
+  assert.equal(dispose.pricing.disposalCharge, 50);
+  assert.ok(dispose.finalTotal > trade.finalTotal);
+  // The delivery's own charges (assembly, travel base) are unchanged.
+  assert.equal(trade.pricing.assemblyCharge, before.pricing.assemblyCharge);
+  assert.equal(trade.pricing.mileageCharge, before.pricing.mileageCharge);
+  assert.equal(trade.hasBuildItems, before.hasBuildItems);
+});

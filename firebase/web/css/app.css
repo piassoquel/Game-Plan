@@ -746,3 +746,22 @@ body{background:var(--gp-bg);color:var(--gp-text)}
 .equipment-group-title em{font-style:normal;opacity:.8}
 .equipment-group.delivery .equipment-group-title{color:var(--gp-orange);background:color-mix(in srgb,var(--gp-orange) 13%,transparent)}
 .equipment-group.pickup .equipment-group-title{color:var(--gp-blue);background:color-mix(in srgb,var(--gp-blue) 14%,transparent)}
+
+/* --- Add Pickup sheet (Job Details) ------------------------------------------- */
+.add-pickup-sheet{z-index:120}
+.add-pickup-sheet .ux-sheet{max-height:92vh;overflow-y:auto}
+.add-pickup-sheet .ux-sheet>small{display:block;text-align:center;color:var(--gp-orange);font-size:11px;font-weight:800;letter-spacing:.12em}
+.add-pickup-list{display:grid;gap:8px;margin:6px 0 14px}
+.add-pickup-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 12px;border:1px solid var(--tm-line);border-radius:12px;background:#101419}
+.add-pickup-row.selected{border-color:var(--gp-blue);background:color-mix(in srgb,var(--gp-blue) 12%,#101419)}
+.add-pickup-qty{display:flex;align-items:center;gap:10px}
+.add-pickup-qty button{width:40px;height:40px;border:1px solid var(--tm-line);border-radius:10px;background:#0b0f13;color:#fff;font-size:20px}
+.add-pickup-qty b{min-width:22px;text-align:center;font-size:18px}
+.add-pickup-purpose{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}
+.add-pickup-purpose .pickup-purpose-choice{display:flex;flex-direction:column;align-items:flex-start;gap:2px;padding:10px 12px}
+.add-pickup-purpose .pickup-purpose-choice.selected{border-color:var(--gp-orange);box-shadow:0 0 0 1px var(--gp-orange)}
+.add-pickup-purpose .pickup-purpose-choice:disabled{opacity:.4}
+.add-pickup-quote{margin:4px 0 8px;padding:10px 12px;border-radius:12px;background:#0b0f13;border:1px solid var(--tm-line);font-size:14px;color:#c9d1d9}
+.add-pickup-quote .detail-line{display:flex;justify-content:space-between;gap:12px;padding:4px 0}
+.add-pickup-total strong{color:#fff}
+.add-pickup-total em{font-style:normal;color:var(--gp-orange);margin-left:6px}
