@@ -1,6 +1,6 @@
-import { GamePlanApi } from "./gameplan-api.js?v=fb23";
-import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb23";
-import { computeQuote } from "./pricing.mjs?v=fb23";
+import { GamePlanApi } from "./gameplan-api.js?v=fb24";
+import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb24";
+import { computeQuote } from "./pricing.mjs?v=fb24";
 
 // The build this page is running — taken from the ?v= on its own URL, so it can
 // never disagree with the code actually loaded.
@@ -1758,6 +1758,7 @@ function workflowActions(job) {
       ${pickupAction}
       ${addPickupActionFor(job)}
       ${completeAction}
+      ${(isManager() || state.currentUser?.sharedAccount) ? `<button class="button neutral" data-reschedule-job="${esc(job.id)}">${overdue ? "Reschedule Appointment" : "Edit / Reschedule"}</button>` : ""}
       <button class="button red" data-status-action="Cancelled" data-job-id="${esc(job.id)}">Cancel Job</button>`;
   }
   if (job.status === "Scheduled") {
