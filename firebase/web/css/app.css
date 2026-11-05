@@ -765,3 +765,8 @@ body{background:var(--gp-bg);color:var(--gp-text)}
 .add-pickup-quote .detail-line{display:flex;justify-content:space-between;gap:12px;padding:4px 0}
 .add-pickup-total strong{color:#fff}
 .add-pickup-total em{font-style:normal;color:var(--gp-orange);margin-left:6px}
+
+/* --- Tentative appointments in the day agenda ---------------------------------- */
+.agenda-job--tentative{border-style:dashed;border-color:color-mix(in srgb,var(--gp-orange) 55%,var(--tm-line))}
+.agenda-job--tentative .agenda-time strong{color:var(--gp-orange)}
+.agenda-job--tentative .agenda-line{background:repeating-linear-gradient(to bottom,var(--gp-orange) 0 4px,transparent 4px 8px)}

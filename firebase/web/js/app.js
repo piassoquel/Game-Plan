@@ -1,6 +1,6 @@
-import { GamePlanApi } from "./gameplan-api.js?v=fb24";
-import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb24";
-import { computeQuote } from "./pricing.mjs?v=fb24";
+import { GamePlanApi } from "./gameplan-api.js?v=fb25";
+import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb25";
+import { computeQuote } from "./pricing.mjs?v=fb25";
 
 // The build this page is running — taken from the ?v= on its own URL, so it can
 // never disagree with the code actually loaded.
@@ -545,6 +545,28 @@ function jobsForDate(date) {
     .sort((a, b) => timeSortValue(a) - timeSortValue(b));
 }
 
+// Day agenda: confirmed + completed work AND tentative (awaiting-confirmation)
+// appointments, so everyone can see and open a tentative job on its day.
+// jobsForDate() stays confirmed-only on purpose: capacity bars and overlap
+// checks must not count tentative requests.
+function agendaJobsForDate(date) {
+  const key = toDateKey(date);
+  return state.jobs
+    .filter(job => ["Scheduled", "Completed", "Tentative"].includes(job.status))
+    .filter(job => toDateKey(parseJobDate(job)) === key)
+    .sort((a, b) => timeSortValue(a) - timeSortValue(b));
+}
+
+function agendaCountLabel(list, empty = "No jobs scheduled") {
+  const tentative = list.filter(job => job.status === "Tentative").length;
+  const confirmed = list.length - tentative;
+  if (!list.length) return empty;
+  const parts = [];
+  if (confirmed) parts.push(`${confirmed} scheduled ${confirmed === 1 ? "job" : "jobs"}`);
+  if (tentative) parts.push(`${tentative} tentative`);
+  return parts.join(" · ");
+}
+
 function isTodayJob(job) {
   const date = parseJobDate(job);
   return Boolean(date) && toDateKey(date) === toDateKey(new Date()) && ["Scheduled", "Completed"].includes(job.status);
@@ -588,7 +610,8 @@ function agendaJobCard(job, context = "schedule") {
   const expanded = expandedAgenda[context] === String(job.id);
   const needsBuild = job.buildRequired && !job.buildComplete;
   const time = job.time || job.scheduledTime || "Time TBD";
-  return `<article class="agenda-job agenda-job--expandable ${expanded ? "expanded" : "collapsed"}" data-agenda-toggle="${esc(job.id)}" data-agenda-context="${context}" aria-expanded="${expanded}">
+  const tentative = job.status === "Tentative";
+  return `<article class="agenda-job agenda-job--expandable ${tentative ? "agenda-job--tentative" : ""} ${expanded ? "expanded" : "collapsed"}" data-agenda-toggle="${esc(job.id)}" data-agenda-context="${context}" aria-expanded="${expanded}">
     <div class="agenda-job__summary">
       <div class="agenda-time"><strong>${esc(time)}</strong>${expanded && job.duration ? `<span>${esc(job.duration)}</span>` : ""}</div>
       <div class="agenda-line"></div>
@@ -610,6 +633,10 @@ function agendaJobCard(job, context = "schedule") {
         <div class="agenda-detail"><span>Crew</span><strong>${esc(crewDisplay(job))}</strong></div>
         <div class="agenda-detail"><span>Duration</span><strong>${esc(job.duration || "—")}</strong></div>
       </div>
+      ${tentative ? `<div class="agenda-detail-grid">
+        <div class="agenda-detail"><span>Quote</span><strong>$${Number(job.total || 0).toFixed(2)}</strong></div>
+        <div class="agenda-detail"><span>Status</span><strong>Awaiting manager confirmation</strong></div>
+      </div>` : ""}
       <button class="button neutral agenda-open-job" type="button" data-open-job="${esc(job.id)}">Open Job</button>
     </div>` : ""}
   </article>`;
@@ -619,7 +646,7 @@ function renderSchedule() {
   const days = Array.from({ length: 7 }, (_, index) => addDays(scheduleState.weekStart, index));
   const selectedDate = days.find(day => toDateKey(day) === scheduleState.selectedDay) || days[0];
   scheduleState.selectedDay = toDateKey(selectedDate);
-  const selectedJobs = jobsForDate(selectedDate);
+  const selectedJobs = agendaJobsForDate(selectedDate);
   const weekJobs = days.flatMap(jobsForDate);
   const weekKeys = new Set(days.map(toDateKey));
   const tentativeWeekJobs = state.jobs
@@ -662,7 +689,7 @@ function renderSchedule() {
     </section>
 
     <section class="card schedule-agenda">
-      <div class="head"><div><h2>${selectedTitle}</h2><span class="agenda-subtitle">${selectedJobs.length ? `${selectedJobs.length} scheduled ${selectedJobs.length === 1 ? "job" : "jobs"}` : "No jobs scheduled"}</span></div><button class="button" data-demo-action="New Job">＋ New Job</button></div>
+      <div class="head"><div><h2>${selectedTitle}</h2><span class="agenda-subtitle">${agendaCountLabel(selectedJobs)}</span></div><button class="button" data-demo-action="New Job">＋ New Job</button></div>
       <div class="body agenda-list">
         ${selectedJobs.length ? selectedJobs.map(job => agendaJobCard(job, "schedule")).join("") : `<div class="empty-agenda"><b>Open day</b><span>This day currently has no scheduled work.</span><button class="button" data-demo-action="New Job">Schedule a Job</button></div>`}
       </div>
@@ -758,7 +785,7 @@ function employeeHomeStatusButtons() {
 
 function renderEmployeeHome() {
   const today = new Date(); today.setHours(0,0,0,0);
-  const selectedJobs = jobsForDate(today);
+  const selectedJobs = agendaJobsForDate(today);
   const selectedTitle = new Intl.DateTimeFormat("en-US",{weekday:"long",month:"long",day:"numeric"}).format(today);
   return `<div class="employee-home">
     ${syncPanel()}
@@ -766,7 +793,7 @@ function renderEmployeeHome() {
     ${employeeHomeStatusButtons()}
 
     <section class="card employee-day-agenda">
-      <div class="head"><div><h2>Today's Schedule</h2><span class="agenda-subtitle">${selectedTitle} · ${selectedJobs.length?`${selectedJobs.length} scheduled ${selectedJobs.length===1?"job":"jobs"}`:"No jobs scheduled"}</span></div><button class="text-button" data-route="schedule">View Schedule ›</button></div>
+      <div class="head"><div><h2>Today's Schedule</h2><span class="agenda-subtitle">${selectedTitle} · ${agendaCountLabel(selectedJobs)}</span></div><button class="text-button" data-route="schedule">View Schedule ›</button></div>
       <div class="body agenda-list">${selectedJobs.length?selectedJobs.map(employeeHomeJob).join(""):`<div class="empty-agenda compact"><b>Open day</b><span>This day currently has no scheduled work.</span></div>`}</div>
     </section>
 
@@ -2653,7 +2680,7 @@ function openCustomerRosterProfile(customerId) {
 const views = {
   today: {
     title:"Today's GamePlan", sub:todayDate,
-    html:()=>{if(!isManager())return renderEmployeeHome();const attention=state.jobs.filter(jobNeedsOfficeAttention);const todayJobs=jobsForDate(new Date());return `<div class="home-dashboard">
+    html:()=>{if(!isManager())return renderEmployeeHome();const attention=state.jobs.filter(jobNeedsOfficeAttention);const todayJobs=agendaJobsForDate(new Date());return `<div class="home-dashboard">
       ${syncPanel()}
       ${pastDueBand()}
       ${homeStatusButtons()}
@@ -2661,7 +2688,7 @@ const views = {
         <button class="needs-attention-toggle" type="button" data-toggle-manager-attention aria-expanded="${managerHomePanels.attentionOpen}"><span><h2>Needs Attention</h2><em class="attention-count">${attention.length}</em></span><i>${managerHomePanels.attentionOpen?"⌃":"⌄"}</i></button>
         ${managerHomePanels.attentionOpen?`<div class="body attention-list">${attention.length?attention.map(needsAttentionCard).join(""):`<div class="empty-agenda compact"><b>Nothing needs attention</b><span>No future tentative jobs are missing details or have a schedule conflict.</span></div>`}</div>`:""}
       </section>
-      <section class="card manager-today-schedule"><div class="head"><div><h2>Today's Schedule</h2><span class="agenda-subtitle">${todayJobs.length} scheduled ${todayJobs.length===1?"job":"jobs"}</span></div><button class="text-button" data-route="schedule">View Schedule ›</button></div><div class="body agenda-list">${todayJobs.length?todayJobs.map(job=>agendaJobCard(job,"managerHome")).join(""):`<div class="empty-agenda compact"><b>No scheduled jobs today</b><span>Confirmed work scheduled for today will appear here.</span></div>`}</div></section>
+      <section class="card manager-today-schedule"><div class="head"><div><h2>Today's Schedule</h2><span class="agenda-subtitle">${agendaCountLabel(todayJobs)}</span></div><button class="text-button" data-route="schedule">View Schedule ›</button></div><div class="body agenda-list">${todayJobs.length?todayJobs.map(job=>agendaJobCard(job,"managerHome")).join(""):`<div class="empty-agenda compact"><b>No scheduled jobs today</b><span>Confirmed work scheduled for today will appear here.</span></div>`}</div></section>
       <button class="manager-new-job" data-demo-action="New Job"><span>＋</span> New Job</button>
     </div>`;}
   },
