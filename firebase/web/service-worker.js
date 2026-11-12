@@ -1,4 +1,4 @@
-const CACHE_NAME = "gameplan-fb25";
+const CACHE_NAME = "gameplan-fb26";
 
 // Minimal precache — the offline entry point. Everything else caches lazily.
 const APP_SHELL = [

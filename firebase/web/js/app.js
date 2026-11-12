@@ -1,6 +1,6 @@
-import { GamePlanApi } from "./gameplan-api.js?v=fb25";
-import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb25";
-import { computeQuote } from "./pricing.mjs?v=fb25";
+import { GamePlanApi } from "./gameplan-api.js?v=fb26";
+import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb26";
+import { computeQuote } from "./pricing.mjs?v=fb26";
 
 // The build this page is running — taken from the ?v= on its own URL, so it can
 // never disagree with the code actually loaded.
@@ -617,7 +617,7 @@ function agendaJobCard(job, context = "schedule") {
       <div class="agenda-line"></div>
       <div class="agenda-main">
         <div class="agenda-main__top">
-          <div class="agenda-identity"><h3>${esc(job.customer)}</h3><p>${esc(jobTypeLabel(job))}</p></div>
+          <div class="agenda-identity"><h3>${esc(job.customer)}</h3><p>${esc(jobTypeLabel(job))}${job.hasPickup && normalizedPickupType(job.pickupType) ? ` · ${esc(normalizedPickupType(job.pickupType))}` : ""}</p></div>
           <span class="agenda-statuses">
             <span class="badge ${badgeClass(job.status)}">${esc(job.status)}</span>
             ${job.piggyback ? `<span class="piggyback-badge">Piggyback</span>` : ""}
@@ -1114,7 +1114,7 @@ function renderJobSummaryCard(job, options = {}) {
       <div class="customer-address">${esc(job.address)}</div>
       <div class="customer-phone"><span>Phone</span><a href="tel:${esc(job.phone || "")}">${esc(job.phone || "No phone number saved")}</a></div>
       <div class="detail-line"><span>Appointment</span><strong>${esc(job.date)}, ${esc(job.time)}</strong></div>
-      <div class="detail-line"><span>Estimated duration</span><strong>${esc(job.duration || "—")}</strong></div>${countLines}
+      <div class="detail-line"><span>Estimated duration</span><strong>${esc(job.duration || "—")}</strong></div>${job.hasPickup ? `<div class="detail-line"><span>Pickup purpose</span><strong>${pickupPurposeBadge(job)}</strong></div>` : ""}${countLines}
       <div class="detail-line summary-created-by"><span>Set up by</span><strong>${esc(createdByName)}</strong></div>
       ${job.createdAt ? `<div class="detail-line"><span>Set up on</span><strong>${esc(formatActivityStamp(job.createdAt))}</strong></div>` : ""}
     </section>`;
@@ -1302,7 +1302,7 @@ function openPickupInspection(jobId) {
 
   drawerContent.innerHTML = `<div class="complete-details-screen pickup-inspection-screen" data-pickup-job="${esc(job.id)}">
     <section class="complete-job-summary"><div><b>${esc(job.customer)}</b><span>${esc(job.date)} at ${esc(job.time)}</span><small>${esc(job.address)}</small></div><span class="badge ${badgeClass(job.status)}">${esc(job.status)}</span><footer><span>Job #${esc(job.number||job.id)}<br>${pickupItems.length} Pickup Item${pickupItems.length===1?"":"s"}</span><span>${esc(job.type)}<br>${esc(job.duration||"")}</span></footer></section>
-    <p class="complete-instruction">Inspect each pickup item, document its condition, attach a current photo, and obtain the customer’s signature.</p>
+    <p class="complete-instruction">Inspect each pickup item, document its condition, attach a current photo, and obtain the customer’s signature.${normalizedPickupType(job.pickupType)==="Disposal"?" <b>This is a DISPOSAL pickup</b> — the item is being hauled away, not taken in as a trade-in. The inspection and signature are still required: they record what we took and its condition at pickup.":normalizedPickupType(job.pickupType)==="Trade-In"?" <b>This is a TRADE-IN pickup</b> — the item is coming back to the store.":""}</p>
     <h2 class="complete-section-title">PICKUP FOR</h2>
     <section class="pickup-details-card pickup-type-readonly"><span>Pickup Type</span><strong>${esc(normalizedPickupType(job.pickupType)||"Not selected")}</strong><small>Set when the appointment details were completed.</small></section>
     <h2 class="complete-section-title">EQUIPMENT INSPECTION (${pickupItems.length})</h2>
@@ -1587,18 +1587,26 @@ function pickupInspectionMarkup(job, item) {
 
 // Delivery and pickup items are shown in separate, labelled groups so a
 // "Delivery + Pickup" job never reads as if everything is being delivered.
+// Trade-In vs Disposal, shown wherever an employee reads a pickup so nobody has
+// to guess why the item is coming back.
+function pickupPurposeBadge(job) {
+  const purpose = normalizedPickupType(job.pickupType);
+  if (!purpose) return `<span class="pickup-purpose-badge unset">Purpose not set</span>`;
+  return `<span class="pickup-purpose-badge ${purpose === "Disposal" ? "disposal" : "trade-in"}">${purpose === "Disposal" ? "Disposal" : "Trade-In"}</span>`;
+}
+
 function equipmentSectionMarkup(job) {
   const items = job.equipment || [];
   const isPickupItem = item => item.pickupRequired === true && item.deliveryRequired === false;
   const deliveries = items.filter(item => !isPickupItem(item));
   const pickups = items.filter(isPickupItem);
   const group = (label, list, cls) => list.length
-    ? `<div class="equipment-group ${cls}"><h4 class="equipment-group-title"><span>${label}</span><em>${list.length}</em></h4>${list.map(item => equipmentDetailMarkup(job, item)).join("")}</div>`
+    ? `<div class="equipment-group ${cls}"><h4 class="equipment-group-title"><span>${label}</span>${cls === "pickup" ? pickupPurposeBadge(job) : ""}<em>${list.length}</em></h4>${list.map(item => equipmentDetailMarkup(job, item)).join("")}</div>`
     : "";
   if (deliveries.length && pickups.length) {
     return `<section class="detail-card"><h3>Equipment (${items.length})</h3>${group("Delivering to customer", deliveries, "delivery")}${group("Picking up from customer", pickups, "pickup")}</section>`;
   }
-  return `<section class="detail-card"><h3>${pickups.length ? "Pickup Items" : "Delivery Items"} (${items.length})</h3>${items.map(item => equipmentDetailMarkup(job, item)).join("")}</section>`;
+  return `<section class="detail-card"><h3>${pickups.length ? "Pickup Items" : "Delivery Items"} (${items.length})${pickups.length ? pickupPurposeBadge(job) : ""}</h3>${items.map(item => equipmentDetailMarkup(job, item)).join("")}</section>`;
 }
 
 function equipmentDetailMarkup(job, item) {
@@ -1770,7 +1778,7 @@ function workflowActions(job) {
     const pickupAction = job.hasPickup
       ? (pickupInspectionComplete(job)
           ? `<span class="pickup-ready-note">Pickup inspection complete ✓</span>`
-          : `<button class="button pickup-inspection-action" data-pickup-inspection="${esc(job.id)}">Begin Pickup Inspection</button>`)
+          : `<button class="button pickup-inspection-action" data-pickup-inspection="${esc(job.id)}">Begin Pickup Inspection${normalizedPickupType(job.pickupType) ? ` · ${normalizedPickupType(job.pickupType)}` : ""}</button>`)
       : "";
     const completeAction = job.hasPickup && !pickupInspectionComplete(job)
       ? (isManager()
@@ -1790,7 +1798,7 @@ function workflowActions(job) {
   }
   if (job.status === "Scheduled") {
     const pickupAction = job.hasPickup && !pickupInspectionComplete(job)
-      ? `<button class="button pickup-inspection-action" data-pickup-inspection="${esc(job.id)}">Begin Pickup Inspection</button>`
+      ? `<button class="button pickup-inspection-action" data-pickup-inspection="${esc(job.id)}">Begin Pickup Inspection${normalizedPickupType(job.pickupType) ? ` · ${normalizedPickupType(job.pickupType)}` : ""}</button>`
       : "";
     if (!isManager() && !state.currentUser?.sharedAccount) return `${detailsActionFor(job)}${pickupAction}${permissionNotice("This appointment is finalized. A manager must reschedule or cancel it.")}`;
     return `

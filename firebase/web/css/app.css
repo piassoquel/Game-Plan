@@ -770,3 +770,12 @@ body{background:var(--gp-bg);color:var(--gp-text)}
 .agenda-job--tentative{border-style:dashed;border-color:color-mix(in srgb,var(--gp-orange) 55%,var(--tm-line))}
 .agenda-job--tentative .agenda-time strong{color:var(--gp-orange)}
 .agenda-job--tentative .agenda-line{background:repeating-linear-gradient(to bottom,var(--gp-orange) 0 4px,transparent 4px 8px)}
+
+/* --- Pickup purpose (Trade-In / Disposal) badge -------------------------------- */
+.pickup-purpose-badge{display:inline-block;margin-left:8px;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;vertical-align:middle;border:1px solid transparent}
+.pickup-purpose-badge.trade-in{color:#34d399;background:color-mix(in srgb,#34d399 14%,transparent);border-color:color-mix(in srgb,#34d399 45%,transparent)}
+.pickup-purpose-badge.disposal{color:#f87171;background:color-mix(in srgb,#f87171 14%,transparent);border-color:color-mix(in srgb,#f87171 45%,transparent)}
+.pickup-purpose-badge.unset{color:#fbbf24;background:color-mix(in srgb,#fbbf24 14%,transparent);border-color:color-mix(in srgb,#fbbf24 45%,transparent)}
+.equipment-group-title .pickup-purpose-badge{margin-left:auto;margin-right:8px}
+.job-summary-card .detail-line strong .pickup-purpose-badge{margin-left:0}
+.pickup-inspection-screen .complete-instruction b{color:#fff}
