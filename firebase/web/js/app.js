@@ -1,6 +1,6 @@
-import { GamePlanApi } from "./gameplan-api.js?v=fb26";
-import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb26";
-import { computeQuote } from "./pricing.mjs?v=fb26";
+import { GamePlanApi } from "./gameplan-api.js?v=fb27";
+import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb27";
+import { computeQuote } from "./pricing.mjs?v=fb27";
 
 // The build this page is running — taken from the ?v= on its own URL, so it can
 // never disagree with the code actually loaded.
@@ -1188,6 +1188,12 @@ const PICKUP_FUNCTION_QUESTIONS = [
   ["folds", "Unit folds and locks"]
 ];
 
+// Trade-in pickups need the condition inspection + customer signature.
+// Disposal pickups do not (the item is leaving, nothing to assess).
+function pickupInspectionRequired(job) {
+  return Boolean(job.hasPickup) && normalizedPickupType(job.pickupType) !== "Disposal";
+}
+
 function pickupInspectionComplete(job) {
   return String(job.pickupInspectionStatus || "").toLowerCase() === "complete";
 }
@@ -1776,11 +1782,13 @@ function workflowActions(job) {
   if (job.status === "Scheduled" && (today || isJobPastDue(job))) {
     const overdue = !today && isJobPastDue(job);
     const pickupAction = job.hasPickup
-      ? (pickupInspectionComplete(job)
+      ? (!pickupInspectionRequired(job) && !pickupInspectionComplete(job)
+          ? `<span class="pickup-ready-note">Disposal pickup — no inspection needed</span>`
+          : pickupInspectionComplete(job)
           ? `<span class="pickup-ready-note">Pickup inspection complete ✓</span>`
           : `<button class="button pickup-inspection-action" data-pickup-inspection="${esc(job.id)}">Begin Pickup Inspection${normalizedPickupType(job.pickupType) ? ` · ${normalizedPickupType(job.pickupType)}` : ""}</button>`)
       : "";
-    const completeAction = job.hasPickup && !pickupInspectionComplete(job)
+    const completeAction = pickupInspectionRequired(job) && !pickupInspectionComplete(job)
       ? (isManager()
           ? `<button class="button green" data-complete-no-inspection="${esc(job.id)}">✓ Complete Without Inspection</button>`
           : `<button class="button green primary-action" disabled title="Finalize the pickup inspection first">✓ Complete Job</button>`)
@@ -1797,7 +1805,7 @@ function workflowActions(job) {
       <button class="button red" data-status-action="Cancelled" data-job-id="${esc(job.id)}">Cancel Job</button>`;
   }
   if (job.status === "Scheduled") {
-    const pickupAction = job.hasPickup && !pickupInspectionComplete(job)
+    const pickupAction = pickupInspectionRequired(job) && !pickupInspectionComplete(job)
       ? `<button class="button pickup-inspection-action" data-pickup-inspection="${esc(job.id)}">Begin Pickup Inspection${normalizedPickupType(job.pickupType) ? ` · ${normalizedPickupType(job.pickupType)}` : ""}</button>`
       : "";
     if (!isManager() && !state.currentUser?.sharedAccount) return `${detailsActionFor(job)}${pickupAction}${permissionNotice("This appointment is finalized. A manager must reschedule or cancel it.")}`;

@@ -607,7 +607,10 @@ export const updateJobStatus = onCall(async (request) => {
 
   let pickupOverride = false;
   if (target === "completed") {
-    const inspectionOutstanding = job.pickupInspectionStatus &&
+    // Disposal pickups never need an inspection checklist. Decided from the job's
+    // CURRENT pickup purpose so older jobs and later purpose changes just work.
+    const isDisposal = String(job.pickupType || "").toLowerCase() === "disposal";
+    const inspectionOutstanding = !isDisposal && job.pickupInspectionStatus &&
       job.pickupInspectionStatus !== "not-needed" && job.pickupInspectionStatus !== "complete";
     if (inspectionOutstanding) {
       if (!data.overridePickupInspection) {
