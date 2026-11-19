@@ -139,6 +139,27 @@ export function computeQuote(input) {
   };
 }
 
+/**
+ * Customer-facing quote lines. The lines ALWAYS add up exactly to `total`
+ * (the total is rounded to the pricing increment, the individual charges are
+ * not, so the service line is derived: total - disposal + trade-in credit).
+ * @param {{total,disposalCharge,tradeInPickupDiscount,assemblyCharge,hasDelivery}} q
+ * @returns {{lines:Array<{key,label,amount}>, total:number}}
+ */
+export function quoteBreakout(q) {
+  const total = round2(n(q.total));
+  const disposal = Math.min(Math.max(0, round2(n(q.disposalCharge))), total);
+  const credit = Math.max(0, round2(n(q.tradeInPickupDiscount)));
+  const service = round2(total - disposal + credit);
+  const label = q.hasDelivery
+    ? (n(q.assemblyCharge) > 0 ? "Delivery & assembly" : "Delivery")
+    : "Pickup service";
+  const lines = [{ key: "service", label, amount: service }];
+  if (disposal > 0) lines.push({ key: "disposal", label: "Disposal", amount: disposal });
+  if (credit > 0) lines.push({ key: "credit", label: "Trade-in pickup credit", amount: -credit });
+  return { lines, total };
+}
+
 function round2(v) {
   return Math.round(n(v) * 100) / 100;
 }

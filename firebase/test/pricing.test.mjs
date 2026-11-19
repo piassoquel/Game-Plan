@@ -116,3 +116,27 @@ test("adding a pickup to an already-quoted delivery re-quotes the whole job", ()
   assert.equal(trade.pricing.mileageCharge, before.pricing.mileageCharge);
   assert.equal(trade.hasBuildItems, before.hasBuildItems);
 });
+
+test("quote breakout lines always add up to the total", async () => {
+  const { quoteBreakout } = await import("../web/js/pricing.mjs");
+  const base = { access: [], route: { roundTripMiles: 10, outboundMinutes: 12, returnMinutes: 12 }, equipmentTypes: EQUIPMENT_TYPES, accessConditions: ACCESS_CONDITIONS, settings: SETTINGS };
+  const delivery = { equipmentTypeId: "EQP-TREAD", condition: "new", quantity: 1, deliveryRequired: true, pickupRequired: false, fulfillmentConditionId: "NIB" };
+  const pickup = { equipmentTypeId: "EQP-ELLIP", condition: "used", quantity: 1, deliveryRequired: false, pickupRequired: true, fulfillmentConditionId: "NIB" };
+  const cases = [
+    { equipment: [delivery], pickupType: null, hasDelivery: true },
+    { equipment: [delivery, pickup], pickupType: "disposal", hasDelivery: true },
+    { equipment: [delivery, pickup], pickupType: "trade-in", hasDelivery: true },
+    { equipment: [pickup], pickupType: "disposal", hasDelivery: false },
+  ];
+  for (const c of cases) {
+    const q = computeQuote({ ...base, equipment: c.equipment, pickupType: c.pickupType });
+    const b = quoteBreakout({ total: q.finalTotal, disposalCharge: q.pricing.disposalCharge, tradeInPickupDiscount: q.pricing.tradeInPickupDiscount, assemblyCharge: q.pricing.assemblyCharge, hasDelivery: c.hasDelivery });
+    const sum = Math.round(b.lines.reduce((s, l) => s + l.amount, 0) * 100) / 100;
+    assert.equal(sum, b.total, JSON.stringify(b));
+  }
+  const d = quoteBreakout({ total: 150, disposalCharge: 50, tradeInPickupDiscount: 0, assemblyCharge: 50, hasDelivery: true });
+  assert.deepEqual(d.lines.map((l) => [l.label, l.amount]), [["Delivery & assembly", 100], ["Disposal", 50]]);
+  const t = quoteBreakout({ total: 110, disposalCharge: 0, tradeInPickupDiscount: 15, assemblyCharge: 0, hasDelivery: true });
+  assert.deepEqual(t.lines.map((l) => [l.label, l.amount]), [["Delivery", 125], ["Trade-in pickup credit", -15]]);
+  assert.equal(quoteBreakout({ total: 80, disposalCharge: 50, hasDelivery: false }).lines[0].label, "Pickup service");
+});

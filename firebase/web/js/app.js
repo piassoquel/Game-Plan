@@ -1,6 +1,6 @@
-import { GamePlanApi } from "./gameplan-api.js?v=fb27";
-import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb27";
-import { computeQuote } from "./pricing.mjs?v=fb27";
+import { GamePlanApi } from "./gameplan-api.js?v=fb28";
+import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb28";
+import { computeQuote, quoteBreakout } from "./pricing.mjs?v=fb28";
 
 // The build this page is running — taken from the ?v= on its own URL, so it can
 // never disagree with the code actually loaded.
@@ -1593,6 +1593,28 @@ function pickupInspectionMarkup(job, item) {
 
 // Delivery and pickup items are shown in separate, labelled groups so a
 // "Delivery + Pickup" job never reads as if everything is being delivered.
+// Customer-friendly price: delivery/assembly, disposal (when there is one),
+// trade-in credit (when there is one), then one clear total.
+function quoteBreakoutMarkup(q, title = "Quote") {
+  const b = quoteBreakout(q);
+  const money = v => `${v < 0 ? "−" : ""}$${Math.abs(v).toFixed(2)}`;
+  return `<section class="quote-breakout" aria-label="${esc(title)}">
+    <h3>${esc(title)}</h3>
+    ${b.lines.map(l => `<div class="quote-breakout__line ${l.key}"><span>${esc(l.label)}</span><strong>${money(l.amount)}</strong></div>`).join("")}
+    <div class="quote-breakout__total"><span>Total</span><strong>${money(b.total)}</strong></div>
+  </section>`;
+}
+
+function jobQuoteMarkup(job) {
+  const p = job.pricing;
+  if (!p) return `<section class="quote-breakout"><h3>Quote</h3><div class="quote-breakout__total"><span>Total</span><strong>$${Number(job.total || 0).toFixed(2)}</strong></div></section>`;
+  const hasDelivery = (job.equipment || []).some(item => item.deliveryRequired !== false);
+  return quoteBreakoutMarkup({
+    total: job.total, disposalCharge: p.disposalCharge, tradeInPickupDiscount: p.tradeInPickupDiscount,
+    assemblyCharge: p.assemblyCharge, hasDelivery
+  });
+}
+
 // Trade-In vs Disposal, shown wherever an employee reads a pickup so nobody has
 // to guess why the item is coming back.
 function pickupPurposeBadge(job) {
@@ -1876,8 +1898,9 @@ async function openJob(jobId) {
     <section class="detail-card">
       <div class="detail-line"><span>Crew</span><strong>${esc(job.crewSize || "—")} Person Crew</strong></div>
       <div class="detail-line"><span>Estimated duration</span><strong>${esc(job.duration || "—")}</strong></div>
-      <div class="detail-line"><span>Total price</span><strong class="detail-total">$${Number(job.total || 0).toFixed(2)}</strong></div>
     </section>
+
+    ${jobQuoteMarkup(job)}
 
     <section class="detail-card job-activity" data-job-activity="${esc(job.id)}"><h3>Activity</h3><div class="job-activity-body"><small>Loading…</small></div></section>
 
@@ -4429,11 +4452,8 @@ function summaryStep(){
       ${summaryCard(4,"Appointment",`${esc(date)} at ${esc(time)}`,"equipment")}
       <div class="ux-summary-card optional informational"><i>${gpIcon("assembly")}</i><span><small>Equipment Details</small><b>After reserving, choose whether to add make, model, notes, and photos now or later.</b></span><em>✓</em></div>
     </div>
-    <section class="ux-review-price" aria-label="Estimated delivery price">
-      <span>Estimated Delivery Price</span>
-      <strong>$${quoteEstimate()}</strong>
-      <small>Final charge may change if job details change.</small>
-    </section>
+    ${(()=>{const q=quoteBreakdown();return quoteBreakoutMarkup({total:q.roundedTotal,disposalCharge:q.disposalCharge,tradeInPickupDiscount:q.tradeInPickupDiscount,assemblyCharge:q.assemblyCharge,hasDelivery:draft.equipment.some(item=>itemMovement(item)!=="pickup")},"Estimated Quote");})()}
+    <p class="ux-helper quote-breakout-note">Final charge may change if job details change.</p>
   </div>`;
 }
 function sync(){

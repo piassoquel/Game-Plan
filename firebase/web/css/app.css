@@ -779,3 +779,13 @@ body{background:var(--gp-bg);color:var(--gp-text)}
 .equipment-group-title .pickup-purpose-badge{margin-left:auto;margin-right:8px}
 .job-summary-card .detail-line strong .pickup-purpose-badge{margin-left:0}
 .pickup-inspection-screen .complete-instruction b{color:#fff}
+
+/* --- Quote breakout (delivery & assembly / disposal / total) ------------------- */
+.quote-breakout{margin:14px 0;padding:14px 16px;border-radius:16px;background:var(--tm-panel);border:1px solid var(--tm-line)}
+.quote-breakout h3{margin:0 0 8px;font-size:12px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:#9aa4ad}
+.quote-breakout__line{display:flex;justify-content:space-between;gap:12px;padding:8px 0;font-size:16px;border-bottom:1px solid var(--tm-line)}
+.quote-breakout__line.disposal strong{color:#f87171}
+.quote-breakout__line.credit strong{color:#34d399}
+.quote-breakout__total{display:flex;justify-content:space-between;align-items:baseline;gap:12px;padding-top:12px;font-size:20px;font-weight:800}
+.quote-breakout__total strong{font-size:28px;color:var(--gp-orange)}
+.quote-breakout-note{text-align:center;margin-top:-6px}

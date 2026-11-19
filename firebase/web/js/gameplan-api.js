@@ -7,8 +7,8 @@
 import {
   collection, query, where, getDocs, doc, getDoc,
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
-import { db, auth, functions, httpsCallable } from "./firebase-app.js?v=fb27";
-import { enqueue, flush, count, looksOffline } from "./offline-queue.js?v=fb27";
+import { db, auth, functions, httpsCallable } from "./firebase-app.js?v=fb28";
+import { enqueue, flush, count, looksOffline } from "./offline-queue.js?v=fb28";
 
 const call = (name) => httpsCallable(functions, name);
 
@@ -442,6 +442,7 @@ export class GamePlanApi {
       updatedBy: j.updatedBy || "",
       updatedAt: j.updatedAt ? ts(j.updatedAt).toISOString() : "",
       total: Number(j.finalTotal) || 0,
+      pricing: j.pricing || null,
       crewSize,
       duration: durationLabel(j.durationMinutes),
       durationMinutes: Math.max(30, Number(j.durationMinutes) || 0),
