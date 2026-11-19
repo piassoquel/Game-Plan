@@ -1,6 +1,6 @@
-import { GamePlanApi } from "./gameplan-api.js?v=fb28";
-import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb28";
-import { computeQuote, quoteBreakout } from "./pricing.mjs?v=fb28";
+import { GamePlanApi } from "./gameplan-api.js?v=fb29";
+import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb29";
+import { computeQuote, quoteBreakout } from "./pricing.mjs?v=fb29";
 
 // The build this page is running — taken from the ?v= on its own URL, so it can
 // never disagree with the code actually loaded.
@@ -1594,7 +1594,7 @@ function pickupInspectionMarkup(job, item) {
 // Delivery and pickup items are shown in separate, labelled groups so a
 // "Delivery + Pickup" job never reads as if everything is being delivered.
 // Customer-friendly price: delivery/assembly, disposal (when there is one),
-// trade-in credit (when there is one), then one clear total.
+// then one clear total.
 function quoteBreakoutMarkup(q, title = "Quote") {
   const b = quoteBreakout(q);
   const money = v => `${v < 0 ? "−" : ""}$${Math.abs(v).toFixed(2)}`;
@@ -1610,7 +1610,7 @@ function jobQuoteMarkup(job) {
   if (!p) return `<section class="quote-breakout"><h3>Quote</h3><div class="quote-breakout__total"><span>Total</span><strong>$${Number(job.total || 0).toFixed(2)}</strong></div></section>`;
   const hasDelivery = (job.equipment || []).some(item => item.deliveryRequired !== false);
   return quoteBreakoutMarkup({
-    total: job.total, disposalCharge: p.disposalCharge, tradeInPickupDiscount: p.tradeInPickupDiscount,
+    total: job.total, disposalCharge: p.disposalCharge,
     assemblyCharge: p.assemblyCharge, hasDelivery
   });
 }
@@ -4452,7 +4452,7 @@ function summaryStep(){
       ${summaryCard(4,"Appointment",`${esc(date)} at ${esc(time)}`,"equipment")}
       <div class="ux-summary-card optional informational"><i>${gpIcon("assembly")}</i><span><small>Equipment Details</small><b>After reserving, choose whether to add make, model, notes, and photos now or later.</b></span><em>✓</em></div>
     </div>
-    ${(()=>{const q=quoteBreakdown();return quoteBreakoutMarkup({total:q.roundedTotal,disposalCharge:q.disposalCharge,tradeInPickupDiscount:q.tradeInPickupDiscount,assemblyCharge:q.assemblyCharge,hasDelivery:draft.equipment.some(item=>itemMovement(item)!=="pickup")},"Estimated Quote");})()}
+    ${(()=>{const q=quoteBreakdown();return quoteBreakoutMarkup({total:q.roundedTotal,disposalCharge:q.disposalCharge,assemblyCharge:q.assemblyCharge,hasDelivery:draft.equipment.some(item=>itemMovement(item)!=="pickup")},"Estimated Quote");})()}
     <p class="ux-helper quote-breakout-note">Final charge may change if job details change.</p>
   </div>`;
 }

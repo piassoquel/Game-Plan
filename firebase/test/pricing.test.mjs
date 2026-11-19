@@ -130,13 +130,14 @@ test("quote breakout lines always add up to the total", async () => {
   ];
   for (const c of cases) {
     const q = computeQuote({ ...base, equipment: c.equipment, pickupType: c.pickupType });
-    const b = quoteBreakout({ total: q.finalTotal, disposalCharge: q.pricing.disposalCharge, tradeInPickupDiscount: q.pricing.tradeInPickupDiscount, assemblyCharge: q.pricing.assemblyCharge, hasDelivery: c.hasDelivery });
+    const b = quoteBreakout({ total: q.finalTotal, disposalCharge: q.pricing.disposalCharge, assemblyCharge: q.pricing.assemblyCharge, hasDelivery: c.hasDelivery });
     const sum = Math.round(b.lines.reduce((s, l) => s + l.amount, 0) * 100) / 100;
     assert.equal(sum, b.total, JSON.stringify(b));
   }
   const d = quoteBreakout({ total: 150, disposalCharge: 50, tradeInPickupDiscount: 0, assemblyCharge: 50, hasDelivery: true });
   assert.deepEqual(d.lines.map((l) => [l.label, l.amount]), [["Delivery & assembly", 100], ["Disposal", 50]]);
-  const t = quoteBreakout({ total: 110, disposalCharge: 0, tradeInPickupDiscount: 15, assemblyCharge: 0, hasDelivery: true });
-  assert.deepEqual(t.lines.map((l) => [l.label, l.amount]), [["Delivery", 125], ["Trade-in pickup credit", -15]]);
+  // trade-in: no separate credit line; the discount stays inside the service line
+  const t = quoteBreakout({ total: 110, disposalCharge: 0, assemblyCharge: 0, hasDelivery: true });
+  assert.deepEqual(t.lines.map((l) => [l.label, l.amount]), [["Delivery", 110]]);
   assert.equal(quoteBreakout({ total: 80, disposalCharge: 50, hasDelivery: false }).lines[0].label, "Pickup service");
 });
