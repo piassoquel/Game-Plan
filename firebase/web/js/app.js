@@ -1,6 +1,6 @@
-import { GamePlanApi } from "./gameplan-api.js?v=fb29";
-import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb29";
-import { computeQuote, quoteBreakout } from "./pricing.mjs?v=fb29";
+import { GamePlanApi } from "./gameplan-api.js?v=fb30";
+import { auth, signInWithGoogle, signOutOfGoogle, onAuthStateChanged } from "./firebase-app.js?v=fb30";
+import { computeQuote, quoteBreakout } from "./pricing.mjs?v=fb30";
 
 // The build this page is running — taken from the ?v= on its own URL, so it can
 // never disagree with the code actually loaded.
@@ -1642,9 +1642,80 @@ function equipmentDetailMarkup(job, item) {
   const content = `${equipmentImage(item, inspection?.photoUrl || "")}
     <div class="equipment-copy"><strong>${esc([item.brand,item.model].filter(Boolean).join(" ") || `${String(item.condition || "").toLowerCase() === "new" ? "New" : "Used"} ${equipmentTypeName(item)}`)}</strong><small>${esc(equipmentTypeName(item))}</small>${item.description ? `<span class="equipment-meta-label"><b>Description</b>${esc(item.description)}</span>` : ""}${inspection ? `<em>View Pickup Checklist</em>` : ""}</div>
     ${item.pickupRequired === true && item.deliveryRequired === false ? "" : `<div class="equipment-build-action">${equipmentBuildControl(job, item)}</div>`}${inspection ? `<i class="pickup-record-chevron">⌄</i>` : ""}`;
-  return inspection
+  const card = inspection
     ? `<div class="equipment-card-wrap"><button type="button" class="equipment-card pickup-equipment-card" data-toggle-pickup-record="${esc(item.id)}" aria-expanded="false">${content}</button>${pickupInspectionMarkup(job, item)}</div>`
     : `<div class="equipment-card">${content}</div>`;
+  return card + removeItemControl(job, item);
+}
+
+// Manager/Admin only, open jobs only, and never the last item on a job.
+function removeItemControl(job, item) {
+  if (!isManager() || !["Tentative", "Scheduled"].includes(job.status) || (job.equipment || []).length < 2) return "";
+  return `<button type="button" class="remove-item-link" data-remove-item="${esc(item.id)}" data-job-id="${esc(job.id)}">Remove this item</button>`;
+}
+
+async function openRemoveItem(jobId, itemId) {
+  const job = state.jobs.find(j => String(j.id) === String(jobId));
+  const item = job?.equipment?.find(e => String(e.id) === String(itemId));
+  if (!job || !item) return;
+  let pinToken = "";
+  try {
+    pinToken = await requestManagerApproval("Manager approval is required to remove an item from a job.");
+  } catch (_) { return; }
+
+  const money = v => `$${Number(v || 0).toFixed(2)}`;
+  const name = [item.brand, item.model].filter(Boolean).join(" ") || `${String(item.condition || "").toLowerCase() === "new" ? "New" : "Used"} ${equipmentTypeName(item)}`;
+  document.querySelector("#removeItemSheet")?.remove();
+  const sheet = document.createElement("section");
+  sheet.id = "removeItemSheet";
+  sheet.className = "ux-sheet-backdrop open add-pickup-sheet";
+  sheet.innerHTML = `<section class="ux-sheet" role="dialog" aria-modal="true" aria-labelledby="removeItemTitle">
+    <div class="ux-sheet-handle"></div>
+    <small>REMOVE ITEM · ${esc(job.number)}</small>
+    <h3 id="removeItemTitle">Remove ${esc(name)}?</h3>
+    <p class="ux-helper">The job keeps its other items and is re-quoted at today's prices. The removal is recorded in the job's activity.</p>
+    <div class="add-pickup-quote" data-quote>Calculating the updated quote…</div>
+    <div class="complete-details-error" data-error></div>
+    <button type="button" class="button red" data-confirm disabled>Remove Item &amp; Update Quote</button>
+    <button type="button" class="button neutral" data-cancel>Keep Item</button>
+  </section>`;
+  document.body.appendChild(sheet);
+  const quoteBox = sheet.querySelector("[data-quote]");
+  const errorBox = sheet.querySelector("[data-error]");
+  const confirmBtn = sheet.querySelector("[data-confirm]");
+  sheet.querySelector("[data-cancel]").onclick = () => sheet.remove();
+  sheet.addEventListener("click", e => { if (e.target === sheet) sheet.remove(); });
+
+  try {
+    const r = await api.removeJobItem(job.id, item.id, { preview: true }, pinToken);
+    const diff = r.after.finalTotal - r.before.finalTotal;
+    quoteBox.innerHTML = `<div class="detail-line"><span>Current quote</span><strong>${money(r.before.finalTotal)}</strong></div>
+      <div class="detail-line add-pickup-total"><span>Updated quote</span><strong>${money(r.after.finalTotal)} <em>${diff >= 0 ? "+" : "−"}${money(Math.abs(diff))}</em></strong></div>
+      <div class="detail-line"><span>Appointment length</span><strong>${esc(formatEstimatedDuration(r.before.durationMinutes))} → ${esc(formatEstimatedDuration(r.after.durationMinutes))}</strong></div>`;
+    confirmBtn.disabled = false;
+  } catch (error) {
+    quoteBox.textContent = "";
+    errorBox.textContent = error.message || "The updated quote could not be calculated.";
+  }
+
+  confirmBtn.onclick = async () => {
+    confirmBtn.disabled = true; confirmBtn.textContent = "Removing…"; errorBox.textContent = "";
+    try {
+      const res = await api.removeJobItem(job.id, item.id, {}, pinToken);
+      sheet.remove();
+      const fresh = await api.getJob(job.id);
+      const index = state.jobs.findIndex(j => String(j.id) === String(job.id));
+      if (index >= 0) state.jobs[index] = fresh; else state.jobs.push(fresh);
+      persistOptimisticJobs();
+      go(location.hash.slice(1) || "today");
+      await openJob(job.id);
+      toast(`✓ Item removed. Quote ${money(res.before.finalTotal)} → ${money(res.after.finalTotal)}.`);
+    } catch (error) {
+      console.error(error);
+      errorBox.textContent = error.message || "The item could not be removed.";
+      confirmBtn.disabled = false; confirmBtn.textContent = "Remove Item & Update Quote";
+    }
+  };
 }
 
 // Customer asks for a pickup (trade-in / disposal) after the delivery was
@@ -2863,6 +2934,7 @@ function bindDynamic() {
   });
   document.querySelectorAll("[data-complete-details]").forEach(el => el.onclick = () => openCompleteDetails(el.dataset.completeDetails));
   document.querySelectorAll("[data-add-pickup]").forEach(el => el.onclick = () => openAddPickup(el.dataset.addPickup));
+  document.querySelectorAll("[data-remove-item]").forEach(el => el.onclick = () => openRemoveItem(el.dataset.jobId, el.dataset.removeItem));
   view.querySelector("[data-hard-refresh-cms]")?.addEventListener("click",hardRefreshCms);
   view.querySelector("[data-sync-pickup-queue]")?.addEventListener("click",syncPendingPickups);
   view.querySelector("[data-check-update]")?.addEventListener("click",()=>checkForAppUpdate({manual:true}));

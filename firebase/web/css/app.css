@@ -788,3 +788,6 @@ body{background:var(--gp-bg);color:var(--gp-text)}
 .quote-breakout__total{display:flex;justify-content:space-between;align-items:baseline;gap:12px;padding-top:12px;font-size:20px;font-weight:800}
 .quote-breakout__total strong{font-size:28px;color:var(--gp-orange)}
 .quote-breakout-note{text-align:center;margin-top:-6px}
+
+/* --- Manager: remove an item from an open job ---------------------------------- */
+.remove-item-link{display:block;margin:-4px 0 12px auto;padding:6px 4px;background:none;border:0;color:#f87171;font-size:13px;font-weight:700;text-decoration:underline;text-underline-offset:3px;cursor:pointer}

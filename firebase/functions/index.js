@@ -569,6 +569,115 @@ const VALID_NEXT = {
   cancelled: [],
 };
 
+// ------------------------------------------------------------- removeJobItem
+// Manager/Admin: take one item off an open job (e.g. an employee entered two
+// items but there is only one). The item is soft-removed (active:false, kept
+// for the audit trail) and the whole job is re-quoted through the single
+// pricing engine. `preview: true` returns the new quote without saving.
+export const removeJobItem = onCall(async (request) => {
+  const d = db();
+  const data = request.data || {};
+  const now = Timestamp.now();
+  const actor = await resolveActor(request, { pinToken: data.pinToken });
+  requirePermission(actor, "canApproveSchedule", "A manager must remove items from a job.");
+
+  const jobId = str(data.jobId);
+  const lineId = str(data.jobEquipmentId);
+  if (!jobId || !lineId) throw new HttpsError("invalid-argument", "jobId and jobEquipmentId are required.");
+
+  const jobRef = d.doc(`gpJobs/${jobId}`);
+  const [jobSnap, eqSnap] = await Promise.all([jobRef.get(), d.collection(`gpJobs/${jobId}/equipment`).get()]);
+  if (!jobSnap.exists) throw new HttpsError("not-found", "Job not found.");
+  const job = jobSnap.data();
+  if (!["unscheduled", "scheduled"].includes(job.status)) {
+    throw new HttpsError("failed-precondition", "Items can only be removed from a job that is still open.");
+  }
+
+  const active = eqSnap.docs.filter((x) => x.data().active !== false);
+  const target = active.find((x) => x.id === lineId);
+  if (!target) throw new HttpsError("not-found", "That item is not on this job.");
+  if (active.length < 2) {
+    throw new HttpsError("failed-precondition", "A job needs at least one item. Cancel the job instead of removing its only item.");
+  }
+  const remaining = active.filter((x) => x.id !== lineId).map((x) => x.data());
+
+  const [etSnap, acSnap, priceSnap, jtSnap, jobAccSnap] = await Promise.all([
+    d.collection("gpEquipmentTypes").get(),
+    d.collection("gpAccessConditions").get(),
+    d.doc("gpConfig/pricing").get(),
+    d.collection("gpJobTypes").get(),
+    d.collection(`gpJobs/${jobId}/access`).get(),
+  ]);
+  const equipmentTypes = Object.fromEntries(etSnap.docs.map((x) => [x.id, x.data()]));
+  const accessConditions = Object.fromEntries(acSnap.docs.map((x) => [x.id, x.data()]));
+  const settings = priceSnap.exists ? priceSnap.data() : {};
+
+  const equipment = remaining.map((r) => ({
+    equipmentTypeId: r.equipmentTypeId,
+    condition: r.condition || "used",
+    quantity: Math.max(1, num(r.quantity) || 1),
+    deliveryRequired: r.deliveryRequired !== false,
+    pickupRequired: r.pickupRequired === true,
+    fulfillmentConditionId: r.buildRequired === true || String(r.condition) !== "new" ? "NIB" : "ASSEMBLED",
+  }));
+  const hasDelivery = equipment.some((e) => e.deliveryRequired);
+  const hasPickup = equipment.some((e) => e.pickupRequired);
+  const kind = hasDelivery && hasPickup ? "delivery+pickup" : hasPickup ? "pickup" : "delivery";
+  const pickupType = hasPickup ? (str(job.pickupType) || null) : null;
+  const access = jobAccSnap.docs.map((x) => x.data()).filter((a) => a.active !== false)
+    .map((a) => ({ accessConditionId: a.accessConditionId, quantity: Math.max(1, num(a.quantity) || 1) }));
+  const jr = job.route || {};
+
+  let priced;
+  try {
+    priced = computeQuote({
+      equipment, access,
+      route: { roundTripMiles: num(jr.roundTripMiles), outboundMinutes: num(jr.outboundMinutes), returnMinutes: num(jr.returnMinutes) },
+      pickupType, equipmentTypes, accessConditions, settings,
+    });
+  } catch (err) {
+    throw new HttpsError("failed-precondition", `Could not re-quote this job: ${err.message}`);
+  }
+
+  const before = { finalTotal: num(job.finalTotal), durationMinutes: num(job.durationMinutes), pricing: job.pricing || {} };
+  const after = { finalTotal: priced.finalTotal, durationMinutes: priced.durationMinutes, pricing: priced.pricing };
+  if (data.preview) return { preview: true, before, after };
+
+  const jtDoc = jtSnap.docs.find((x) => (x.data().kind || "") === kind);
+  const jobTypeName = jtDoc ? jtDoc.data().name
+    : kind === "pickup" ? "Pickup" : kind === "delivery+pickup" ? "Delivery + Pickup" : "Delivery";
+  const buildRows = remaining.filter((r) => r.buildRequired === true);
+  const allItemsBuilt = buildRows.length === 0 || buildRows.every((r) => r.buildComplete === true);
+
+  const removed = target.data();
+  const typeName = (equipmentTypes[removed.equipmentTypeId] || {}).name || removed.equipmentTypeId;
+  const label = [removed.brand, removed.model].filter(Boolean).join(" ") || typeName;
+
+  const batch = d.batch();
+  batch.update(target.ref, {
+    active: false, removedBy: actorLabel(actor), removedAt: now,
+    updatedBy: actorLabel(actor), updatedAt: now,
+  });
+  batch.update(jobRef, {
+    jobType: kind, jobTypeName, pickupType,
+    pickupInspectionStatus: hasPickup ? (job.pickupInspectionStatus || "needed") : "not-needed",
+    pricing: priced.pricing, finalTotal: priced.finalTotal,
+    durationMinutes: priced.durationMinutes, crewSize: priced.crewSize,
+    hasBuildItems: buildRows.length > 0, allItemsBuilt,
+    updatedBy: actorLabel(actor), updatedAt: now,
+  });
+  batch.set(d.doc(`gpJobs/${jobId}/history/${newId("HIS")}`), {
+    eventType: "Item Removed",
+    description: `Removed ${removed.quantity > 1 ? `${removed.quantity}× ` : ""}${label}. ` +
+      `Quote $${before.finalTotal.toFixed(2)} → $${after.finalTotal.toFixed(2)}.`,
+    previousValue: String(before.finalTotal), newValue: String(after.finalTotal),
+    performedBy: actorLabel(actor), performedAt: now, source: "GamePlan App",
+  });
+  await batch.commit();
+
+  return { jobId, jobType: kind, before, after };
+});
+
 export const updateJobStatus = onCall(async (request) => {
   const d = db();
   const data = request.data || {};

@@ -7,8 +7,8 @@
 import {
   collection, query, where, getDocs, doc, getDoc,
 } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
-import { db, auth, functions, httpsCallable } from "./firebase-app.js?v=fb29";
-import { enqueue, flush, count, looksOffline } from "./offline-queue.js?v=fb29";
+import { db, auth, functions, httpsCallable } from "./firebase-app.js?v=fb30";
+import { enqueue, flush, count, looksOffline } from "./offline-queue.js?v=fb30";
 
 const call = (name) => httpsCallable(functions, name);
 
@@ -242,6 +242,13 @@ export class GamePlanApi {
     return offlineWrite("updateJobDetails", { jobId, equipment, pickupType, pickupNotes, pinToken });
   }
 
+  // Manager/Admin: remove one item from an open job and re-quote it. `preview`
+  // returns the new quote without saving. Online only.
+  async removeJobItem(jobId, jobEquipmentId, { preview = false } = {}, pinToken = "") {
+    const res = await call("removeJobItem")({ jobId, jobEquipmentId, preview, pinToken });
+    return res.data;
+  }
+
   // Add pickup item(s) to an open job and re-quote it. `preview` returns the new
   // quote without saving. Online only (it re-prices on the server).
   async addPickupToJob(jobId, items, pickupType = "", { preview = false, overrideSchedule = false } = {}, pinToken = "") {
@@ -386,7 +393,7 @@ export class GamePlanApi {
     const typeName = j.jobTypeName || jobTypeById?.[j.jobType]?.name || j.jobType || "Delivery";
     const hasPickup = /pick ?up/i.test(typeName) || j.jobType === "pickup" || j.jobType === "delivery+pickup";
 
-    const equipment = eqSnap.docs.map((e) => {
+    const equipment = eqSnap.docs.filter((e) => e.data().active !== false).map((e) => {
       const ed = e.data();
       return {
         id: e.id,
